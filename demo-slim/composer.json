@@ -7,7 +7,7 @@
         "php": ">=8.1",
         "slim/slim": "^4.14",
         "slim/psr7": "^1.7",
-        "mldong/jeeflow-php": "dev-master"
+        "mldong/jeeflow-php": "@dev"
     },
     "autoload": {
         "psr-4": {

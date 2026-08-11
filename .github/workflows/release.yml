@@ -23,6 +23,11 @@ jobs:
           --health-retries=5
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout jeeflow-java (shared flow JSON files)
+        uses: actions/checkout@v4
+        with:
+          repository: mldong/jeeflow-java
+          path: jeeflow-java
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.1'
