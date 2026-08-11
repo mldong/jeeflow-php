@@ -1,6 +1,7 @@
-# Facade 契约（40 action）
+# Facade 契约（38 action）
 
-> `JeeflowFacade` 统一门面，对齐 Java `JeeflowFacade` 的 40 个 action。
+> `JeeflowFacade` 统一门面，对齐 Java `JeeflowFacade` 的 40 个 action——PHP 当前实现 **38 个**，
+> 缺 `processInstance/bizData` 与 `processTask/candidatePage`（缺口见 `jeeflow-hub/issues/61`）。
 > 完整契约规范见 `jeeflow-doc/docs/spec/06-facade.md`。
 
 ## 调用方式
@@ -25,7 +26,7 @@ $result = $facade->flow('processDefine/page', ['pageNum' => 1, 'pageSize' => 10]
 | `processDefine/upAndDown` | 启用/停用 |
 | `processDefine/startAndExecute` | 发起并自动完成申请节点 |
 
-### 流程实例（5）
+### 流程实例（4）
 
 | action | 说明 |
 |--------|------|
@@ -33,9 +34,8 @@ $result = $facade->flow('processDefine/page', ['pageNum' => 1, 'pageSize' => 10]
 | `processInstance/detail` | 实例详情 |
 | `processInstance/startAndExecute` | 同 processDefine/startAndExecute |
 | `processInstance/withdraw` | 撤回 |
-| `processInstance/approvalRecord` | 审批记录 |
 
-### 流程任务（9）
+### 流程任务（8）
 
 | action | 说明 |
 |--------|------|
@@ -45,21 +45,20 @@ $result = $facade->flow('processDefine/page', ['pageNum' => 1, 'pageSize' => 10]
 | `processTask/detail` | 任务详情 |
 | `processTask/jumpAbleTaskNameList` | 可跳转节点 |
 | `processTask/surrogate` | 委托执行 |
+| `processTask/addCandidate` | 添加候选用户 |
 | `processTask/latest` | 最新任务 |
-| `processTask/highLight` | 高亮路径 |
-| `processTask/getAssigneeTextData` | 审批人文本 |
 
 ### 视图端点（7）
 
 | action | 说明 |
 |--------|------|
 | `processDefine/getLastByName` | 按名称查最新定义 |
-| `processInstance/highLight` | 高亮（同 processTask） |
-| `processInstance/approvalRecord` | 审批记录（同 processInstance） |
+| `processInstance/highLight` | 高亮路径 |
+| `processInstance/approvalRecord` | 审批记录 |
+| `processInstance/getAssigneeTextData` | 审批人文本 |
 | `processInstance/createCCInstance` | 创建抄送 |
-| `processInstance/ccList` | 抄送列表 |
 | `processInstance/updateCCStatus` | 更新抄送状态 |
-| `processInstance/getAssigneeTextData` | 审批人文本（同 processTask） |
+| `processInstance/ccList` | 抄送列表 |
 
 ### 流程设计（9，需 IProcessExtRepository）
 
