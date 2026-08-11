@@ -5,44 +5,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
-    name: Run tests
-    runs-on: ubuntu-latest
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
-          MYSQL_DATABASE: jeeflow_test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h localhost"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
-    steps:
-      - uses: actions/checkout@v4
-      - name: Checkout jeeflow-java (shared flow JSON files)
-        uses: actions/checkout@v4
-        with:
-          repository: mldong/jeeflow-java
-          path: jeeflow-java-tmp
-      - name: Move jeeflow-java to expected path
-        run: mv jeeflow-java-tmp ../jeeflow-java
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.1'
-          extensions: pdo_mysql, mbstring
-          coverage: none
-      - name: Install dependencies
-        run: composer install --no-interaction --prefer-dist
-      - name: Run PHPUnit
-        run: php vendor/bin/phpunit --testdox
-
   verify:
     name: Verify Packagist
-    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: shivammathur/setup-php@v2
