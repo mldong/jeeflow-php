@@ -18,6 +18,7 @@ use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\PageQuery;
 use Jeeflow\Core\Spi\PageResult;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
+use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
 use Jeeflow\Core\Util\JeeflowQueryParser;
 
@@ -33,13 +34,16 @@ class JeeflowFacade
 {
     private JeeflowEngine $engine;
     private ProcessRepositoryInterface $repository;
+    private ?ProcessExtRepositoryInterface $extRepository;
     private JeeflowQueryParser $queryParser;
     private ?object $userSearchProvider = null;
 
-    public function __construct(JeeflowEngine $engine, ProcessRepositoryInterface $repository)
+    public function __construct(JeeflowEngine $engine, ProcessRepositoryInterface $repository,
+                                ?ProcessExtRepositoryInterface $extRepository = null)
     {
         $this->engine = $engine;
         $this->repository = $repository;
+        $this->extRepository = $extRepository;
         $this->queryParser = new JeeflowQueryParser();
     }
 
@@ -88,6 +92,20 @@ class JeeflowFacade
                 'processInstance/createCCInstance' => $this->createCCInstance($args),
                 'processInstance/updateCCStatus' => $this->updateCCStatus($args),
                 'processInstance/ccList' => $this->ccList($args),
+                // ── 流程设计（需扩展仓储）──
+                'processDesign/page' => $this->designPage($args),
+                'processDesign/detail' => $this->designDetail($args),
+                'processDesign/save' => $this->designSave($args),
+                'processDesign/update' => $this->designUpdate($args),
+                'processDesign/updateDefine' => $this->designUpdateDefine($args),
+                'processDesign/remove' => $this->designRemove($args),
+                'processDesign/deploy' => $this->designDeploy($args),
+                'processDesign/redeploy' => $this->designRedeploy($args),
+                'processDesign/listByType' => $this->designListByType($args),
+                // ── 委托代理（需扩展仓储）──
+                'processSurrogate/page' => $this->surrogatePage($args),
+                'processSurrogate/save' => $this->surrogateSave($args),
+                'processSurrogate/remove' => $this->surrogateRemove($args),
                 default => $this->error('未知 action: ' . $action),
             };
         } catch (\Throwable $e) {
@@ -690,5 +708,234 @@ class JeeflowFacade
     private function toStr(mixed $v): string
     {
         return $v !== null ? (string) $v : '';
+    }
+
+    // ═══ 流程设计（需扩展仓储） ═══
+
+    private function requireExt(): ProcessExtRepositoryInterface
+    {
+        if ($this->extRepository === null) {
+            throw new \RuntimeException('未接入 IProcessExtRepository，设计/委托 action 不可用');
+        }
+        return $this->extRepository;
+    }
+
+    private function designPage(array $args): array
+    {
+        $ext = $this->requireExt();
+        $query = $this->queryParser->parse($args);
+        return $this->pageResult($ext->pageDesigns($query));
+    }
+
+    private function designDetail(array $args): array
+    {
+        $ext = $this->requireExt();
+        $id = $this->toStr($args['id'] ?? '');
+        $design = $ext->findDesignById($id);
+        if ($design === null) return $this->error('设计不存在');
+        $his = $ext->findLatestDesignHis($id);
+        $jsonObject = $his !== null ? $this->parseGraph($his['content'] ?? '') : null;
+        // 如果 jsonObject 缺失基本信息，从 design 补齐
+        if (is_array($jsonObject)) {
+            if (empty($jsonObject['name'])) $jsonObject['name'] = $design['name'] ?? '';
+            if (empty($jsonObject['displayName'])) $jsonObject['displayName'] = $design['displayName'] ?? '';
+        }
+        $data = [
+            'id' => $design['id'],
+            'name' => $design['name'] ?? '',
+            'displayName' => $design['displayName'] ?? '',
+            'type' => $design['type'] ?? null,
+            'icon' => $design['icon'] ?? null,
+            'isDeployed' => $design['isDeployed'] ?? 0,
+            'remark' => $design['remark'] ?? null,
+            'jsonObject' => $jsonObject,
+            'his' => $ext->findDesignHisList($id),
+        ];
+        return $this->ok($data);
+    }
+
+    private function designSave(array $args): array
+    {
+        $ext = $this->requireExt();
+        $id = $args['id'] ?? null;
+        if ($id !== null) {
+            // 更新基本信息
+            $ext->updateDesign(['id' => $this->toStr($id)] + $args);
+            // 如果有 content，存快照并置未部署
+            if (isset($args['content'])) {
+                $content = is_string($args['content']) ? $args['content'] : json_encode($args['content'], JSON_UNESCAPED_UNICODE);
+                $ext->saveDesignHis($this->toStr($id), $content, $args['operator'] ?? null);
+                $ext->updateDesignDeployed($this->toStr($id), 0);
+            }
+            return $this->ok(['id' => $this->toStr($id)]);
+        }
+        // 新建
+        $designId = $ext->saveDesign([
+            'name' => $args['name'] ?? '',
+            'displayName' => $args['displayName'] ?? '',
+            'type' => $args['type'] ?? 'approval',
+            'icon' => $args['icon'] ?? null,
+            'remark' => $args['remark'] ?? null,
+            'createUser' => $args['operator'] ?? null,
+        ]);
+        if (isset($args['content'])) {
+            $content = is_string($args['content']) ? $args['content'] : json_encode($args['content'], JSON_UNESCAPED_UNICODE);
+            $ext->saveDesignHis($designId, $content, $args['operator'] ?? null);
+        }
+        return $this->ok(['id' => $designId]);
+    }
+
+    private function designUpdate(array $args): array
+    {
+        $ext = $this->requireExt();
+        $ext->updateDesign($args);
+        return $this->ok();
+    }
+
+    private function designUpdateDefine(array $args): array
+    {
+        $ext = $this->requireExt();
+        $designId = $this->toStr($args['processDesignId'] ?? '');
+        $content = $this->contentString($args);
+        // 存快照
+        $ext->saveDesignHis($designId, $content, $args['operator'] ?? null);
+        // 同步 name/displayName/type
+        try {
+            $model = ModelParser::parse($content);
+            $ext->updateDesign([
+                'id' => $designId,
+                'name' => $model->getName(),
+                'displayName' => $model->getDisplayName(),
+                'type' => $model->getType(),
+            ]);
+        } catch (\Throwable $ignored) {}
+        // 置未部署
+        $ext->updateDesignDeployed($designId, 0);
+        return $this->ok();
+    }
+
+    private function designRemove(array $args): array
+    {
+        $ext = $this->requireExt();
+        $ids = $args['ids'] ?? null;
+        if (is_array($ids)) {
+            foreach ($ids as $id) $ext->removeDesign($this->toStr($id));
+        } else {
+            $ext->removeDesign($this->toStr($args['id'] ?? ''));
+        }
+        return $this->ok();
+    }
+
+    private function designDeploy(array $args): array
+    {
+        $ext = $this->requireExt();
+        $designId = $this->toStr($args['id'] ?? '');
+        $design = $ext->findDesignById($designId);
+        if ($design === null) return $this->error('设计不存在');
+        $his = $ext->findLatestDesignHis($designId);
+        if ($his === null) return $this->error('设计稿为空，无法发布');
+        $content = $his['content'];
+        $model = ModelParser::parse($content);
+        // 版本管理
+        $existing = $this->repository->findLatestDefineByName($model->getName());
+        $version = 0;
+        if ($existing !== null) $version = ($existing['version'] ?? 0) + 1;
+        $defineId = (string) $this->repository->getIdGenerator()->nextId();
+        $this->repository->addDefine([
+            'id' => $defineId,
+            'name' => $model->getName(),
+            'displayName' => $model->getDisplayName(),
+            'type' => $model->getType(),
+            'state' => 1,
+            'content' => $content,
+            'version' => $version,
+        ]);
+        $ext->updateDesignDeployed($designId, 1);
+        return $this->ok([FlowConst::PROCESS_DEFINE_ID_KEY => $defineId]);
+    }
+
+    private function designRedeploy(array $args): array
+    {
+        $ext = $this->requireExt();
+        $designId = $this->toStr($args['id'] ?? '');
+        $design = $ext->findDesignById($designId);
+        if ($design === null) return $this->error('设计不存在');
+        $his = $ext->findLatestDesignHis($designId);
+        if ($his === null) return $this->error('设计稿为空');
+        $content = $his['content'];
+        $model = ModelParser::parse($content);
+        // 按 name 找现有定义
+        $existing = $this->repository->findLatestDefineByName($model->getName());
+        if ($existing !== null) {
+            // 原地替换
+            $this->repository->updateDefine([
+                'id' => $existing['id'],
+                'content' => $content,
+                'name' => $model->getName(),
+                'displayName' => $model->getDisplayName(),
+                'type' => $model->getType(),
+            ]);
+            $defineId = $existing['id'];
+        } else {
+            $defineId = (string) $this->repository->getIdGenerator()->nextId();
+            $this->repository->addDefine([
+                'id' => $defineId,
+                'name' => $model->getName(),
+                'displayName' => $model->getDisplayName(),
+                'type' => $model->getType(),
+                'state' => 1,
+                'content' => $content,
+                'version' => 0,
+            ]);
+        }
+        $ext->updateDesignDeployed($designId, 1);
+        return $this->ok([FlowConst::PROCESS_DEFINE_ID_KEY => $defineId]);
+    }
+
+    private function designListByType(array $args): array
+    {
+        $ext = $this->requireExt();
+        $grouped = $ext->listDesignsByType();
+        $result = [];
+        foreach ($grouped as $type => $items) {
+            foreach ($items as $d) {
+                $def = $this->repository->findLatestDefineByName($d['name'] ?? '');
+                $his = $ext->findLatestDesignHis($d['id'] ?? '');
+                $result[$type][] = [
+                    'processDesignId' => $d['id'],
+                    'name' => $d['name'] ?? '',
+                    'displayName' => $d['displayName'] ?? '',
+                    'icon' => $d['icon'] ?? null,
+                    'remark' => $d['remark'] ?? null,
+                    'processDefineId' => $def['id'] ?? null,
+                    'processDefineState' => $def['state'] ?? null,
+                    'jsonObject' => $his !== null ? $this->parseGraph($his['content'] ?? '') : null,
+                ];
+            }
+        }
+        return $this->ok($result);
+    }
+
+    // ═══ 委托代理 ═══
+
+    private function surrogatePage(array $args): array
+    {
+        $ext = $this->requireExt();
+        $query = $this->queryParser->parse($args);
+        return $this->pageResult($ext->pageSurrogates($query));
+    }
+
+    private function surrogateSave(array $args): array
+    {
+        $ext = $this->requireExt();
+        $id = $ext->saveSurrogate($args);
+        return $this->ok(['id' => $id]);
+    }
+
+    private function surrogateRemove(array $args): array
+    {
+        $ext = $this->requireExt();
+        $ext->removeSurrogate($this->toStr($args['id'] ?? ''));
+        return $this->ok();
     }
 }
