@@ -558,6 +558,13 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $rows = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
             $task = $this->hydrateTask($row);
+            // Parse instance variable JSON for ext/instanceExt (align with Java/Node)
+            $instanceVarJson = $row['instance_variable'] ?? null;
+            $instanceExt = null;
+            if ($instanceVarJson !== null && is_string($instanceVarJson)) {
+                $decoded = json_decode($instanceVarJson, true);
+                $instanceExt = is_array($decoded) ? $decoded : null;
+            }
             $rows[] = [
                 'id' => $task->getTaskId(),
                 'processInstanceId' => $task->getProcessInstanceId(),
@@ -571,8 +578,9 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'taskParentId' => $task->getParentTaskId(),
                 'taskActorIdList' => $task->getActorIds(),
                 'variable' => $task->getVariables()->toArray(),
-                'ext' => $task->getVariables()->toArray(),
-                'taskFormData' => [],
+                'ext' => $instanceExt ?? (object)[],
+                'instanceExt' => $instanceExt ?? (object)[],
+                'taskFormData' => (object)[],
                 'finishTime' => $task->getFinishTime(),
                 'expireTime' => $task->getExpireTime(),
                 'createTime' => $task->getCreateTime(),
@@ -583,7 +591,7 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'processDefineName' => $row['process_define_name'] ?? null,
                 'processDefineDisplayName' => $row['process_define_display_name'] ?? null,
                 'version' => $row['process_define_version'] ?? null,
-                'instanceVariable' => $row['instance_variable'] ?? null,
+                'instanceVariable' => $instanceVarJson,
                 'instanceCreateTime' => $row['instance_create_time'] ?? null,
             ];
         }
