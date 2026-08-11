@@ -1,6 +1,6 @@
 # 快速开始（SDK 集成）
 
-> 把 jeeflow-php 作为依赖集成到你的项目。演示站（Slim 4 应用）见 [demo-slim/](../demo-slim/)。
+> 把 jeeflow-php 作为依赖集成到你的项目。参考 demo（Slim 4 应用）见 [demo-slim](https://github.com/mldong/jeeflow-php/tree/main/demo-slim)。
 
 ## 安装
 

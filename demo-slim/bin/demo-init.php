@@ -78,53 +78,57 @@ if ($mode === RepositoryFactory::MODE_MEMORY) {
     });
 }
 
-// ── 3. 部署示例流程（幂等） ──
+// ── 3. 部署示例流程（幂等，对齐 Python/Node：加载全部共享 flow JSON） ──
 
 $flowsDir = dirname(__DIR__, 3) . '/jeeflow-java/jeeflow-core/src/test/resources/flows';
-$flowFiles = [
-    '01-simple.json' => '简单审批',
-    '02-multi-task.json' => '多任务',
-    '03-decision-expr.json' => '条件分支',
-];
 
 echo "Deploying demo flows...\n";
 
-foreach ($flowFiles as $file => $displayName) {
-    $path = $flowsDir . '/' . $file;
-    if (!file_exists($path)) {
-        echo "  [SKIP] $file (not found)\n";
-        continue;
-    }
+if (!is_dir($flowsDir)) {
+    echo "  [WARN] flows dir not found: $flowsDir\n";
+} else {
+    // 扫描全部 .json 文件并排序（与 Python os.listdir + sorted / Node readdirSync + sort 对齐）
+    $files = glob($flowsDir . '/*.json');
+    sort($files);
 
-    $name = pathinfo($file, PATHINFO_FILENAME);
+    foreach ($files as $path) {
+        $fname = basename($path);
+        $json = file_get_contents($path);
+        $raw = json_decode($json, true);
 
-    // 幂等检查：如果已存在则跳过
-    $existing = $facade->flow('processDefine/page', ['pageNum' => 1, 'pageSize' => 100]);
-    $rows = $existing['data']['rows'] ?? [];
-    $alreadyDeployed = false;
-    foreach ($rows as $row) {
-        if (($row['name'] ?? '') === $name) {
-            $alreadyDeployed = true;
-            break;
+        // 从 JSON 内容读取 name/displayName（与 Python/Node 一致）
+        $name = $raw['name'] ?? pathinfo($fname, PATHINFO_FILENAME);
+        $displayName = $raw['displayName'] ?? $name;
+        $type = $raw['type'] ?? 'approval';
+
+        // 幂等检查：如果已存在则跳过
+        $existing = $facade->flow('processDefine/page', ['pageNum' => 1, 'pageSize' => 100]);
+        $rows = $existing['data']['rows'] ?? [];
+        $alreadyDeployed = false;
+        foreach ($rows as $row) {
+            if (($row['name'] ?? '') === $name) {
+                $alreadyDeployed = true;
+                break;
+            }
         }
-    }
 
-    if ($alreadyDeployed) {
-        echo "  [OK] $name (already deployed)\n";
-        continue;
-    }
+        if ($alreadyDeployed) {
+            echo "  [OK] $name (already deployed)\n";
+            continue;
+        }
 
-    $json = file_get_contents($path);
-    $result = $facade->flow('processDefine/deploy', [
-        'name' => $name,
-        'displayName' => $displayName,
-        'content' => $json,
-    ]);
+        $result = $facade->flow('processDefine/deploy', [
+            'name' => $name,
+            'displayName' => $displayName,
+            'type' => $type,
+            'content' => $json,
+        ]);
 
-    if ($result['code'] === 0) {
-        echo "  [OK] $name deployed\n";
-    } else {
-        echo "  [FAIL] $name: {$result['msg']}\n";
+        if ($result['code'] === 0) {
+            echo "  [OK] $name ($displayName) deployed\n";
+        } else {
+            echo "  [FAIL] $name: {$result['msg']}\n";
+        }
     }
 }
 

@@ -34,7 +34,7 @@ $app->post('/wf/{action:.+}', function ($request, $response) use ($handler) {
 $app->run();
 ```
 
-完整示例见 [demo-slim/](../demo-slim/)。
+完整示例见 [demo-slim](https://github.com/mldong/jeeflow-php/tree/main/demo-slim)。
 
 ## Laminas / Mezzio 集成
 
