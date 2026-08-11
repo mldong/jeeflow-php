@@ -83,7 +83,7 @@ if ($mode === RepositoryFactory::MODE_MEMORY) {
 $flowsDir = dirname(__DIR__, 3) . '/jeeflow-java/jeeflow-core/src/test/resources/flows';
 $flowFiles = [
     '01-simple.json' => '简单审批',
-    '02-multi-instance.json' => '多实例',
+    '02-multi-task.json' => '多任务',
     '03-decision-expr.json' => '条件分支',
 ];
 
