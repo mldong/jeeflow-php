@@ -1,0 +1,33 @@
+{
+    "name": "mldong/jeeflow-php",
+    "description": "jeeflow workflow engine — PHP implementation (5th language in the multilingual federation)",
+    "type": "library",
+    "license": "MIT",
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "require": {
+        "php": ">=8.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "Jeeflow\\Core\\": "packages/core/src/",
+            "Jeeflow\\RepositoryPDO\\": "packages/repository-pdo/src/",
+            "Jeeflow\\WebContract\\": "packages/web-contract/src/",
+            "Jeeflow\\WebPsr\\": "packages/web-psr/src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Jeeflow\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "test-core": "phpunit --testsuite core",
+        "test-pdo": "phpunit --testsuite repository-pdo",
+        "test-contract": "phpunit --testsuite web-contract"
+    }
+}
