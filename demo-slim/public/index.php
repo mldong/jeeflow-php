@@ -5,8 +5,15 @@ declare(strict_types=1);
 /**
  * jeeflow PHP 引擎参考 demo —— Slim 4
  *
+ * 启动前请先初始化：
+ *   php bin/demo-init.php
+ *
  * 启动：composer start  或  php -S localhost:8090 -t public
  * 访问：POST http://localhost:8090/wf/{action}
+ *
+ * 存储模式（环境变量 JEEFLOW_DEMO_STORE）：
+ *   - sqlite : SQLite 文件（默认）
+ *   - mysql  : MySQL PDO
  *
  * 对齐其他语言 demo 的 8 个具名用户和统一接口规范。
  */
@@ -14,10 +21,9 @@ declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php';
 
 use Jeeflow\Core\JeeflowEngine;
-use Jeeflow\Core\Repository\InMemoryProcessRepository;
-use Jeeflow\Core\Repository\InMemoryProcessExtRepository;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
+use Jeeflow\Demo\RepositoryFactory;
 use Jeeflow\WebContract\JeeflowFacade;
 use Jeeflow\WebPsr\JeeflowRequestHandler;
 use Psr\Http\Message\ResponseInterface as Response;
@@ -26,38 +32,28 @@ use Slim\Factory\AppFactory;
 
 // ── 初始化引擎 ──
 
-$repo = new InMemoryProcessRepository();
-$extRepo = new InMemoryProcessExtRepository();
+$mode = RepositoryFactory::getMode();
+$repo = RepositoryFactory::createProcessRepository();
+$extRepo = RepositoryFactory::createProcessExtRepository();
 $engine = new JeeflowEngine($repo);
 $facade = new JeeflowFacade($engine, $repo, $extRepo);
 
-// 注入事务模板（demo 用同步执行）
-ServiceContext::put(TransactionTemplateInterface::class, new class implements TransactionTemplateInterface {
-    public function required(callable $action): mixed { return $action(); }
-});
-
-// ── 预部署示例流程 ──
-
-$flowsDir = dirname(__DIR__, 3) . '/jeeflow-java/jeeflow-core/src/test/resources/flows';
-$flowFiles = [
-    '01-simple.json' => '简单审批',
-    '02-multi-instance.json' => '多实例',
-    '03-decision-expr.json' => '条件分支',
-];
-
-foreach ($flowFiles as $file => $displayName) {
-    $path = $flowsDir . '/' . $file;
-    if (!file_exists($path)) continue;
-    $json = file_get_contents($path);
-    $name = pathinfo($file, PATHINFO_FILENAME);
-    $result = $facade->flow('processDefine/deploy', [
-        'name' => $name,
-        'displayName' => $displayName,
-        'content' => $json,
-    ]);
-    if ($result['code'] !== 0) {
-        error_log("Failed to deploy {$name}: {$result['msg']}");
-    }
+// 注入事务模板
+if ($mode === RepositoryFactory::MODE_MEMORY) {
+    ServiceContext::put(TransactionTemplateInterface::class, new class implements TransactionTemplateInterface {
+        public function required(callable $action): mixed { return $action(); }
+    });
+} else {
+    $pdo = RepositoryFactory::getPdo();
+    ServiceContext::put(TransactionTemplateInterface::class, new class($pdo) implements TransactionTemplateInterface {
+        private \PDO $pdo;
+        public function __construct(\PDO $pdo) { $this->pdo = $pdo; }
+        public function required(callable $action): mixed {
+            $this->pdo->beginTransaction();
+            try { $result = $action(); $this->pdo->commit(); return $result; }
+            catch (\Throwable $e) { $this->pdo->rollBack(); throw $e; }
+        }
+    });
 }
 
 // ── Slim App ──
@@ -90,8 +86,12 @@ $app->post('/wf/{action:.+}', function (Request $request, Response $response) us
 
 // ── 健康检查 ──
 
-$app->get('/health', function (Request $request, Response $response): Response {
-    $body = json_encode(['status' => 'ok', 'engine' => 'jeeflow-php']);
+$app->get('/health', function (Request $request, Response $response) use ($mode): Response {
+    $body = json_encode([
+        'status' => 'ok',
+        'engine' => 'jeeflow-php',
+        'store' => $mode,
+    ]);
     $response->getBody()->write($body);
     return $response->withHeader('Content-Type', 'application/json');
 });

@@ -6,3 +6,7 @@
 *.log
 .DS_Store
 Thumbs.db
+
+# Demo runtime
+/demo-slim/data/
+/demo-slim/vendor/

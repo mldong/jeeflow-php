@@ -5,13 +5,16 @@
 ## 快速启动
 
 ```bash
-# 安装依赖
+# 1. 安装依赖
 composer install
 
-# 启动服务（PHP 内置服务器）
+# 2. 初始化数据库和示例流程（默认 SQLite）
+composer init
+# 或 php bin/demo-init.php
+
+# 3. 启动服务
 composer start
-# 或
-php -S localhost:8090 -t public
+# 或 php -S localhost:8090 -t public
 ```
 
 服务启动后：
@@ -20,14 +23,35 @@ php -S localhost:8090 -t public
 - 已部署流程：`GET http://localhost:8090/demo/flows`
 - 工作流接口：`POST http://localhost:8090/wf/{action}`
 
+## 存储模式
+
+通过环境变量 `JEEFLOW_DEMO_STORE` 选择存储后端：
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| `sqlite` | SQLite 文件（**默认**） | 本机 demo / jeeflow-ui |
+| `mysql` | MySQL PDO | 联调 / 生产 |
+| `memory` | 内存仓储 | 仅 `smoke_test.php` 使用 |
+
+```bash
+# SQLite（默认）
+php bin/demo-init.php
+
+# MySQL
+JEEFLOW_DEMO_STORE=mysql \
+JEEFLOW_MYSQL_DSN="mysql:host=127.0.0.1;port=3306;dbname=jeeflow_demo;charset=utf8mb4" \
+JEEFLOW_MYSQL_USER=root \
+JEEFLOW_MYSQL_PASS=secret \
+php bin/demo-init.php
+```
+
 ## 预部署流程
 
-启动时自动部署以下示例流程（来自 `jeeflow-java` 共享流程定义）：
+`bin/demo-init.php` 幂等部署以下示例流程（来自 `jeeflow-java` 共享流程定义）：
 
 | 流程名 | 文件 | 说明 |
 |--------|------|------|
 | `01-simple` | 01-simple.json | 简单审批（发起人→组长） |
-| `02-multi-instance` | 02-multi-instance.json | 多实例（并行/串行会签） |
 | `03-decision-expr` | 03-decision-expr.json | 条件分支 |
 
 ## 接口示例
@@ -68,36 +92,25 @@ curl -X POST http://localhost:8090/wf/processTask/execute \
 
 ```
 demo-slim/
-├── composer.json         # Slim 4 + jeeflow-php 依赖
-├── smoke_test.php        # 单进程端到端冒烟测试
-└── public/
-    └── index.php         # 入口：初始化引擎 + 注册路由
+├── bin/
+│   └── demo-init.php       # 初始化脚本（建表 + 部署 flows）
+├── data/                   # SQLite 数据库（gitignore）
+├── public/
+│   └── index.php           # 入口：RepositoryFactory + Slim 路由
+├── src/
+│   └── RepositoryFactory.php  # 仓储工厂（env 选择存储后端）
+├── smoke_test.php          # 单进程端到端冒烟测试（memory 模式）
+└── composer.json
 ```
 
+- **RepositoryFactory**：根据 `JEEFLOW_DEMO_STORE` 环境变量创建仓储
 - **JeeflowRequestHandler**（PSR-15）：将 `/wf/{action}` 请求转发到 `JeeflowFacade.flow()`
-- **InMemoryRepository**：内存仓储（demo 用，生产环境换 `PdoProcessRepository`）
 - **8 个具名用户**：user1/userA/userB/userC/leader/manager/director/boss（与其他语言 demo 统一）
-
-## ⚠️ PHP 进程模型限制
-
-PHP 内置服务器（`php -S`）和 PHP-FPM 采用 **每请求独立进程** 模型，与 Java/Go/Python/Node 的常驻进程不同：
-
-| 运行方式 | 进程模型 | InMemory 共享 |
-|----------|----------|---------------|
-| `php -S`（内置 dev server） | 每请求新进程 | ❌ 不共享 |
-| PHP-FPM + Nginx | 进程池，跨 worker 不共享 | ⚠️ 有限 |
-| Swoole / RoadRunner | 常驻内存 | ✅ 完全共享 |
-
-**因此**：
-- 本 demo 使用 `InMemoryRepository`，**仅适合单进程验证**（如 `smoke_test.php`）
-- 跨请求的完整流程（发起→审批→定稿）在 HTTP 模式下无法保持状态
-- **生产环境必须使用 `PdoProcessRepository`（MySQL）**
 
 ## 生产环境部署
 
-1. 替换 `InMemoryRepository` 为 `PdoProcessRepository`（MySQL）
+1. 设置 `JEEFLOW_DEMO_STORE=mysql` 并配置 MySQL 连接参数
 2. 执行 `packages/repository-pdo/sql/schema-mysql.sql` 建表
-3. 添加真实事务模板（`TransactionTemplateInterface`）
-4. 接入用户/组织服务（`IUserProvider` SPI）
-5. 添加认证/授权中间件
-6. 使用 PHP-FPM + Nginx 或 Swoole/RoadRunner 部署
+3. 接入用户/组织服务（`IUserProvider` SPI）
+4. 添加认证/授权中间件
+5. 使用 PHP-FPM + Nginx 部署

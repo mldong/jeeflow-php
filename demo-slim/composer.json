@@ -21,6 +21,7 @@
         }
     ],
     "scripts": {
-        "start": "php -S localhost:8090 -t public"
+        "start": "php -S localhost:8090 -t public",
+        "init": "php bin/demo-init.php"
     }
 }
