@@ -17,7 +17,9 @@ jobs:
         run: |
           docker build -f jeeflow-php/Dockerfile.demo -t jeeflow-php-demo:latest jeeflow-php/
       - name: Export image
-        run: docker save jeeflow-php-demo:latest -o jeeflow-php-demo.tar
+        run: |
+          docker save jeeflow-php-demo:latest -o jeeflow-php-demo.tar
+          chmod 644 jeeflow-php-demo.tar
       - name: Upload to server
         uses: appleboy/scp-action@v0.1.7
         with:
