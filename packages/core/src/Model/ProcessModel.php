@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Jeeflow\Core\Model;
 
+use Jeeflow\Core\ServiceContext;
+use Jeeflow\Core\Spi\OrgUserProviderInterface;
+
 /**
  * 流程模型 —— 整个流程定义的顶层对象
  *
@@ -89,6 +92,69 @@ class ProcessModel extends BaseModel
         foreach ($target->getOutputs() as $tm2) {
             $this->addNextModels($models, $tm2, $clazz, $visited);
         }
+    }
+
+    /**
+     * 获取下一任务节点（对齐 Java ProcessModel#getNextTaskModels）
+     *
+     * 直接输出为 TaskModel 则收集；否则沿输出递归查找（用于会签/嵌套节点穿透）。
+     *
+     * @return TaskModel[]
+     */
+    public function getNextTaskModels(string $nodeName): array
+    {
+        $result = [];
+        $node = $this->getNode($nodeName);
+        if ($node === null) return $result;
+        foreach ($node->getOutputs() as $tm) {
+            $target = $tm->getTarget();
+            if ($target instanceof TaskModel) $result[] = $target;
+        }
+        if ($result === []) {
+            foreach ($node->getOutputs() as $tm) {
+                $target = $tm->getTarget();
+                if ($target !== null) {
+                    $result = array_merge($result, $this->getNextTaskModels($target->getName()));
+                }
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * 获取下一个任务节点的候选人（对齐 Java ProcessModel#getNextTaskModelCandidates）
+     *
+     * ① candidateUsers —— 逗号分隔 userId，直接作为候选人；
+     * ② candidateGroups —— 逗号分隔角色标识，OrgUserProviderInterface::findByRole 取人（未注册跳过，与 Java 一致）。
+     *
+     * @return string[] 去重后的 actorId 列表
+     */
+    public function getNextTaskModelCandidates(string $nodeName): array
+    {
+        $result = [];
+        foreach ($this->getNextTaskModels($nodeName) as $tm) {
+            $candidateUsers = $tm->getCandidateUsers();
+            if ($candidateUsers !== null && $candidateUsers !== '') {
+                foreach (explode(',', $candidateUsers) as $userId) {
+                    $uid = trim($userId);
+                    if ($uid !== '') $result[] = $uid;
+                }
+            }
+            $candidateGroups = $tm->getCandidateGroups();
+            if ($candidateGroups !== null && $candidateGroups !== '') {
+                $orgProvider = ServiceContext::find(OrgUserProviderInterface::class);
+                if ($orgProvider instanceof OrgUserProviderInterface) {
+                    foreach (explode(',', $candidateGroups) as $roleCode) {
+                        $rc = trim($roleCode);
+                        if ($rc === '') continue;
+                        foreach ($orgProvider->findByRole($rc) as $uid) {
+                            if ($uid !== null && $uid !== '') $result[] = $uid;
+                        }
+                    }
+                }
+            }
+        }
+        return array_values(array_unique($result));
     }
 
     // ── Getters/Setters ──

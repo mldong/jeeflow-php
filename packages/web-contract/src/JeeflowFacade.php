@@ -20,6 +20,7 @@ use Jeeflow\Core\Spi\PageResult;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
 use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
+use Jeeflow\Core\Spi\UserSearchProviderInterface;
 use Jeeflow\Core\Util\JeeflowQueryParser;
 
 /**
@@ -36,7 +37,7 @@ class JeeflowFacade
     private ProcessRepositoryInterface $repository;
     private ?ProcessExtRepositoryInterface $extRepository;
     private JeeflowQueryParser $queryParser;
-    private ?object $userSearchProvider = null;
+    private ?UserSearchProviderInterface $userSearchProvider = null;
 
     public function __construct(JeeflowEngine $engine, ProcessRepositoryInterface $repository,
                                 ?ProcessExtRepositoryInterface $extRepository = null)
@@ -47,7 +48,7 @@ class JeeflowFacade
         $this->queryParser = new JeeflowQueryParser();
     }
 
-    public function setUserSearchProvider(?object $provider): void
+    public function setUserSearchProvider(?UserSearchProviderInterface $provider): void
     {
         $this->userSearchProvider = $provider;
     }
@@ -84,6 +85,7 @@ class JeeflowFacade
                 'processTask/surrogate' => $this->taskSurrogate($args),
                 'processTask/addCandidate' => $this->taskSurrogate($args),
                 'processTask/latest' => $this->taskLatest($args),
+                'processTask/candidatePage' => $this->candidatePage($args),
                 // ── 视图端点 ──
                 'processDefine/getLastByName' => $this->getLastByName($args),
                 'processInstance/highLight' => $this->highLight($args),
@@ -92,6 +94,7 @@ class JeeflowFacade
                 'processInstance/createCCInstance' => $this->createCCInstance($args),
                 'processInstance/updateCCStatus' => $this->updateCCStatus($args),
                 'processInstance/ccList' => $this->ccList($args),
+                'processInstance/bizData' => $this->bizData($args),
                 // ── 流程设计（需扩展仓储）──
                 'processDesign/page' => $this->designPage($args),
                 'processDesign/detail' => $this->designDetail($args),
@@ -430,7 +433,105 @@ class JeeflowFacade
         return $this->ok($this->taskVo($doingTasks[0]));
     }
 
-    // ═══ 视图端点 ═══
+    // ═══ issues/61：候选分页 + 业务数据读取 ═══
+
+    /**
+     * 候选用户分页（对齐 Java JeeflowFacade#candidatePage）
+     *
+     * 优先从流程定义解析下一任务节点候选（candidateUsers/candidateGroups），
+     * 命中则逐个映射用户信息（UserSearchProviderInterface 优先，其次 UserProviderInterface，兜底原样）；
+     * 未命中则走 UserSearchProviderInterface::page 用户分页搜索（未配置明确报错）。
+     */
+    private function candidatePage(array $args): array
+    {
+        $taskId = $this->toStr($args[FlowConst::PROCESS_TASK_ID_KEY] ?? $args['id'] ?? '');
+        if ($taskId === '') return $this->error('processTaskId 缺失');
+        $task = $this->repository->findTaskById($taskId);
+        if ($task === null) return $this->error('任务不存在');
+        $inst = $this->repository->findInstanceById($task->getProcessInstanceId());
+        if ($inst === null) return $this->error('流程实例不存在');
+        $def = $this->repository->findDefineById($inst->getDefineId());
+        if ($def === null) return $this->error('流程定义不存在');
+
+        $candidateIds = [];
+        try {
+            $model = ModelParser::parse((string) ($def['content'] ?? ''));
+            $candidateIds = $model->getNextTaskModelCandidates($task->getTaskName());
+        } catch (\Throwable $ignored) {}
+
+        if ($candidateIds !== []) {
+            // 候选配置命中 → 用户信息映射（UserSearchProviderInterface 优先，其次 UserProviderInterface）
+            $rows = [];
+            foreach ($candidateIds as $actorId) {
+                $u = null;
+                if ($this->userSearchProvider !== null) {
+                    $u = $this->userSearchProvider->findById($actorId);
+                }
+                if ($u === null) {
+                    $userProvider = ServiceContext::find(UserProviderInterface::class);
+                    if ($userProvider !== null) {
+                        $user = $userProvider->getUser($actorId);
+                        if ($user !== null) {
+                            $u = ['userId' => $actorId, 'realName' => $user['realName'] ?? ''];
+                        }
+                    }
+                }
+                if ($u === null) {
+                    $u = ['userId' => $actorId, 'realName' => $actorId];
+                }
+                $rows[] = $u;
+            }
+            return $this->pageResult(new PageResult(1, 10, count($rows), $rows));
+        }
+        // 无模型候选 → 用户分页搜索（依赖 UserSearchProviderInterface）
+        if ($this->userSearchProvider === null) {
+            return $this->error('未配置 UserSearchProviderInterface（用户搜索钩子）');
+        }
+        return $this->pageResult($this->userSearchProvider->page($this->queryParser->parse($args)));
+    }
+
+    /**
+     * 业务数据回显（对齐 Java JeeflowFacade#bizData）
+     *
+     * 表名取流程定义 content 顶层 relTableName（缺省回落 name）；
+     * MetaTableReader 由集成方经 ServiceContext::put("metaTableReader", ...) 注册（需引入 persist 模块），
+     * 未注册明确报错。
+     */
+    private function bizData(array $args): array
+    {
+        $instanceId = $this->toStr($args['processInstanceId'] ?? $args['id'] ?? '');
+        if ($instanceId === '') return $this->error('processInstanceId 缺失');
+        $inst = $this->repository->findInstanceById($instanceId);
+        if ($inst === null) return $this->error('流程实例不存在');
+        $def = $this->repository->findDefineById($inst->getDefineId());
+        if ($def === null) return $this->error('流程定义不存在');
+        $tableName = $this->resolveRelTableName((string) ($def['content'] ?? ''));
+        if ($tableName === null) return $this->error('流程定义未配置 relTableName');
+        // issues/61：core 不编译期依赖 persist——按名查找，未注册明确报错
+        $reader = ServiceContext::find('metaTableReader');
+        if ($reader === null) {
+            return $this->error('业务数据读取器未注册（ServiceContext::put("metaTableReader", new MetaTableReader(...))，需引入 jeeflow-persist）');
+        }
+        try {
+            $result = $reader->readByProcessInstance($tableName, $instanceId);
+            return $result === null ? $this->ok() : $this->ok($result);
+        } catch (\Throwable $e) {
+            return $this->error('业务数据读取失败: ' . ($e->getMessage() ?: (string) $e));
+        }
+    }
+
+    /** 从流程定义 content 顶层解析 relTableName（缺省回落 name） */
+    private function resolveRelTableName(string $content): ?string
+    {
+        if ($content === '') return null;
+        $decoded = json_decode($content, true);
+        if (!is_array($decoded)) return null;
+        $tableName = isset($decoded['relTableName']) ? trim((string) $decoded['relTableName']) : '';
+        if ($tableName === '') {
+            $tableName = isset($decoded['name']) ? trim((string) $decoded['name']) : '';
+        }
+        return $tableName === '' ? null : $tableName;
+    }
 
     private function getLastByName(array $args): array
     {

@@ -51,13 +51,15 @@ composer test
 - **引擎核心**：ProcessInstance 聚合根 + 状态机 + 6 SPI + 7 Handler
 - **流程类型**：simple/multi-task/decision-expr/fork-join/countersign-parallel/sequential/reject/withdraw
 - **持久化**：PdoProcessRepository（MySQL 八表）+ InMemoryProcessRepository（测试）
-- **统一门面**：JeeflowFacade 40 action（processDefine 7 + processInstance 5 + processTask 9 + processDesign 9 + processSurrogate 3 + 视图端点 7）
+- **统一门面**：JeeflowFacade 40 action（与 Java 对齐；issues/61 补齐 `bizData`/`candidatePage`）
 - **查询解析**：JeeflowQueryParser（m_ 前缀过滤）
 - **扩展仓储**：IProcessExtRepository + InMemoryProcessExtRepository
 - **PSR adapter**：JeeflowRequestHandler（PSR-15）+ ResponseFactory（nyholm/psr7）
 - **参考 demo**：demo-slim（Slim 4，预部署 3 个示例流程）
 
-### 待完成
+### issues/61 闭环（v1.1.0）
 
-- `processTask/candidatePage` 需 IUserSearchProvider SPI
-- `processInstance/bizData` 需 MetaTableReader SPI
+- `processTask/candidatePage` —— 模型候选（`candidateUsers`/`candidateGroups` 双源）命中则用户映射，
+  未命中走 `UserSearchProviderInterface.page` 分页搜索（新增 SPI：`UserSearchProviderInterface` / `OrgUserProviderInterface`）
+- `processInstance/bizData` —— 定义顶层 `relTableName`（回落 `name`）→ `ServiceContext::put("metaTableReader", ...)`
+  注册的读取器回显（需引入 persist 模块，未注册明确报错）

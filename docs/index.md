@@ -24,7 +24,7 @@
 | 能力 | PHP 1.0.x | 说明 |
 |------|-----------|------|
 | 引擎核心（状态机 / 聚合根 / Handler） | ✅ | 对齐 Java 参考实现 |
-| 统一门面 action | ✅ 38 个（Java 40，缺 bizData/candidatePage，对齐中，见 issues/61） | `JeeflowFacade`，code=0/msg 契约 |
+| 统一门面 action | ✅ 40 个，与 Java 对齐（issues/61 已闭环） | `JeeflowFacade`，code=0/msg 契约 |
 | PDO 持久化（MySQL 八表 / SQLite） | ✅ | `packages/repository-pdo` |
 | PSR-15 接入 | ✅ | `JeeflowRequestHandler`（web-psr） |
 | 业务数据入库（persist / persist-meta） | ⏳ 规划中 | 对应四语言 persist 模块（流程结束自动落业务表） |
