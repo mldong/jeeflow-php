@@ -9,10 +9,10 @@ use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\Repository\InMemoryProcessRepository;
 
 $repo = new InMemoryProcessRepository();     // 内存仓储（演示/测试用）
-$engine = new JeeflowEngine($repo);
-// 引擎构造可选注入：IdGeneratorInterface, ExpressionEvaluatorInterface
-// 不注入时使用默认实现
+$engine = new JeeflowEngine($repo);          // 构造只收仓储，无其他注入
 ```
+
+> SPI 装配方式：表达式 / 事务 / 用户走 `ServiceContext::put(...)`，ID 生成走仓储构造注入——见 [SPI 实现指南](./spi-guide.md)。
 
 ## 核心方法
 
@@ -35,7 +35,7 @@ foreach ($repo->findDoingTasks($inst->getInstanceId()) as $task) {
 
 ## 变量注入
 
-引擎每次操作自动注入用户信息到流程变量（需注入 `IUserProvider` SPI）。
+引擎每次操作自动注入用户信息到流程变量（需注册 `UserProviderInterface` SPI，见 [SPI 实现指南](./spi-guide.md)）。
 
 ## 状态码
 
