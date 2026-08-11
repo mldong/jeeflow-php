@@ -13,8 +13,8 @@ COPY composer.json /app/
 # 复制 demo
 COPY demo-slim/ /app/demo-slim/
 
-# 安装依赖（path repository 引用父目录的 packages/*）
-RUN cd /app/demo-slim && composer install --no-dev --no-interaction
+# 安装依赖（--no-scripts 避免 init 脚本在 autoload 就绪前执行）
+RUN cd /app/demo-slim && composer install --no-dev --no-scripts --no-interaction
 
 # 初始化 SQLite 数据库 + 部署示例流程
 RUN cd /app/demo-slim && php bin/demo-init.php
