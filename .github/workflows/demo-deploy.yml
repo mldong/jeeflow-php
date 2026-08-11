@@ -9,13 +9,23 @@ jobs:
     name: Build & Deploy PHP demo
     runs-on: ubuntu-latest
     steps:
+      # PHP demo 依赖共享流程 JSON，需 checkout jeeflow-java
+      - name: Checkout jeeflow-java
+        uses: actions/checkout@v4
+        with:
+          repository: mldong/jeeflow-java
+          path: jeeflow-java
       - name: Checkout jeeflow-php
         uses: actions/checkout@v4
         with:
           path: jeeflow-php
       - name: Build Docker image
         run: |
-          docker build -f jeeflow-php/Dockerfile.demo -t jeeflow-php-demo:latest jeeflow-php/
+          # Dockerfile.demo 期望构建上下文包含 jeeflow-java/ 和 php 源码
+          mkdir -p /tmp/demo-build
+          cp -r jeeflow-php /tmp/demo-build/
+          cp -r jeeflow-java /tmp/demo-build/
+          docker build -f /tmp/demo-build/jeeflow-php/Dockerfile.demo -t jeeflow-php-demo:latest /tmp/demo-build/
       - name: Export image
         run: |
           docker save jeeflow-php-demo:latest -o jeeflow-php-demo.tar
