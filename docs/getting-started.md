@@ -67,6 +67,6 @@ $engine = new JeeflowEngine($repo);
 ## 下一步
 
 - [引擎 API](./engine-api.md) —— `JeeflowEngine` 全部方法
-- [Facade 契约](./facade-api.md) —— 40 action 统一门面
+- [规范 06 统一门面](../../spec/06-facade) —— 统一门面 / submitType 契约
 - [SPI 实现指南](./spi-guide.md) —— 接入自己的数据库/用户体系
 - [PSR 集成](./psr-integration.md) —— 接入 Slim/Laminas/Mezzio 等框架

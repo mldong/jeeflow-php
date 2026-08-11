@@ -9,7 +9,6 @@
 | [快速开始（SDK 集成）](./getting-started.md) | Composer 安装、最小示例（内存模式 / PDO-MySQL） |
 | [流程定义 JSON 格式](./flow-definition.md) | LogicFlow 节点 / 属性 / 条件边，表达式求值器注册（PHP 特有） |
 | [引擎 API](./engine-api.md) | `JeeflowEngine` 核心方法、变量注入、状态码 |
-| [Facade 契约（40 action）](./facade-api.md) | 统一门面 action 清单、统一响应格式、submitType 枚举 |
 | [SPI 实现指南](./spi-guide.md) | 扩展点：仓储 / ID / 表达式 / 事务 / 用户 / JSON |
 | [PSR 框架集成](./psr-integration.md) | 任意 PSR-15 兼容框架接入（Slim / Laminas / Mezzio） |
 
@@ -25,7 +24,7 @@
 | 能力 | PHP 1.0.x | 说明 |
 |------|-----------|------|
 | 引擎核心（状态机 / 聚合根 / Handler） | ✅ | 对齐 Java 参考实现 |
-| 统一门面 40 action | ✅ | `JeeflowFacade`，code=0/msg 契约 |
+| 统一门面 action | ✅ 38 个（Java 40，缺 bizData/candidatePage，对齐中，见 issues/61） | `JeeflowFacade`，code=0/msg 契约 |
 | PDO 持久化（MySQL 八表 / SQLite） | ✅ | `packages/repository-pdo` |
 | PSR-15 接入 | ✅ | `JeeflowRequestHandler`（web-psr） |
 | 业务数据入库（persist / persist-meta） | ⏳ 规划中 | 对应四语言 persist 模块（流程结束自动落业务表） |

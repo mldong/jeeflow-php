@@ -42,4 +42,4 @@ foreach ($repo->findDoingTasks($inst->getInstanceId()) as $task) {
 - 实例：`10` 进行中 / `20` 已完成 / `45` 已拒绝
 - 任务：`10` 待办 / `20` 已完成 / `99` 已废弃
 
-> submitType 全枚举行为见 [Facade 契约](./facade-api.md)。
+> submitType 全枚举行为见[规范 06 统一门面](../../spec/06-facade)。
