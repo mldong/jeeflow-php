@@ -350,14 +350,21 @@ class PdoProcessRepository implements ProcessRepositoryInterface
 
     public function pageTodoTasks(PageQuery $query): PageResult
     {
-        $baseSql = ' FROM wf_process_task t LEFT JOIN wf_process_task_actor pta ON t.id = pta.process_task_id WHERE t.task_state = ?';
+        $baseSql = ' FROM wf_process_task t '
+            . 'LEFT JOIN wf_process_instance pi ON t.process_instance_id = pi.id '
+            . 'LEFT JOIN wf_process_define pd ON pi.process_define_id = pd.id '
+            . 'LEFT JOIN wf_process_task_actor pta ON t.id = pta.process_task_id '
+            . 'WHERE t.task_state = ?';
         $baseParams = [ProcessTaskState::DOING];
         return $this->pagedTaskQuery($baseSql, $baseParams, $query);
     }
 
     public function pageDoneTasks(PageQuery $query): PageResult
     {
-        $baseSql = ' FROM wf_process_task t WHERE t.task_state != ?';
+        $baseSql = ' FROM wf_process_task t '
+            . 'LEFT JOIN wf_process_instance pi ON t.process_instance_id = pi.id '
+            . 'LEFT JOIN wf_process_define pd ON pi.process_define_id = pd.id '
+            . 'WHERE t.task_state != ?';
         $baseParams = [ProcessTaskState::DOING];
         return $this->pagedTaskQuery($baseSql, $baseParams, $query);
     }
@@ -540,9 +547,11 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $countStmt->execute($allParams);
         $total = (int) $countStmt->fetchColumn();
 
-        // Fetch
+        // Fetch - include process define info
         $order = $query->getOrderBy() ?: 't.create_time DESC';
-        $sql = "SELECT DISTINCT t.*" . $baseSql . $whereSql . " ORDER BY $order LIMIT ? OFFSET ?";
+        $sql = "SELECT DISTINCT t.*, pd.name AS process_define_name, pd.display_name AS process_define_display_name, "
+            . "pd.version AS process_define_version, pi.variable AS instance_variable, pi.create_time AS instance_create_time "
+            . $baseSql . $whereSql . " ORDER BY $order LIMIT ? OFFSET ?";
         $params = array_merge($allParams, [$query->getPageSize(), $query->getOffset()]);
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
@@ -570,6 +579,12 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'createUser' => $task->getCreateUser(),
                 'updateTime' => $task->getUpdateTime(),
                 'updateUser' => $task->getUpdateUser(),
+                // Process define info (from JOIN)
+                'processDefineName' => $row['process_define_name'] ?? null,
+                'processDefineDisplayName' => $row['process_define_display_name'] ?? null,
+                'version' => $row['process_define_version'] ?? null,
+                'instanceVariable' => $row['instance_variable'] ?? null,
+                'instanceCreateTime' => $row['instance_create_time'] ?? null,
             ];
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
