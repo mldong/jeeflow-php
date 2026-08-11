@@ -37,6 +37,8 @@ jobs:
           script: |
             cd /java_projects/jeeflow/demo
             docker load -i jeeflow-php-demo.tar
-            docker-compose up -d jeeflow-php-demo
+            # Stop and remove old container if exists
+            docker stop jeeflow-php-demo 2>/dev/null && docker rm jeeflow-php-demo 2>/dev/null || true
+            docker run -d --name jeeflow-php-demo --restart always -p 16084:8090 jeeflow-php-demo:latest
             rm -f jeeflow-php-demo.tar
-            echo "✅ PHP demo deployed"
+            echo "✅ PHP demo deployed (port 16084->8090)"
