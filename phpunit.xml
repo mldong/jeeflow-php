@@ -17,6 +17,9 @@
         <testsuite name="web-contract">
             <directory>tests/WebContract</directory>
         </testsuite>
+        <testsuite name="web-psr">
+            <directory>tests/WebPsr</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>

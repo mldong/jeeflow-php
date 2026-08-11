@@ -74,3 +74,42 @@ CREATE TABLE IF NOT EXISTS wf_process_cc_instance (
   update_user         TEXT    NULL,
   PRIMARY KEY (id)
 );
+
+CREATE TABLE IF NOT EXISTS wf_process_design (
+  id            TEXT     NOT NULL,
+  name          TEXT     NOT NULL,
+  display_name  TEXT     NOT NULL,
+  type          TEXT     NULL DEFAULT 'approval',
+  icon          TEXT     NULL,
+  is_deployed   INTEGER  NULL DEFAULT 0,
+  remark        TEXT     NULL,
+  create_time   TEXT     NULL,
+  create_user   TEXT     NULL,
+  update_time   TEXT     NULL,
+  update_user   TEXT     NULL,
+  PRIMARY KEY (id)
+);
+
+CREATE TABLE IF NOT EXISTS wf_process_design_his (
+  id                TEXT    NOT NULL,
+  process_design_id TEXT    NOT NULL,
+  content           TEXT    NULL,
+  create_time       TEXT    NULL,
+  create_user       TEXT    NULL,
+  PRIMARY KEY (id)
+);
+
+CREATE TABLE IF NOT EXISTS wf_process_surrogate (
+  id            TEXT    NOT NULL,
+  process_name  TEXT    NULL,
+  operator      TEXT    NOT NULL,
+  surrogate     TEXT    NOT NULL,
+  start_time    TEXT    NULL,
+  end_time      TEXT    NULL,
+  enabled       INTEGER NULL DEFAULT 1,
+  create_time   TEXT    NULL,
+  create_user   TEXT    NULL,
+  update_time   TEXT    NULL,
+  update_user   TEXT    NULL,
+  PRIMARY KEY (id)
+);

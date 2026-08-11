@@ -73,3 +73,46 @@ CREATE TABLE IF NOT EXISTS wf_process_cc_instance (
   update_user         VARCHAR(64) NULL,
   PRIMARY KEY (id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS wf_process_design (
+  id            VARCHAR(64)  NOT NULL COMMENT '主键',
+  name          VARCHAR(100) NOT NULL COMMENT '流程编码',
+  display_name  VARCHAR(200) NOT NULL COMMENT '流程显示名称',
+  type          VARCHAR(50)  NULL DEFAULT 'approval' COMMENT '流程类型',
+  icon          VARCHAR(200) NULL COMMENT '图标',
+  is_deployed   INT          NULL DEFAULT 0 COMMENT '是否已部署(0:否；1:是)',
+  remark        TEXT         NULL COMMENT '备注',
+  create_time   DATETIME(3)  NULL COMMENT '创建时间',
+  create_user   VARCHAR(64)  NULL COMMENT '创建用户',
+  update_time   DATETIME(3)  NULL COMMENT '更新时间',
+  update_user   VARCHAR(64)  NULL COMMENT '更新用户',
+  PRIMARY KEY (id),
+  KEY idx_process_design_name (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS wf_process_design_his (
+  id                VARCHAR(64)  NOT NULL COMMENT '主键',
+  process_design_id VARCHAR(64)  NOT NULL COMMENT '流程设计ID',
+  content           TEXT         NULL COMMENT '流程模型定义',
+  create_time       DATETIME(3)  NULL COMMENT '创建时间',
+  create_user       VARCHAR(64)  NULL COMMENT '创建用户',
+  PRIMARY KEY (id),
+  KEY idx_process_design_his_pdid (process_design_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS wf_process_surrogate (
+  id            VARCHAR(64)  NOT NULL COMMENT '主键',
+  process_name  VARCHAR(100) NULL COMMENT '流程编码(为空=全部流程)',
+  operator      VARCHAR(64)  NOT NULL COMMENT '授权人',
+  surrogate     VARCHAR(64)  NOT NULL COMMENT '代理人',
+  start_time    DATETIME(3)  NULL COMMENT '授权开始时间',
+  end_time      DATETIME(3)  NULL COMMENT '授权结束时间',
+  enabled       INT          NULL DEFAULT 1 COMMENT '是否启用(1:启用；0:停用)',
+  create_time   DATETIME(3)  NULL COMMENT '创建时间',
+  create_user   VARCHAR(64)  NULL COMMENT '创建用户',
+  update_time   DATETIME(3)  NULL COMMENT '更新时间',
+  update_user   VARCHAR(64)  NULL COMMENT '更新用户',
+  PRIMARY KEY (id),
+  KEY idx_process_surrogate_op (operator),
+  KEY idx_process_surrogate_sur (surrogate)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

@@ -1,0 +1,26 @@
+{
+    "name": "mldong/jeeflow-demo-slim",
+    "description": "jeeflow PHP 引擎参考 demo（Slim 4）",
+    "type": "project",
+    "license": "MIT",
+    "require": {
+        "php": ">=8.1",
+        "slim/slim": "^4.14",
+        "slim/psr7": "^1.7",
+        "mldong/jeeflow-php": "dev-main"
+    },
+    "autoload": {
+        "psr-4": {
+            "Jeeflow\\Demo\\": "src/"
+        }
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": ".."
+        }
+    ],
+    "scripts": {
+        "start": "php -S localhost:8090 -t public"
+    }
+}
