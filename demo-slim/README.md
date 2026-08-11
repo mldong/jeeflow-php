@@ -69,6 +69,7 @@ curl -X POST http://localhost:8090/wf/processTask/execute \
 ```
 demo-slim/
 ├── composer.json         # Slim 4 + jeeflow-php 依赖
+├── smoke_test.php        # 单进程端到端冒烟测试
 └── public/
     └── index.php         # 入口：初始化引擎 + 注册路由
 ```
@@ -77,9 +78,26 @@ demo-slim/
 - **InMemoryRepository**：内存仓储（demo 用，生产环境换 `PdoProcessRepository`）
 - **8 个具名用户**：user1/userA/userB/userC/leader/manager/director/boss（与其他语言 demo 统一）
 
-## 生产环境建议
+## ⚠️ PHP 进程模型限制
+
+PHP 内置服务器（`php -S`）和 PHP-FPM 采用 **每请求独立进程** 模型，与 Java/Go/Python/Node 的常驻进程不同：
+
+| 运行方式 | 进程模型 | InMemory 共享 |
+|----------|----------|---------------|
+| `php -S`（内置 dev server） | 每请求新进程 | ❌ 不共享 |
+| PHP-FPM + Nginx | 进程池，跨 worker 不共享 | ⚠️ 有限 |
+| Swoole / RoadRunner | 常驻内存 | ✅ 完全共享 |
+
+**因此**：
+- 本 demo 使用 `InMemoryRepository`，**仅适合单进程验证**（如 `smoke_test.php`）
+- 跨请求的完整流程（发起→审批→定稿）在 HTTP 模式下无法保持状态
+- **生产环境必须使用 `PdoProcessRepository`（MySQL）**
+
+## 生产环境部署
 
 1. 替换 `InMemoryRepository` 为 `PdoProcessRepository`（MySQL）
-2. 添加真实事务模板（`TransactionTemplateInterface`）
-3. 接入用户/组织服务（`IUserProvider` SPI）
-4. 添加认证/授权中间件
+2. 执行 `packages/repository-pdo/sql/schema-mysql.sql` 建表
+3. 添加真实事务模板（`TransactionTemplateInterface`）
+4. 接入用户/组织服务（`IUserProvider` SPI）
+5. 添加认证/授权中间件
+6. 使用 PHP-FPM + Nginx 或 Swoole/RoadRunner 部署
