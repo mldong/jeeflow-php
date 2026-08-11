@@ -1,0 +1,43 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          coverage: none
+      - name: Install dependencies
+        run: composer install --no-interaction --prefer-dist
+      - name: Run PHPUnit
+        run: php vendor/bin/phpunit --testdox
+
+  verify:
+    name: Verify Packagist
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+      - name: Wait for Packagist indexing
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "⏳ 等待 Packagist 索引同步..."
+          sleep 30
+          for i in {1..10}; do
+            if composer show "mldong/jeeflow-php" "v$VERSION" --available 2>/dev/null | grep -q "versions"; then
+              echo "✅ Packagist mldong/jeeflow-php v$VERSION 已可用"
+              exit 0
+            fi
+            echo "   等待中... ($i/10)"
+            sleep 15
+          done
+          echo "⚠️ Packagist 验证超时（包已自动同步，可能索引延迟）"

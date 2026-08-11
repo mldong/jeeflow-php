@@ -1,0 +1,26 @@
+# jeeflow-php demo Docker 镜像
+FROM php:8.1-cli
+
+# 安装 Composer
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+WORKDIR /app
+
+# 复制引擎源码（构建上下文 = jeeflow-php/ 根目录）
+COPY packages/ /app/packages/
+COPY composer.json /app/
+
+# 复制 demo
+COPY demo-slim/ /app/demo-slim/
+
+# 安装依赖（path repository 引用父目录的 packages/*）
+RUN cd /app/demo-slim && composer install --no-dev --no-interaction
+
+# 初始化 SQLite 数据库 + 部署示例流程
+RUN cd /app/demo-slim && php bin/demo-init.php
+
+EXPOSE 8090
+
+# php -S 必须绑定 0.0.0.0（容器内 localhost 外部不可达）
+CMD ["php", "-S", "0.0.0.0:8090", "-t", "public"]
+WORKDIR /app/demo-slim
