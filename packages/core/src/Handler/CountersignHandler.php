@@ -6,6 +6,7 @@ namespace Jeeflow\Core\Handler;
 
 use Jeeflow\Core\Execution;
 use Jeeflow\Core\Domain\FlowData;
+use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
