@@ -380,10 +380,13 @@ class JeeflowFacade
                 $model = ModelParser::parse((string) ($def['content'] ?? ''));
                 $node = $model->getNode($task->getTaskName());
                 if ($node !== null) {
+                    // issues/62：taskModel 补 form/ext（字段权限，对齐 boot2 setTaskModel）
                     $vo['taskModel'] = [
                         'name' => $node->getName(),
                         'displayName' => $node->getDisplayName(),
                         'type' => $node instanceof TaskModel ? 'task' : 'unknown',
+                        'form' => $node instanceof TaskModel ? ($node->getForm() ?: null) : null,
+                        'ext' => $node instanceof TaskModel ? $node->getExt()->toArray() : null,
                     ];
                 }
             } catch (\Throwable $ignored) {}
