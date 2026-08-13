@@ -824,11 +824,42 @@ class JeeflowFacade
         return $this->extRepository;
     }
 
+    // issues/63：时间格式化（§2.4 契约 yyyy-MM-dd HH:mm:ss）
+    private function fmtTime(mixed $v): ?string
+    {
+        if ($v === null || $v === '') return null;
+        if ($v instanceof \DateTimeInterface) return $v->format('Y-m-d H:i:s');
+        if (is_string($v) && preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $v)) return $v;
+        $ts = is_string($v) ? strtotime($v) : false;
+        return $ts !== false ? date('Y-m-d H:i:s', $ts) : (string) $v;
+    }
+
+    // issues/63：设计行转换（兼容 PDO snake_case / InMemory camelCase）
+    private function designRowToMap(array $row): array
+    {
+        return [
+            'id' => $row['id'] ?? null,
+            'name' => $row['name'] ?? '',
+            'displayName' => $row['displayName'] ?? $row['display_name'] ?? '',
+            'type' => $row['type'] ?? '',
+            'icon' => $row['icon'] ?? null,
+            'isDeployed' => (int) ($row['isDeployed'] ?? $row['is_deployed'] ?? 0),
+            'remark' => $row['remark'] ?? null,
+            'createTime' => $this->fmtTime($row['createTime'] ?? $row['create_time'] ?? null),
+            'createUser' => $row['createUser'] ?? $row['create_user'] ?? null,
+            'updateTime' => $this->fmtTime($row['updateTime'] ?? $row['update_time'] ?? null),
+            'updateUser' => $row['updateUser'] ?? $row['update_user'] ?? null,
+        ];
+    }
+
     private function designPage(array $args): array
     {
         $ext = $this->requireExt();
         $query = $this->queryParser->parse($args);
-        return $this->pageResult($ext->pageDesigns($query));
+        $page = $ext->pageDesigns($query);
+        $result = $page->toArray();
+        $result['rows'] = array_map([$this, 'designRowToMap'], $page->getRows());
+        return $this->ok($result);
     }
 
     private function designDetail(array $args): array

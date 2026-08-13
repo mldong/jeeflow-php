@@ -129,6 +129,15 @@ class JeeflowFacadeExtTest extends TestCase
         $page = $this->facade->flow('processDesign/page', ['pageNum' => 1, 'pageSize' => 10]);
         $this->assertEquals(0, $page['code']);
         $this->assertEquals(2, $page['data']['recordCount']);
+
+        // issues/63：时间格式应为 yyyy-MM-dd HH:mm:ss
+        $timeRe = '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/';
+        foreach ($page['data']['rows'] as $row) {
+            $this->assertMatchesRegularExpression($timeRe, $row['createTime'], "createTime should be yyyy-MM-dd HH:mm:ss, got {$row['createTime']}");
+            $this->assertMatchesRegularExpression($timeRe, $row['updateTime'], "updateTime should be yyyy-MM-dd HH:mm:ss, got {$row['updateTime']}");
+            // 确认列名为 camelCase
+            $this->assertArrayHasKey('displayName', $row, 'row should have camelCase displayName');
+        }
     }
 
     public function testDesignRemove(): void
