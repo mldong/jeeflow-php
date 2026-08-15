@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Jeeflow\Core\Model;
 
 use Jeeflow\Core\Execution;
+use Jeeflow\Core\Interceptor\FlowInterceptorRegistry;
+use Jeeflow\Core\JeeflowException;
 
 /**
  * 节点模型抽象基类
@@ -27,8 +29,45 @@ abstract class NodeModel extends BaseModel
     public function execute(Execution $execution): void
     {
         $execution->setNodeModel($this);
+        $this->execPreInterceptors($execution);
         $this->exec($execution);
+        // 流转时 CreateTaskHandler 会改写 nodeModel；post 必须看回本节点
         $execution->setNodeModel($this);
+        $this->execPostInterceptors($execution);
+    }
+
+    private function execPreInterceptors(Execution $execution): void
+    {
+        $csv = $this->preInterceptors !== ''
+            ? $this->preInterceptors
+            : ($execution->getProcessModel()?->getPreInterceptors() ?? '');
+        $this->runInterceptors($csv, $execution);
+    }
+
+    private function execPostInterceptors(Execution $execution): void
+    {
+        $csv = $this->postInterceptors !== ''
+            ? $this->postInterceptors
+            : ($execution->getProcessModel()?->getPostInterceptors() ?? '');
+        $this->runInterceptors($csv, $execution);
+    }
+
+    private function runInterceptors(string $csv, Execution $execution): void
+    {
+        if (trim($csv) === '') {
+            return;
+        }
+        foreach (explode(',', $csv) as $raw) {
+            $name = trim($raw);
+            if ($name === '') {
+                continue;
+            }
+            $interceptor = FlowInterceptorRegistry::resolve($name);
+            if ($interceptor === null) {
+                throw new JeeflowException('拦截器未注册: ' . $name);
+            }
+            $interceptor->intercept($execution);
+        }
     }
 
     /** 执行所有输出边 */

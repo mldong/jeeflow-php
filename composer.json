@@ -19,7 +19,8 @@
             "Jeeflow\\Core\\": "packages/core/src/",
             "Jeeflow\\RepositoryPDO\\": "packages/repository-pdo/src/",
             "Jeeflow\\WebContract\\": "packages/web-contract/src/",
-            "Jeeflow\\WebPsr\\": "packages/web-psr/src/"
+            "Jeeflow\\WebPsr\\": "packages/web-psr/src/",
+            "Jeeflow\\Persist\\": "packages/persist/src/"
         }
     },
     "autoload-dev": {
@@ -32,6 +33,7 @@
         "test-core": "phpunit --testsuite core",
         "test-pdo": "phpunit --testsuite repository-pdo",
         "test-contract": "phpunit --testsuite web-contract",
-        "test-psr": "phpunit --testsuite web-psr"
+        "test-psr": "phpunit --testsuite web-psr",
+        "test-persist": "phpunit --testsuite persist"
     }
 }

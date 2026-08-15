@@ -17,6 +17,7 @@ use Jeeflow\Core\Parser\ModelParser;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
+use Jeeflow\Core\Util\FlowUtil;
 
 /**
  * 工作流引擎实现 —— 薄编排层
@@ -178,6 +179,7 @@ class JeeflowEngine implements JeeflowEngineInterface
         $model = ModelParser::parse((string) $define['content']);
 
         if ($args === null) $args = FlowData::create();
+        FlowUtil::filterFieldByPerm($args, $model, $task->getTaskName());
 
         // 完成任务——聚合根内部修改了 instance 中的 task 状态
         $instance->completeTask($taskId, $operator, $args);

@@ -20,6 +20,9 @@
         <testsuite name="web-psr">
             <directory>tests/WebPsr</directory>
         </testsuite>
+        <testsuite name="persist">
+            <directory>tests/Persist</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>
