@@ -210,9 +210,9 @@ class PdoProcessRepository implements ProcessRepositoryInterface
     {
         return $this->pagedQuery('wf_process_instance', 't', $query, function ($row) {
             return [
-                'id' => $row['id'],
-                'parentId' => $row['parent_id'],
-                'processDefineId' => $row['process_define_id'],
+                'id' => PdoValue::strId($row['id']) ?? '',
+                'parentId' => PdoValue::strId($row['parent_id']),
+                'processDefineId' => PdoValue::strId($row['process_define_id']),
                 'state' => (int) $row['state'],
                 'parentNodeName' => $row['parent_node_name'],
                 'businessNo' => $row['business_no'],
@@ -220,9 +220,9 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'variable' => json_decode((string)($row['variable'] ?? '{}'), true) ?: [],
                 'ext' => json_decode((string)($row['variable'] ?? '{}'), true) ?: [],
                 'createTime' => $row['create_time'],
-                'createUser' => $row['create_user'],
+                'createUser' => PdoValue::strId($row['create_user']),
                 'updateTime' => $row['update_time'],
-                'updateUser' => $row['update_user'],
+                'updateUser' => PdoValue::strId($row['update_user']),
                 'expireTime' => $row['expire_time'],
             ];
         });
@@ -413,19 +413,18 @@ class PdoProcessRepository implements ProcessRepositoryInterface
 
         // Fetch
         $order = $query->getOrderBy() ?: 't.create_time DESC';
-        $sql = "SELECT t.* FROM wf_process_cc_instance t WHERE 1=1" . $whereSql . " ORDER BY $order LIMIT ? OFFSET ?";
-        $params[] = $query->getPageSize();
-        $params[] = $query->getOffset();
+        $sql = "SELECT t.* FROM wf_process_cc_instance t WHERE 1=1" . $whereSql . " ORDER BY $order"
+            . SqlPaging::clause($query->getPageSize(), $query->getOffset());
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
         $rows = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
             $rows[] = [
-                'processInstanceId' => $row['process_instance_id'],
-                'actorId' => $row['actor_id'],
+                'processInstanceId' => PdoValue::strId($row['process_instance_id']),
+                'actorId' => PdoValue::strId($row['actor_id']),
                 'state' => (int) $row['state'],
                 'createTime' => $row['create_time'],
-                'createUser' => $row['create_user'],
+                'createUser' => PdoValue::strId($row['create_user']),
             ];
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
@@ -436,7 +435,7 @@ class PdoProcessRepository implements ProcessRepositoryInterface
     private function defineRow(array $row): array
     {
         return [
-            'id' => $row['id'],
+            'id' => PdoValue::strId($row['id']) ?? '',
             'name' => $row['name'],
             'displayName' => $row['display_name'],
             'type' => $row['type'],
@@ -444,29 +443,29 @@ class PdoProcessRepository implements ProcessRepositoryInterface
             'content' => $row['content'],
             'version' => (int) $row['version'],
             'createTime' => $row['create_time'] ?? null,
-            'createUser' => $row['create_user'] ?? null,
+            'createUser' => PdoValue::strId($row['create_user'] ?? null),
             'updateTime' => $row['update_time'] ?? null,
-            'updateUser' => $row['update_user'] ?? null,
+            'updateUser' => PdoValue::strId($row['update_user'] ?? null),
         ];
     }
 
     private function hydrateInstance(array $row): ProcessInstance
     {
         $instance = new ProcessInstance();
-        $instance->setInstanceId($row['id']);
-        $instance->setParentId($row['parent_id']);
-        $instance->setDefineId($row['process_define_id']);
+        $instance->setInstanceId(PdoValue::strId($row['id']));
+        $instance->setParentId(PdoValue::strId($row['parent_id']));
+        $instance->setDefineId(PdoValue::strId($row['process_define_id']));
         $instance->setState((int) $row['state']);
         $instance->setParentNodeName($row['parent_node_name']);
         $instance->setBusinessNo($row['business_no']);
-        $instance->setOperator($row['operator'] ?? '');
+        $instance->setOperator(PdoValue::strId($row['operator'] ?? '') ?? '');
         $instance->setExpireTime($row['expire_time']);
         $vars = json_decode((string) ($row['variable'] ?? '{}'), true) ?: [];
         $instance->setVariables(FlowData::of($vars));
         $instance->setCreateTime($row['create_time']);
-        $instance->setCreateUser($row['create_user']);
+        $instance->setCreateUser(PdoValue::strId($row['create_user']));
         $instance->setUpdateTime($row['update_time']);
-        $instance->setUpdateUser($row['update_user']);
+        $instance->setUpdateUser(PdoValue::strId($row['update_user']));
         return $instance;
     }
 
@@ -476,31 +475,34 @@ class PdoProcessRepository implements ProcessRepositoryInterface
     private function hydrateTask(array $row): ProcessTask
     {
         $task = new ProcessTask();
-        $task->setTaskId($row['id']);
-        $task->setProcessInstanceId($row['process_instance_id']);
+        $task->setTaskId(PdoValue::strId($row['id']));
+        $task->setProcessInstanceId(PdoValue::strId($row['process_instance_id']));
         $task->setTaskName($row['task_name']);
         $task->setDisplayName($row['display_name']);
         $task->setTaskType($row['task_type'] !== null ? (int) $row['task_type'] : null);
         $task->setPerformType($row['perform_type'] !== null ? (int) $row['perform_type'] : null);
         $task->setTaskState((int) ($row['task_state'] ?? ProcessTaskState::DOING));
-        $task->setActorId($row['operator']);
+        $task->setActorId(PdoValue::strId($row['operator']));
         $task->setFinishTime($row['finish_time']);
         $task->setExpireTime($row['expire_time']);
         $task->setFormKey($row['form_key']);
-        $task->setParentTaskId($row['task_parent_id']);
+        $task->setParentTaskId(PdoValue::strId($row['task_parent_id']));
         $vars = json_decode((string) ($row['variable'] ?? '{}'), true) ?: [];
         $task->setVariables(FlowData::of($vars));
         $task->setCreateTime($row['create_time']);
-        $task->setCreateUser($row['create_user']);
+        $task->setCreateUser(PdoValue::strId($row['create_user']));
         $task->setUpdateTime($row['update_time']);
-        $task->setUpdateUser($row['update_user']);
+        $task->setUpdateUser(PdoValue::strId($row['update_user']));
 
         // 加载 actorIds
         $actorStmt = $this->pdo->prepare('SELECT actor_id FROM wf_process_task_actor WHERE process_task_id = ?');
-        $actorStmt->execute([$row['id']]);
+        $actorStmt->execute([(string) $row['id']]);
         $actorIds = [];
         while ($actorRow = $actorStmt->fetch(\PDO::FETCH_ASSOC)) {
-            $actorIds[] = $actorRow['actor_id'];
+            $id = PdoValue::strId($actorRow['actor_id']);
+            if ($id !== null) {
+                $actorIds[] = $id;
+            }
         }
         $task->setActorIds($actorIds);
 
@@ -526,10 +528,10 @@ class PdoProcessRepository implements ProcessRepositoryInterface
 
         // Fetch
         $order = $query->getOrderBy() ?: "$alias.create_time DESC";
-        $sql = "SELECT $alias.* FROM $table $alias WHERE 1=1" . $whereSql . " ORDER BY $order LIMIT ? OFFSET ?";
-        $params = array_merge($whereParams, [$query->getPageSize(), $query->getOffset()]);
+        $sql = "SELECT $alias.* FROM $table $alias WHERE 1=1" . $whereSql . " ORDER BY $order"
+            . SqlPaging::clause($query->getPageSize(), $query->getOffset());
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
+        $stmt->execute($whereParams);
         $rows = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
             $rows[] = $rowMapper($row);
@@ -551,10 +553,10 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $order = $query->getOrderBy() ?: 't.create_time DESC';
         $sql = "SELECT DISTINCT t.*, pd.name AS process_define_name, pd.display_name AS process_define_display_name, "
             . "pd.version AS process_define_version, pi.variable AS instance_variable, pi.create_time AS instance_create_time "
-            . $baseSql . $whereSql . " ORDER BY $order LIMIT ? OFFSET ?";
-        $params = array_merge($allParams, [$query->getPageSize(), $query->getOffset()]);
+            . $baseSql . $whereSql . " ORDER BY $order"
+            . SqlPaging::clause($query->getPageSize(), $query->getOffset());
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
+        $stmt->execute($allParams);
         $rows = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
             $task = $this->hydrateTask($row);

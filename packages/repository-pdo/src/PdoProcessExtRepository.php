@@ -36,11 +36,15 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
 
         $total = (int) $this->pdo->query('SELECT COUNT(*) FROM wf_process_design')->fetchColumn();
 
-        $stmt = $this->pdo->prepare(
-            'SELECT * FROM wf_process_design ORDER BY create_time DESC LIMIT ? OFFSET ?'
-        );
-        $stmt->execute([$limit, $offset]);
-        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        $sql = 'SELECT * FROM wf_process_design ORDER BY create_time DESC'
+            . SqlPaging::clause((int) $limit, (int) $offset);
+        $rows = $this->pdo->query($sql)->fetchAll(\PDO::FETCH_ASSOC);
+        foreach ($rows as &$row) {
+            if (isset($row['id'])) {
+                $row['id'] = (string) $row['id'];
+            }
+        }
+        unset($row);
 
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
     }
@@ -185,11 +189,15 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
 
         $total = (int) $this->pdo->query('SELECT COUNT(*) FROM wf_process_surrogate')->fetchColumn();
 
-        $stmt = $this->pdo->prepare(
-            'SELECT * FROM wf_process_surrogate ORDER BY create_time DESC LIMIT ? OFFSET ?'
-        );
-        $stmt->execute([$limit, $offset]);
-        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
+        $sql = 'SELECT * FROM wf_process_surrogate ORDER BY create_time DESC'
+            . SqlPaging::clause((int) $limit, (int) $offset);
+        $rows = $this->pdo->query($sql)->fetchAll(\PDO::FETCH_ASSOC);
+        foreach ($rows as &$row) {
+            if (isset($row['id'])) {
+                $row['id'] = (string) $row['id'];
+            }
+        }
+        unset($row);
 
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
     }
