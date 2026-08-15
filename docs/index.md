@@ -21,7 +21,7 @@
 
 ## 能力对照（vs 四语言 v1.8.x）
 
-| 能力 | PHP 1.0.x | 说明 |
+| 能力 | PHP 1.1.x | 说明 |
 |------|-----------|------|
 | 引擎核心（状态机 / 聚合根 / Handler） | ✅ | 对齐 Java 参考实现 |
 | 统一门面 action | ✅ 40 个，与 Java 对齐（issues/61 已闭环） | `JeeflowFacade`，code=0/msg 契约 |
@@ -33,5 +33,5 @@
 ## 相关
 
 - 引擎规范（唯一事实来源）：[规范总览](../../spec/)
-- 发布通道：Packagist（`mldong/jeeflow-php`），独立版本线（当前 1.0.x），版本号与四语言不对齐，对齐的是 API 契约
+- 发布通道：Packagist（`mldong/jeeflow-php`），独立版本线（当前 1.1.x），版本号与四语言不对齐，对齐的是 API 契约
 - 设计原理 / 通用指南：[jeeflow-doc](../../)

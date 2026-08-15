@@ -58,7 +58,7 @@ curl -s -X POST http://localhost:8090/wf/processDefine/startAndExecute \
 php demo-slim/smoke_test.php
 ```
 
-> 引擎行为验证以该脚本 + PHPUnit（186 tests / 694 assertions）为准。
+> 引擎行为验证以该脚本 + PHPUnit（195 tests / 736 assertions）为准。
 
 ## ⚠️ 内置服务器（php -S）的限制
 
