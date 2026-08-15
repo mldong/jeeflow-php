@@ -181,9 +181,10 @@ class PdoDynamicTableWriter implements DynamicTableWriter
             $stmt->execute([$tableName]);
             $cols = [];
             foreach ($stmt->fetchAll(\PDO::FETCH_ASSOC) as $r) {
+                $r = array_change_key_case($r, CASE_LOWER);
                 $extra = strtolower((string) ($r['extra'] ?? ''));
                 $cols[] = [
-                    'name' => (string) $r['column_name'],
+                    'name' => (string) ($r['column_name'] ?? ''),
                     'pk' => strtoupper((string) ($r['column_key'] ?? '')) === 'PRI',
                     'auto' => str_contains($extra, 'auto_increment'),
                 ];
