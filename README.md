@@ -10,6 +10,7 @@ jeeflow 是一个零框架依赖的轻量工作流引擎，PHP 版与 Java / Go 
 packages/
 ├── core/              引擎聚合根、状态机、流程执行、SPI
 ├── repository-pdo/    MySQL/PDO 持久化
+├── persist/           ARCHIVE/SYNC 写侧（PersistPostInterceptor）
 ├── web-contract/      40 action 的 Facade、DTO、错误码与契约测试
 └── web-psr/           可选 PSR HTTP adapter
 demo-slim/             PHP 引擎参考 demo（Slim 4）
@@ -38,7 +39,7 @@ composer test
 
 ## 状态
 
-**E3 完成** · 186 tests · 694 assertions · 全绿
+**E3 完成** · 当前 **v1.1.2** · `composer test` 213 tests 全绿（含 T1 MySQL 冒烟）
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
@@ -56,6 +57,14 @@ composer test
 - **扩展仓储**：IProcessExtRepository + InMemoryProcessExtRepository
 - **PSR adapter**：JeeflowRequestHandler（PSR-15）+ ResponseFactory（nyholm/psr7）
 - **参考 demo**：demo-slim（Slim 4，预部署 3 个示例流程）
+- **persist 写侧**（v1.1.2）：`packages/persist` + core 调度 `postInterceptors`（issues/69）
+
+### v1.1.2（2026-08-15）
+
+- issues/67：PDO 分页 `LIMIT` 内联整数（不再 bind 成 `LIMIT '5'`）
+- issues/68：hydrate 主键转 string（避免 `setTaskId(?string)` TypeError）
+- issues/69：`FlowInterceptor` 调度 + ARCHIVE/SYNC 写侧；MySQL `information_schema` 列名大小写
+- T1 MySQL 冒烟：`composer test-mysql`（M1–M4；`SKIP_MYSQL=1` 可跳过）
 
 ### issues/61 闭环（v1.1.0）
 

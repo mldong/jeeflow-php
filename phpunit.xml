@@ -23,6 +23,9 @@
         <testsuite name="persist">
             <directory>tests/Persist</directory>
         </testsuite>
+        <testsuite name="mysql-smoke">
+            <directory>tests/MysqlSmoke</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>
