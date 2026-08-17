@@ -282,7 +282,7 @@ class JeeflowFacade
             'parentNodeName' => $inst->getParentNodeName(),
             'businessNo' => $inst->getBusinessNo(),
             'operator' => $inst->getOperator(),
-            'variables' => $inst->getVariables()->toArray(),
+            'variables' => $inst->getVariables()->toArray() ?: (object)[],
             'formData' => $this->formDataOf($inst->getVariables()->toArray(), FlowConst::FORM_DATA_PREFIX),
             'createTime' => $inst->getCreateTime(),
             'createUser' => $inst->getCreateUser(),
@@ -592,7 +592,7 @@ class JeeflowFacade
             'activeNodeNames' => $activeNodeNames,
             'historyNodeNames' => $historyNodeNames,
             'historyEdgeNames' => $historyEdgeNames,
-            'nodeProgress' => $nodeProgress,
+            'nodeProgress' => $nodeProgress ?: (object)[],
         ]);
     }
 
@@ -612,8 +612,8 @@ class JeeflowFacade
                 'taskState' => $t->getTaskState(),
                 'operator' => $t->getActorId(),
                 'finishTime' => $t->getFinishTime(),
-                'variable' => $t->getVariables()->toArray(),
-                'ext' => $t->getVariables()->toArray(),
+                'variable' => $t->getVariables()->toArray() ?: (object)[],
+                'ext' => $t->getVariables()->toArray() ?: (object)[],
             ];
         }
         return $this->ok($rows);
@@ -723,7 +723,7 @@ class JeeflowFacade
         return null;
     }
 
-    private function formDataOf(array $variables, string $prefix): array
+    private function formDataOf(array $variables, string $prefix): array|\stdClass
     {
         $result = [];
         foreach ($variables as $k => $v) {
@@ -734,7 +734,7 @@ class JeeflowFacade
                 $result[$stripped] = $v;
             }
         }
-        return $result;
+        return $result ?: (object)[];
     }
 
     private function buildNodeProgress(array $historyTasks): array
@@ -1037,7 +1037,7 @@ class JeeflowFacade
                 $def = $this->repository->findLatestDefineByName($d['name'] ?? '');
                 $his = $ext->findLatestDesignHis($d['id'] ?? '');
                 $result[$type][] = [
-                    'processDesignId' => $d['id'],
+                    'processDesignId' => (string) ($d['id'] ?? ''),
                     'name' => $d['name'] ?? '',
                     'displayName' => $d['displayName'] ?? '',
                     'icon' => $d['icon'] ?? null,
