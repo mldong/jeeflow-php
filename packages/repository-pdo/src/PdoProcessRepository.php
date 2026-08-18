@@ -425,23 +425,28 @@ class PdoProcessRepository implements ProcessRepositoryInterface
 
     public function pageCcInstances(PageQuery $query): PageResult
     {
-        $baseSql = ' FROM wf_process_cc_instance t WHERE 1=1';
-        $params = [];
         [$whereSql, $whereParams] = $this->buildConditions($query);
-        $baseSql .= $whereSql;
-        $params = array_merge($params, $whereParams);
 
-        // Count
-        $countStmt = $this->pdo->prepare("SELECT COUNT(*) FROM wf_process_cc_instance t WHERE 1=1" . $whereSql);
-        $countStmt->execute($params);
+        // Count (JOIN to match Java engine behavior)
+        $countSql = "SELECT COUNT(*) FROM wf_process_cc_instance t "
+            . "LEFT JOIN wf_process_instance pi ON t.process_instance_id = pi.id "
+            . "LEFT JOIN wf_process_define pd ON pi.process_define_id = pd.id "
+            . "WHERE 1=1" . $whereSql;
+        $countStmt = $this->pdo->prepare($countSql);
+        $countStmt->execute($whereParams);
         $total = (int) $countStmt->fetchColumn();
 
-        // Fetch
+        // Fetch with JOINs for displayName/version
         $order = $query->getOrderBy() ?: 't.create_time DESC';
-        $sql = "SELECT t.* FROM wf_process_cc_instance t WHERE 1=1" . $whereSql . " ORDER BY $order"
+        $sql = "SELECT t.*, pd.display_name AS process_define_display_name, pd.name AS process_define_name, "
+            . "pd.version AS process_define_version, pi.operator AS instance_operator "
+            . "FROM wf_process_cc_instance t "
+            . "LEFT JOIN wf_process_instance pi ON t.process_instance_id = pi.id "
+            . "LEFT JOIN wf_process_define pd ON pi.process_define_id = pd.id "
+            . "WHERE 1=1" . $whereSql . " ORDER BY $order"
             . SqlPaging::clause($query->getPageSize(), $query->getOffset());
         $stmt = $this->pdo->prepare($sql);
-        $stmt->execute($params);
+        $stmt->execute($whereParams);
         $rows = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
             $rows[] = [
@@ -450,6 +455,11 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'state' => (int) $row['state'],
                 'createTime' => $row['create_time'],
                 'createUser' => PdoValue::strId($row['create_user']),
+                // JOIN fields for frontend display
+                'displayName' => $row['process_define_display_name'] ?? null,
+                'processDefineName' => $row['process_define_name'] ?? null,
+                'version' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
+                'operator' => PdoValue::strId($row['instance_operator'] ?? null),
             ];
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
