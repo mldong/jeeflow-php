@@ -10,6 +10,7 @@ use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
+use Jeeflow\Core\ServiceContext;
 
 /**
  * 创建任务处理器
@@ -108,6 +109,28 @@ class CreateTaskHandler implements HandlerInterface
                     }
                 } elseif (!in_array($token, $actors, true)) {
                     $actors[] = $token;
+                }
+            }
+        }
+
+        // 3. 动态指派处理器 assignmentHandler（actors 为空时才生效，对齐 Java L120-140）
+        if ($actors === []) {
+            $handlerName = $this->taskModel->getAssignmentHandler();
+            if ($handlerName !== '') {
+                $registry = ServiceContext::find(AssignmentHandlerRegistry::class);
+                if ($registry !== null) {
+                    $handler = $registry->resolve($handlerName);
+                    if ($handler !== null) {
+                        $result = $handler->assign($execution);
+                        if ($result !== null && $result !== '') {
+                            foreach (explode(',', $result) as $a) {
+                                $t = trim($a);
+                                if ($t !== '' && !in_array($t, $actors, true)) {
+                                    $actors[] = $t;
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

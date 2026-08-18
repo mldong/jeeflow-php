@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Jeeflow\Core\Parser;
 
 use Jeeflow\Core\Domain\FlowData;
+use Jeeflow\Core\Enum\CountersignType;
+use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\Model\LogicFlow\LfNode;
 use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\TaskModel;
@@ -22,7 +24,7 @@ class TaskNodeParser extends AbstractNodeParser
         $model->setAssignee((string) ($p[self::ASSIGNEE_KEY] ?? ''));
         $model->setAssignmentHandler((string) ($p[self::ASSIGNMENT_HANDLE_KEY] ?? ''));
         $model->setTaskType(isset($p[self::TASK_TYPE_KEY]) ? (int) $p[self::TASK_TYPE_KEY] : null);
-        $model->setPerformType(isset($p[self::PERFORM_TYPE_KEY]) ? (int) $p[self::PERFORM_TYPE_KEY] : null);
+        $model->setPerformType(isset($p[self::PERFORM_TYPE_KEY]) ? PerformType::from($p[self::PERFORM_TYPE_KEY]) : null);
         $model->setReminderTime((string) ($p[self::REMINDER_TIME_KEY] ?? ''));
         $model->setReminderRepeat((string) ($p[self::REMINDER_REPEAT_KEY] ?? ''));
         $model->setExpireTime((string) ($p[self::EXPIRE_TIME_KEY] ?? ''));
@@ -47,8 +49,7 @@ class TaskNodeParser extends AbstractNodeParser
         // countersignType 同时设到模型字段
         if (isset($p[self::EXT_FIELD_COUNTERSIGN_TYPE_KEY])) {
             $csType = $p[self::EXT_FIELD_COUNTERSIGN_TYPE_KEY];
-            // Java 端 'ALL' → 1 (COUNTERSIGN), 'ANY' → 2 等; 这里直接存原始值
-            $model->setCountersignType(is_numeric($csType) ? (int) $csType : null);
+            $model->setCountersignType(CountersignType::from($csType));
         }
         if (isset($p[self::EXT_FIELD_COUNTERSIGN_COMPLETION_CONDITION_KEY])) {
             $model->setCountersignCompletionCondition((string) $p[self::EXT_FIELD_COUNTERSIGN_COMPLETION_CONDITION_KEY]);

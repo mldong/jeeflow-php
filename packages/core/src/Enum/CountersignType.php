@@ -12,6 +12,21 @@ final class CountersignType
     public const PARALLEL = 0;  // 并行会签
     public const SERIAL = 1;    // 串行会签
 
+    public static function from(mixed $value): int
+    {
+        if (is_string($value)) {
+            $upper = strtoupper($value);
+            if ($upper === 'PARALLEL' || $upper === 'ALL') {
+                return self::PARALLEL;
+            }
+            if ($upper === 'SEQUENTIAL' || $upper === 'SORT' || $upper === 'SERIAL') {
+                return self::SERIAL;
+            }
+            return (int) $value;
+        }
+        return (int) $value;
+    }
+
     public static function label(int $code): string
     {
         return match ($code) {
