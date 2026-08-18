@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Jeeflow\Tests\Core;
 
+use Jeeflow\Core\Enum\CountersignType;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
+use Jeeflow\Core\Enum\TaskType;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -64,12 +66,48 @@ class EnumTest extends TestCase
         $this->assertSame(20, SubmitType::COUNTERSIGN_DISAGREE);
     }
 
+    public function testSubmitTypeLabels(): void
+    {
+        $this->assertSame('发起申请', SubmitType::label(SubmitType::APPLY));
+        $this->assertSame('同意申请', SubmitType::label(SubmitType::AGREE));
+        $this->assertSame('拒绝申请', SubmitType::label(SubmitType::REJECT));
+        $this->assertSame('退回上一步', SubmitType::label(SubmitType::ROLLBACK));
+        $this->assertSame('跳转', SubmitType::label(SubmitType::JUMP));
+        $this->assertSame('重新提交', SubmitType::label(SubmitType::RE_APPLY));
+        $this->assertSame('退回发起人', SubmitType::label(SubmitType::ROLLBACK_TO_OPERATOR));
+        $this->assertStringContainsString('未知', SubmitType::label(999));
+    }
+
+    // ═══ TaskType ═══
+
+    public function testTaskTypeValues(): void
+    {
+        $this->assertSame(0, TaskType::MAIN);
+        $this->assertSame(1, TaskType::ASSIST);
+        $this->assertSame(2, TaskType::RECORD);
+    }
+
+    public function testTaskTypeLabels(): void
+    {
+        $this->assertSame('主办', TaskType::label(TaskType::MAIN));
+        $this->assertSame('协办', TaskType::label(TaskType::ASSIST));
+        $this->assertSame('记录', TaskType::label(TaskType::RECORD));
+        $this->assertStringContainsString('未知', TaskType::label(999));
+    }
+
     // ═══ PerformType ═══
 
     public function testPerformTypeValues(): void
     {
         $this->assertSame(0, PerformType::NORMAL);
         $this->assertSame(1, PerformType::COUNTERSIGN);
+    }
+
+    public function testPerformTypeLabels(): void
+    {
+        $this->assertSame('普通参与', PerformType::label(PerformType::NORMAL));
+        $this->assertSame('会签参与', PerformType::label(PerformType::COUNTERSIGN));
+        $this->assertStringContainsString('未知', PerformType::label(999));
     }
 
     public function testPerformTypeFromInt(): void
@@ -85,6 +123,21 @@ class EnumTest extends TestCase
         $this->assertSame(1, PerformType::from('ALL'));
         $this->assertSame(1, PerformType::from('countersign'));
         $this->assertSame(1, PerformType::from('COUNTERSIGN'));
+    }
+
+    // ═══ CountersignType ═══
+
+    public function testCountersignTypeValues(): void
+    {
+        $this->assertSame(0, CountersignType::PARALLEL);
+        $this->assertSame(1, CountersignType::SERIAL);
+    }
+
+    public function testCountersignTypeLabels(): void
+    {
+        $this->assertSame('并行会签', CountersignType::label(CountersignType::PARALLEL));
+        $this->assertSame('串行会签', CountersignType::label(CountersignType::SERIAL));
+        $this->assertStringContainsString('未知', CountersignType::label(999));
     }
 
     // ═══ FlowConst ═══

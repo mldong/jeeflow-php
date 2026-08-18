@@ -53,6 +53,9 @@ class JeeflowEngine implements JeeflowEngineInterface
             $model = ModelParser::parse((string) $define['content']);
             // 3. 创建聚合根
             if ($args === null) $args = FlowData::create();
+            // 3.5 注入用户信息 + 自动标题（对齐 Java JeeflowEngineImpl L77-78）
+            FlowUtil::addUserInfoToArgs($operator, $args);
+            FlowUtil::addAutoGenTitle($model->getDisplayName(), $args);
             $instance = ProcessInstance::create($define, $operator, $args, $parentId, $parentNodeName);
             // 4. 计算到期时间
             $expireTime = $model->getExpireTime();

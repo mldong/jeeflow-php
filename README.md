@@ -39,7 +39,7 @@ composer test
 
 ## 状态
 
-**E3 完成** · 当前 **v1.1.2** · `composer test` 213 tests 全绿（含 T1 MySQL 冒烟）
+**E3 完成** · 当前 **v1.1.3** · `composer test` 213 tests 全绿（含 T1 MySQL 冒烟）
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
@@ -58,6 +58,13 @@ composer test
 - **PSR adapter**：JeeflowRequestHandler（PSR-15）+ ResponseFactory（nyholm/psr7）
 - **参考 demo**：demo-slim（Slim 4，预部署 3 个示例流程）
 - **persist 写侧**（v1.1.2）：`packages/persist` + core 调度 `postInterceptors`（issues/69）
+
+### v1.1.3（2026-08-17）
+
+- 响应序列化对齐 Java boot3：空 Map 字段（`variable`/`ext`/`nodeProgress`/`formData`/`taskFormData`）空值序列化为 `{}` 而非 `[]`
+- `processDesignId` 强制 string 转换，对齐 Jackson `Long→String` 全局策略
+- `formDataOf()` 返回类型 `array|\stdClass`，空时返回 `stdClass` 确保 JSON 序列化为 `{}`
+- 涉及文件：`JeeflowFacade.php`、`PdoProcessRepository.php`、`InMemoryProcessRepository.php`
 
 ### v1.1.2（2026-08-15）
 

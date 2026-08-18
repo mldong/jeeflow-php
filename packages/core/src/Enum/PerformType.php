@@ -23,4 +23,13 @@ final class PerformType
         }
         return (int) $value;
     }
+
+    public static function label(int $code): string
+    {
+        return match ($code) {
+            self::NORMAL => '普通参与',
+            self::COUNTERSIGN => '会签参与',
+            default => '未知(' . $code . ')',
+        };
+    }
 }
