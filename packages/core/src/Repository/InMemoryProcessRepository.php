@@ -127,7 +127,23 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
     {
         $rows = [];
         foreach ($this->instances as $inst) {
-            $rows[] = $this->instanceToRow($inst);
+            $row = $this->instanceToRow($inst);
+            // Enrich with define info (align Java instanceRowToMap L1257-1262)
+            $def = $this->findDefineById($inst->getDefineId());
+            if ($def !== null) {
+                $row['processDefineName'] = $def['name'] ?? null;
+                $row['processDefineDisplayName'] = $def['display_name'] ?? null;
+                $row['processDefineVersion'] = isset($def['version']) ? (int) $def['version'] : null;
+                $row['displayName'] = $def['display_name'] ?? null;
+                $row['version'] = isset($def['version']) ? (int) $def['version'] : null;
+            } else {
+                $row['processDefineName'] = null;
+                $row['processDefineDisplayName'] = null;
+                $row['processDefineVersion'] = null;
+                $row['displayName'] = null;
+                $row['version'] = null;
+            }
+            $rows[] = $row;
         }
         $rows = $this->applyFilters($rows, $query, fn($row, $col) => $this->getInstanceField($row, $col));
         $total = count($rows);

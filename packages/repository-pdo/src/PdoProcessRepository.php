@@ -208,8 +208,26 @@ class PdoProcessRepository implements ProcessRepositoryInterface
 
     public function pageInstances(PageQuery $query): PageResult
     {
-        return $this->pagedQuery('wf_process_instance', 't', $query, function ($row) {
-            return [
+        [$whereSql, $whereParams] = $this->buildConditions($query);
+
+        // Count
+        $countStmt = $this->pdo->prepare("SELECT COUNT(*) FROM wf_process_instance t WHERE 1=1" . $whereSql);
+        $countStmt->execute($whereParams);
+        $total = (int) $countStmt->fetchColumn();
+
+        // Fetch with JOIN to wf_process_define for displayName/version (align Java instanceRowToMap L1257-1262)
+        $order = $query->getOrderBy() ?: 't.create_time DESC';
+        $sql = "SELECT t.*, pd.name AS process_define_name, pd.display_name AS process_define_display_name, "
+            . "pd.version AS process_define_version "
+            . "FROM wf_process_instance t "
+            . "LEFT JOIN wf_process_define pd ON t.process_define_id = pd.id "
+            . "WHERE 1=1" . $whereSql . " ORDER BY $order"
+            . SqlPaging::clause($query->getPageSize(), $query->getOffset());
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($whereParams);
+        $rows = [];
+        while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+            $rows[] = [
                 'id' => PdoValue::strId($row['id']) ?? '',
                 'parentId' => PdoValue::strId($row['parent_id']),
                 'processDefineId' => PdoValue::strId($row['process_define_id']),
@@ -224,8 +242,15 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'updateTime' => $row['update_time'],
                 'updateUser' => PdoValue::strId($row['update_user']),
                 'expireTime' => $row['expire_time'],
+                // JOIN fields from wf_process_define
+                'processDefineName' => $row['process_define_name'] ?? null,
+                'processDefineDisplayName' => $row['process_define_display_name'] ?? null,
+                'processDefineVersion' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
+                'displayName' => $row['process_define_display_name'] ?? null,
+                'version' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
             ];
-        });
+        }
+        return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
     }
 
     // ── 流程任务 ──
