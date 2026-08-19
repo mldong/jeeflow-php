@@ -436,10 +436,10 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $countStmt->execute($whereParams);
         $total = (int) $countStmt->fetchColumn();
 
-        // Fetch with JOINs for displayName/version
+        // Fetch with JOINs for displayName/version + instance variable for ext
         $order = $query->getOrderBy() ?: 't.create_time DESC';
         $sql = "SELECT t.*, pd.display_name AS process_define_display_name, pd.name AS process_define_name, "
-            . "pd.version AS process_define_version, pi.operator AS instance_operator "
+            . "pd.version AS process_define_version, pi.operator AS instance_operator, pi.variable AS instance_variable "
             . "FROM wf_process_cc_instance t "
             . "LEFT JOIN wf_process_instance pi ON t.process_instance_id = pi.id "
             . "LEFT JOIN wf_process_define pd ON pi.process_define_id = pd.id "
@@ -449,6 +449,13 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $stmt->execute($whereParams);
         $rows = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+            // Parse instance variable JSON for ext (align with pagedTaskQuery / pageInstances)
+            $instanceVarJson = $row['instance_variable'] ?? null;
+            $instanceExt = null;
+            if ($instanceVarJson !== null && is_string($instanceVarJson)) {
+                $decoded = json_decode($instanceVarJson, true);
+                $instanceExt = is_array($decoded) ? $decoded : null;
+            }
             $rows[] = [
                 'processInstanceId' => PdoValue::strId($row['process_instance_id']),
                 'actorId' => PdoValue::strId($row['actor_id']),
@@ -460,6 +467,8 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'processDefineName' => $row['process_define_name'] ?? null,
                 'version' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
                 'operator' => PdoValue::strId($row['instance_operator'] ?? null),
+                'ext' => $instanceExt ?? (object)[],
+                'instanceExt' => $instanceExt ?? (object)[],
             ];
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
