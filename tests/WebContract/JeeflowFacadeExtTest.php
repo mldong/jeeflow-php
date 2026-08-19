@@ -8,9 +8,74 @@ use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\Repository\InMemoryProcessExtRepository;
 use Jeeflow\Core\Repository\InMemoryProcessRepository;
 use Jeeflow\Core\ServiceContext;
+use Jeeflow\Core\Spi\PageQuery;
+use Jeeflow\Core\Spi\PageResult;
+use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
 use Jeeflow\WebContract\JeeflowFacade;
 use PHPUnit\Framework\TestCase;
+
+/**
+ * 模拟 PDO 仓储：findDesignById 返回底层行，id 为原生 int（PDO 默认整型绑定）。
+ * 用于验证 facade 出口 hook 必须把 int id 字符串化（issues/75）。
+ */
+class PdoLikeExtRepo implements ProcessExtRepositoryInterface
+{
+    public int $designId;
+    public int $hisId;
+
+    public function __construct(int $designId = 17769128440810003, int $hisId = 9000000000000000007)
+    {
+        $this->designId = $designId;
+        $this->hisId = $hisId;
+    }
+
+    public function findDesignById(int|string $id): ?array
+    {
+        return [
+            'id' => $this->designId,                    // 原生 int（PDO 行为）
+            'name' => 'e2e_leave',
+            'display_name' => 'L3请假申请',
+            'type' => '1',
+            'icon' => null,
+            'is_deployed' => 1,
+            'remark' => 'E2E 场景流程',
+            'create_time' => '2026-08-19 14:41:24',
+            'update_time' => '2026-08-19 14:41:24',
+        ];
+    }
+
+    public function findLatestDesignHis(int|string $designId): ?array
+    {
+        return [
+            'id' => $this->hisId,                       // 原生 int
+            'process_design_id' => $this->designId,
+            'content' => '{"name":"e2e_leave","nodes":[],"edges":[]}',
+        ];
+    }
+
+    public function findDesignHisList(int|string $designId): array
+    {
+        return [[                                          // 行带 int id + int process_design_id
+            'id' => $this->hisId,
+            'process_design_id' => $this->designId,
+            'content' => '{"name":"e2e_leave","nodes":[],"edges":[]}',
+            'create_time' => '2026-08-19 14:41:24',
+        ]];
+    }
+
+    // 未在本用例使用的接口方法
+    public function pageDesigns(PageQuery $query): PageResult { return new PageResult(1, 10, 0, []); }
+    public function saveDesign(array $design): string { return (string) $this->designId; }
+    public function updateDesign(array $design): void {}
+    public function saveDesignHis(int|string $designId, string $content, ?string $operator = null): void {}
+    public function removeDesign(int|string $id): void {}
+    public function updateDesignDeployed(int|string $designId, int $isDeployed): void {}
+    public function listDesignsByType(): array { return []; }
+    public function pageSurrogates(PageQuery $query): PageResult { return new PageResult(1, 10, 0, []); }
+    public function saveSurrogate(array $surrogate): string { return '1'; }
+    public function removeSurrogate(int|string $id): void {}
+}
 
 /**
  * JeeflowFacade 扩展 action 测试 —— processDesign 9 + processSurrogate 3
@@ -189,6 +254,36 @@ class JeeflowFacadeExtTest extends TestCase
         $this->assertEquals(0, $deploy2['code']);
         // 应该原地替换（同 ID）
         $this->assertEquals($defineId1, $deploy2['data']['processDefineId']);
+    }
+
+    /**
+     * issues/75 回归：底层行 id 为 int（PDO 行为）时，detail 出口必须字符串化。
+     * 19 位雪花 id 若以 JSON 数字下发，前端 JS JSON.parse(float64) 会丢精度
+     * （奇数尾四舍五入），导致 designer 保存时 processDesignId 指向不存在的记录、
+     * 静默 no-op（S8a 偶发根因）。对齐 Java 全局 Long→String / Go okResult(stringifyIDs)。
+     */
+    public function testDesignDetailStringifiesIntIds(): void
+    {
+        $bigIntId = 17769128440810003; // 19 位雪花 id（奇数尾，float64 下会变为 ...0004）
+        $hisId = 9000000000000000007;
+        $pdoLike = new PdoLikeExtRepo($bigIntId, $hisId);
+        $facade = new JeeflowFacade($this->engine, $this->repo, $pdoLike);
+
+        $detail = $facade->flow('processDesign/detail', ['id' => (string) $bigIntId]);
+        $this->assertEquals(0, $detail['code']);
+
+        // 顶层 id：字符串且逐字符精确（float64 会把它变成 ...0004）
+        $this->assertIsString($detail['data']['id']);
+        $this->assertSame((string) $bigIntId, $detail['data']['id']);
+
+        // 嵌套 his 列表：行 id 与 process_design_id 也必须字符串化
+        $this->assertNotEmpty($detail['data']['his']);
+        foreach ($detail['data']['his'] as $his) {
+            $this->assertIsString($his['id'], 'his.id must be string');
+            $this->assertSame((string) $hisId, $his['id']);
+            $this->assertIsString($his['process_design_id'], 'his.process_design_id must be string');
+            $this->assertSame((string) $bigIntId, $his['process_design_id']);
+        }
     }
 
     public function testDesignListByType(): void

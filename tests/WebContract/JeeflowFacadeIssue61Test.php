@@ -108,6 +108,14 @@ class JeeflowFacadeIssue61Test extends TestCase
             {
                 return $roleCode === 'finance' ? ['finA', 'finB'] : [];
             }
+            public function findDeptLeaders(string $deptId): array
+            {
+                return [];
+            }
+            public function findDeptMainLeaders(string $deptId): array
+            {
+                return [];
+            }
         });
 
         $defineId = $this->deployFlow('12-candidate-page.json');

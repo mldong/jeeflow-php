@@ -62,7 +62,7 @@ class JeeflowFacade
     {
         try {
             if ($args === null) $args = [];
-            return match ($action) {
+            $result = match ($action) {
                 // ── 流程定义 ──
                 'processDefine/page' => $this->definePage($args),
                 'processDefine/detail' => $this->defineDetail($args),
@@ -111,6 +111,12 @@ class JeeflowFacade
                 'processSurrogate/remove' => $this->surrogateRemove($args),
                 default => $this->error('未知 action: ' . $action),
             };
+            // issues/75：所有响应出口统一 id 字符串化（对齐四语言全局 exit hook，
+            // 覆盖 designDetail 单记录 + 嵌套 his 列表等此前漏掉的 int id 泄漏面）
+            if (isset($result['data'])) {
+                $result['data'] = $this->stringifyIds($result['data']);
+            }
+            return $result;
         } catch (\Throwable $e) {
             return $this->error($e->getMessage() ?: (string) $e);
         }
@@ -802,6 +808,42 @@ class JeeflowFacade
     private function error(string $msg): array
     {
         return ['code' => 99999999, 'msg' => $msg, 'data' => null];
+    }
+
+    // issues/75：id 类字段统一字符串化出口（对齐四语言全局 exit hook）。
+    // 19 位雪花 id > JS Number.MAX_SAFE_INTEGER(2^53)，若以 JSON 数字下发，前端
+    // JSON.parse 走 float64 会丢精度（奇数尾被四舍五入），导致 designer 保存
+    // 时 processDesignId 指向不存在的记录、静默 no-op（S8a 偶发根因）。
+    // Java 用全局 Jackson Long→String、Go 用 okResult(stringifyIDs)、Node 用字符串型 id；
+    // PHP 此前仅列表行 (string)$row['id']，单记录端点(designDetail 等)漏了 → 此处统一补齐。
+    private function stringifyIds(mixed $v): mixed
+    {
+        if (!is_array($v)) return $v; // 标量/对象原样
+        $out = [];
+        foreach ($v as $k => $val) {
+            if (is_string($k) && $this->isIdKey($k)) {
+                $out[$k] = $this->toIdString($val);
+            } else {
+                $out[$k] = $this->stringifyIds($val); // 递归（嵌套数组/行列表/其结构）
+            }
+        }
+        return $out;
+    }
+
+    // id 类键：camelCase（id/*Id，对齐 Go isIDKey）+ snake_case（id/*_id，PDO 原始行）。
+    private function isIdKey(string $k): bool
+    {
+        return $k === 'id' || str_ends_with($k, 'Id') || str_ends_with($k, '_id');
+    }
+
+    // id 值转字符串：null 保持 null；字符串直通；整数→十进制；整数值 float→十进制。
+    private function toIdString(mixed $v): mixed
+    {
+        if ($v === null) return null;
+        if (is_string($v)) return $v;
+        if (is_int($v)) return (string) $v;
+        if (is_float($v) && floor($v) === $v) return (string) (int) $v;
+        return (string) $v;
     }
 
     private function pageResult(PageResult $page): array
