@@ -128,6 +128,11 @@ class InMemoryProcessExtRepository implements ProcessExtRepositoryInterface
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $slice);
     }
 
+    public function findSurrogateById(int|string $id): ?array
+    {
+        return $this->surrogates[(string) $id] ?? null;
+    }
+
     public function saveSurrogate(array $surrogate): string
     {
         $id = (string) ($surrogate['id'] ?? $this->idGenerator->nextId());
@@ -136,6 +141,15 @@ class InMemoryProcessExtRepository implements ProcessExtRepositoryInterface
         $surrogate['updateTime'] = date('Y-m-d H:i:s');
         $this->surrogates[$id] = $surrogate;
         return $id;
+    }
+
+    public function updateSurrogate(array $surrogate): void
+    {
+        $id = (string) ($surrogate['id'] ?? '');
+        if (isset($this->surrogates[$id])) {
+            $this->surrogates[$id] = array_merge($this->surrogates[$id], $surrogate);
+            $this->surrogates[$id]['updateTime'] = date('Y-m-d H:i:s');
+        }
     }
 
     public function removeSurrogate(int|string $id): void

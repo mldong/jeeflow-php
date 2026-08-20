@@ -170,4 +170,41 @@ SQL);
         $this->assertSame(1, $page->getRecordCount());
         $this->assertSame('1001', $page->getRows()[0]['id']);
     }
+
+    // issues/77：委托 save→findSurrogateById→updateSurrogate 往返（camelCase 入参 ↔ snake_case 列）
+    public function testSurrogateFindAndUpdateRoundTrip(): void
+    {
+        $id = $this->extRepo->saveSurrogate([
+            'processName' => 'leave',
+            'operator' => 'zhangsan',
+            'surrogate' => 'lisi',
+            'startTime' => '2026-08-01 00:00:00',
+            'endTime' => '2026-08-31 23:59:59',
+            'enabled' => 1,
+        ]);
+
+        $found = $this->extRepo->findSurrogateById($id);
+        $this->assertNotNull($found);
+        $this->assertSame('leave', $found['process_name']);
+        $this->assertSame('lisi', $found['surrogate']);
+        $this->assertSame('2026-08-01 00:00:00', $found['start_time']);
+
+        $this->extRepo->updateSurrogate([
+            'id' => $id,
+            'surrogate' => 'wangwu',
+            'startTime' => '2026-09-01 00:00:00',
+            'endTime' => '2026-09-30 23:59:59',
+            'enabled' => 0,
+            'updateUser' => 'zhangsan',
+        ]);
+
+        $found = $this->extRepo->findSurrogateById($id);
+        $this->assertSame('wangwu', $found['surrogate']);
+        $this->assertSame(0, (int) $found['enabled']);
+        $this->assertSame('2026-09-01 00:00:00', $found['start_time']);
+        // 未传的 operator 保持原值
+        $this->assertSame('zhangsan', $found['operator']);
+        // 负向：不存在的 id
+        $this->assertNull($this->extRepo->findSurrogateById('no-such-id'));
+    }
 }

@@ -73,7 +73,9 @@ class PdoLikeExtRepo implements ProcessExtRepositoryInterface
     public function updateDesignDeployed(int|string $designId, int $isDeployed): void {}
     public function listDesignsByType(): array { return []; }
     public function pageSurrogates(PageQuery $query): PageResult { return new PageResult(1, 10, 0, []); }
+    public function findSurrogateById(int|string $id): ?array { return null; }
     public function saveSurrogate(array $surrogate): string { return '1'; }
+    public function updateSurrogate(array $surrogate): void {}
     public function removeSurrogate(int|string $id): void {}
 }
 
@@ -317,6 +319,71 @@ class JeeflowFacadeExtTest extends TestCase
         $page = $this->facade->flow('processSurrogate/page');
         $this->assertEquals(0, $page['code']);
         $this->assertEquals(1, $page['data']['recordCount']);
+        // issues/77：page 行走统一行结构（camelCase + 时间格式化），与 detail 同构
+        $row = $page['data']['rows'][0];
+        $this->assertSame('leave', $row['processName']);
+        $this->assertSame('user2', $row['surrogate']);
+        $this->assertSame('2026-08-01 00:00:00', $row['startTime']);
+        $this->assertSame('2026-08-31 23:59:59', $row['endTime']);
+        $this->assertSame(1, $row['enabled']);
+    }
+
+    public function testSurrogateDetailAndUpdate(): void
+    {
+        // 委托编辑链路（issues/77）：save（前端空格格式时间窗）→ detail 回显 →
+        // update 改字段（不带 operator，授权人应保留）→ detail 再回显 + 负向
+        $save = $this->facade->flow('processSurrogate/save', [
+            'operator' => 'zhangsan',
+            'surrogate' => 'lisi',
+            'processName' => 'leave',
+            'startTime' => '2026-08-01 00:00:00',
+            'endTime' => '2026-08-31 23:59:59',
+            'enabled' => 1,
+        ]);
+        $this->assertEquals(0, $save['code'], json_encode($save, JSON_UNESCAPED_UNICODE));
+        $surrogateId = $save['data']['id'];
+
+        // detail 回显：行结构齐全 + 时间格式化
+        $d = $this->facade->flow('processSurrogate/detail', ['id' => $surrogateId]);
+        $this->assertEquals(0, $d['code'], json_encode($d, JSON_UNESCAPED_UNICODE));
+        $this->assertSame('leave', $d['data']['processName']);
+        $this->assertSame('zhangsan', $d['data']['operator']);
+        $this->assertSame('lisi', $d['data']['surrogate']);
+        $this->assertSame('2026-08-01 00:00:00', $d['data']['startTime']);
+        $this->assertSame('2026-08-31 23:59:59', $d['data']['endTime']);
+
+        // update：改代理人/时间窗/启用状态（不带 operator，授权人应保留）
+        $up = $this->facade->flow('processSurrogate/update', [
+            'id' => $surrogateId,
+            'surrogate' => 'wangwu',
+            'processName' => 'leave',
+            'startTime' => '2026-09-01 00:00:00',
+            'endTime' => '2026-09-30 23:59:59',
+            'enabled' => 0,
+        ]);
+        $this->assertEquals(0, $up['code'], json_encode($up, JSON_UNESCAPED_UNICODE));
+        $this->assertSame($surrogateId, $up['data']['id']);
+
+        // detail 再回显：变更生效 + 授权人未被清空
+        $d = $this->facade->flow('processSurrogate/detail', ['id' => $surrogateId]);
+        $this->assertEquals(0, $d['code'], json_encode($d, JSON_UNESCAPED_UNICODE));
+        $this->assertSame('wangwu', $d['data']['surrogate']);
+        $this->assertSame('zhangsan', $d['data']['operator']);
+        $this->assertSame(0, $d['data']['enabled']);
+        $this->assertSame('2026-09-01 00:00:00', $d['data']['startTime']);
+        $this->assertSame('2026-09-30 23:59:59', $d['data']['endTime']);
+
+        // 仓储侧同步（update 真的写了）
+        $stored = $this->extRepo->findSurrogateById($surrogateId);
+        $this->assertNotNull($stored);
+        $this->assertSame('wangwu', $stored['surrogate']);
+        $this->assertSame(0, (int) $stored['enabled']);
+
+        // 负向：detail/update id 不存在
+        $this->assertEquals(99999999, $this->facade->flow('processSurrogate/detail', ['id' => 99999])['code']);
+        $this->assertEquals(99999999, $this->facade->flow('processSurrogate/update', ['id' => 99999, 'surrogate' => 'x'])['code']);
+        // 负向：update 缺 id
+        $this->assertEquals(99999999, $this->facade->flow('processSurrogate/update', ['surrogate' => 'x'])['code']);
     }
 
     public function testSurrogateRemove(): void

@@ -202,6 +202,14 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
     }
 
+    public function findSurrogateById(int|string $id): ?array
+    {
+        $stmt = $this->pdo->prepare('SELECT * FROM wf_process_surrogate WHERE id = ?');
+        $stmt->execute([(string) $id]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        return $row === false ? null : $row;
+    }
+
     public function saveSurrogate(array $surrogate): string
     {
         $id = (string) ($surrogate['id'] ?? $this->idGenerator->nextId());
@@ -226,6 +234,34 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
         ]);
 
         return $id;
+    }
+
+    public function updateSurrogate(array $surrogate): void
+    {
+        $id = (string) $surrogate['id'];
+        $now = date('Y-m-d H:i:s');
+
+        $fields = [];
+        $params = [];
+
+        foreach (['processName', 'operator', 'surrogate', 'startTime', 'endTime', 'enabled', 'updateUser'] as $key) {
+            if (array_key_exists($key, $surrogate)) {
+                $col = $this->camelToSnake($key);
+                $fields[] = "$col = ?";
+                $params[] = $surrogate[$key];
+            }
+        }
+
+        if (empty($fields)) {
+            return;
+        }
+
+        $fields[] = 'update_time = ?';
+        $params[] = $now;
+        $params[] = $id;
+
+        $sql = 'UPDATE wf_process_surrogate SET ' . implode(', ', $fields) . ' WHERE id = ?';
+        $this->pdo->prepare($sql)->execute($params);
     }
 
     public function removeSurrogate(int|string $id): void

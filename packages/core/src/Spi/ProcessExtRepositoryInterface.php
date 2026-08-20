@@ -49,8 +49,14 @@ interface ProcessExtRepositoryInterface
     /** 委托分页 */
     public function pageSurrogates(PageQuery $query): PageResult;
 
+    /** 委托详情（issues/77） */
+    public function findSurrogateById(int|string $id): ?array;
+
     /** 保存委托 */
     public function saveSurrogate(array $surrogate): string;
+
+    /** 更新委托（issues/77） */
+    public function updateSurrogate(array $surrogate): void;
 
     /** 删除委托 */
     public function removeSurrogate(int|string $id): void;

@@ -108,6 +108,8 @@ class JeeflowFacade
                 // ── 委托代理（需扩展仓储）──
                 'processSurrogate/page' => $this->surrogatePage($args),
                 'processSurrogate/save' => $this->surrogateSave($args),
+                'processSurrogate/update' => $this->surrogateUpdate($args), // issues/77
+                'processSurrogate/detail' => $this->surrogateDetail($args), // issues/77
                 'processSurrogate/remove' => $this->surrogateRemove($args),
                 default => $this->error('未知 action: ' . $action),
             };
@@ -1099,14 +1101,66 @@ class JeeflowFacade
     {
         $ext = $this->requireExt();
         $query = $this->queryParser->parse($args);
-        return $this->pageResult($ext->pageSurrogates($query));
+        $page = $ext->pageSurrogates($query);
+        $result = $page->toArray();
+        // issues/77：行走 surrogateRowToMap（时间格式化 + 键归一），与 detail 同构
+        $result['rows'] = array_map([$this, 'surrogateRowToMap'], $page->getRows());
+        return $this->ok($result);
     }
 
     private function surrogateSave(array $args): array
     {
         $ext = $this->requireExt();
-        $id = $ext->saveSurrogate($args);
+        $operator = $this->operatorOf($args);
+        $id = $this->toStr($args['id'] ?? '');
+        $surrogate = $id !== '' ? $ext->findSurrogateById($id) : null;
+        if ($id !== '' && $surrogate === null) {
+            return $this->error('委托记录不存在');
+        }
+        if ($surrogate === null) {
+            $surrogate = ['createUser' => $operator, 'createTime' => date('Y-m-d H:i:s')];
+            $surrogate['operator'] = $operator; // 授权人 = 操作人（新建必有）
+        }
+        $surrogate = $this->applySurrogateFields($surrogate, $args, $operator);
+        if ($id === '') {
+            $id = $ext->saveSurrogate($surrogate);
+        } else {
+            $ext->updateSurrogate($surrogate);
+        }
         return $this->ok(['id' => $id]);
+    }
+
+    /** 委托更新（issues/77）：按 id 全字段更新，授权人缺省时保留原值（前端编辑表单不带 operator） */
+    private function surrogateUpdate(array $args): array
+    {
+        $ext = $this->requireExt();
+        $operator = $this->operatorOf($args);
+        $id = $this->toStr($args['id'] ?? '');
+        if ($id === '') {
+            return $this->error('id 缺失或非法');
+        }
+        $surrogate = $ext->findSurrogateById($id);
+        if ($surrogate === null) {
+            return $this->error('委托记录不存在');
+        }
+        $surrogate = $this->applySurrogateFields($surrogate, $args, $operator);
+        $surrogate['id'] = $id;
+        $ext->updateSurrogate($surrogate);
+        return $this->ok(['id' => $id]);
+    }
+
+    /** 委托详情（issues/77）：按 id 查单条，返回行结构（时间格式化） */
+    private function surrogateDetail(array $args): array
+    {
+        $id = $this->toStr($args['id'] ?? '');
+        if ($id === '') {
+            return $this->error('id 缺失或非法');
+        }
+        $surrogate = $this->requireExt()->findSurrogateById($id);
+        if ($surrogate === null) {
+            return $this->error('委托记录不存在');
+        }
+        return $this->ok($this->surrogateRowToMap($surrogate));
     }
 
     private function surrogateRemove(array $args): array
@@ -1114,5 +1168,60 @@ class JeeflowFacade
         $ext = $this->requireExt();
         $ext->removeSurrogate($this->toStr($args['id'] ?? ''));
         return $this->ok();
+    }
+
+    // 操作人兜底（对齐 Java toStr(args.get("operator"), "user1")）
+    private function operatorOf(array $args): string
+    {
+        return array_key_exists('operator', $args) && $args['operator'] !== null
+            ? $this->toStr($args['operator'])
+            : 'user1';
+    }
+
+    /** 委托写入公共字段。授权人（operator）仅在显式传入时覆盖，避免 update 时清空原授权人 */
+    private function applySurrogateFields(array $s, array $args, string $operator): array
+    {
+        $s['processName'] = $this->toStr($args['processName'] ?? '');
+        if (array_key_exists('operator', $args)) {
+            $s['operator'] = $this->toStr($args['operator']); // 授权人 = 操作人
+        }
+        $s['surrogate'] = $this->toStr($args['surrogate'] ?? '');
+        $s['startTime'] = $this->parseSurrogateTime($args['startTime'] ?? null);
+        $s['endTime'] = $this->parseSurrogateTime($args['endTime'] ?? null);
+        $s['enabled'] = ($args['enabled'] ?? null) !== null ? (int) $args['enabled'] : 1; // 显式 0 不得被吞
+        $s['updateUser'] = $operator;
+        return $s;
+    }
+
+    // 时间窗解析：§2.4 契约 yyyy-MM-dd HH:mm:ss（空格），兼容 ISO T 与纯日期
+    private function parseSurrogateTime(mixed $v): ?string
+    {
+        if ($v === null) {
+            return null;
+        }
+        $s = trim((string) $v);
+        if ($s === '') {
+            return null;
+        }
+        $ts = strtotime($s);
+        return $ts !== false ? date('Y-m-d H:i:s', $ts) : null;
+    }
+
+    // issues/77：委托行转换（兼容 PDO snake_case / InMemory camelCase，时间格式化）
+    private function surrogateRowToMap(array $row): array
+    {
+        return [
+            'id' => $row['id'] ?? null,
+            'processName' => $row['processName'] ?? $row['process_name'] ?? '',
+            'operator' => $row['operator'] ?? '',
+            'surrogate' => $row['surrogate'] ?? '',
+            'startTime' => $this->fmtTime($row['startTime'] ?? $row['start_time'] ?? null),
+            'endTime' => $this->fmtTime($row['endTime'] ?? $row['end_time'] ?? null),
+            'enabled' => (int) ($row['enabled'] ?? 1),
+            'createTime' => $this->fmtTime($row['createTime'] ?? $row['create_time'] ?? null),
+            'createUser' => $row['createUser'] ?? $row['create_user'] ?? null,
+            'updateTime' => $this->fmtTime($row['updateTime'] ?? $row['update_time'] ?? null),
+            'updateUser' => $row['updateUser'] ?? $row['update_user'] ?? null,
+        ];
     }
 }
