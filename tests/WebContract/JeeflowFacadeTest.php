@@ -253,6 +253,36 @@ class JeeflowFacadeTest extends TestCase
         $this->assertArrayHasKey('taskActorIdList', $detail['data']);
     }
 
+    /**
+     * taskDetail performType/taskType 出口数字契约（issues/78）：普通 0 / 会签 1。
+     * PHP 出口本就是 ?int，本测试钉契约与 Java 修复后五语言一致（防回归到字符串形态）。
+     */
+    public function testTaskDetailPerformTypeNumeric(): void
+    {
+        // 普通流程：task1 performType=0 / taskType=0
+        $defineId = $this->deploySimpleFlow();
+        $this->facade->flow('processDefine/startAndExecute', ['processDefineId' => $defineId, 'operator' => 'user1']);
+        $todo = $this->facade->flow('processTask/todoList', ['operator' => 'leader']);
+        $taskId = $todo['data']['rows'][0]['id'];
+        $detail = $this->facade->flow('processTask/detail', ['id' => $taskId, 'operator' => 'leader']);
+        $this->assertEquals(0, $detail['code'], json_encode($detail, JSON_UNESCAPED_UNICODE));
+        $this->assertIsInt($detail['data']['performType']);
+        $this->assertSame(0, $detail['data']['performType'], '普通任务 performType 应=0');
+        $this->assertSame(0, $detail['data']['taskType'], '普通任务 taskType 应=0');
+
+        // 会签流程：task1 performType=1
+        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/06-countersign-sequential.json');
+        $deploy = $this->facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'user1']);
+        $this->assertEquals(0, $deploy['code']);
+        $this->facade->flow('processDefine/startAndExecute', ['processDefineId' => $deploy['data']['processDefineId'], 'operator' => 'user1']);
+        $csTodo = $this->facade->flow('processTask/todoList', ['operator' => 'userA']);
+        $this->assertGreaterThanOrEqual(1, $csTodo['data']['recordCount'], '会签应有进行中任务');
+        $csDetail = $this->facade->flow('processTask/detail', ['id' => $csTodo['data']['rows'][0]['id'], 'operator' => 'userA']);
+        $this->assertEquals(0, $csDetail['code'], json_encode($csDetail, JSON_UNESCAPED_UNICODE));
+        $this->assertIsInt($csDetail['data']['performType']);
+        $this->assertSame(1, $csDetail['data']['performType'], "会签任务 performType 应=1（非 'COUNTERSIGN'）");
+    }
+
     public function testTaskLatest(): void
     {
         $defineId = $this->deploySimpleFlow();
