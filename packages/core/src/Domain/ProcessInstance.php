@@ -7,6 +7,8 @@ namespace Jeeflow\Core\Domain;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
+use Jeeflow\Core\Model\ProcessModel;
+use Jeeflow\Core\Model\TaskModel;
 
 /**
  * 流程实例 —— DDD 聚合根（充血模型）
@@ -157,6 +159,49 @@ class ProcessInstance
             $list[] = $task;
         }
         return $list;
+    }
+
+    /**
+     * 驳回任务（退回上一步）—— 对齐 Java ProcessInstance.rejectTask
+     *
+     * 找到上一个任务节点并为其创建新待办任务：
+     * 参与者 = 当前任务完成人（退回操作人，finish 后 actorId 即为操作人），
+     * createUser 沿用当前任务的 createUser。无上一任务节点时返回 null（不流转）。
+     *
+     * @return ProcessTask|null 新建的上一步任务
+     */
+    public function rejectTask(ProcessModel $model, ProcessTask $currentTask): ?ProcessTask
+    {
+        $previousTaskName = $this->getPreviousTaskName($model, $currentTask->getTaskName());
+        if ($previousTaskName !== null) {
+            $prevNode = $model->getNode($previousTaskName);
+            if ($prevNode instanceof TaskModel) {
+                $newTask = $this->createTask(
+                    $prevNode->getName(),
+                    $prevNode->getDisplayName(),
+                    $prevNode->getTaskType(),
+                    $prevNode->getPerformType(),
+                    $prevNode->getForm() ?: null,
+                    $currentTask->getActorId() !== null ? [$currentTask->getActorId()] : [],
+                    $currentTask->getCreateUser() ?? ''
+                );
+                return $newTask;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 上一个任务节点名（简单实现：找当前节点首条输入边的 source 节点）—— 对齐 Java getPreviousTaskName
+     */
+    private function getPreviousTaskName(ProcessModel $model, string $currentTaskName): ?string
+    {
+        $node = $model->getNode($currentTaskName);
+        if ($node !== null && !empty($node->getInputs())) {
+            $source = $node->getInputs()[0]->getSource();
+            return $source?->getName();
+        }
+        return null;
     }
 
     // ═══ 查询方法 ═══

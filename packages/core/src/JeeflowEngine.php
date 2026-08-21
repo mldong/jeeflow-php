@@ -109,12 +109,18 @@ class JeeflowEngine implements JeeflowEngineInterface
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
             if ($nodeName === null || $nodeName === '') {
-                // 驳回：回到上一步
-                // 简化实现：直接完成当前任务不流转
+                // 驳回：回到上一步（issues/79 对齐 Java rejectTask：上一步任务节点新建待办，
+                // 参与者 = 退回操作人，实例保持 DOING）
+                $newTask = $exec->getProcessInstance()->rejectTask($model, $exec->getProcessTask());
+                if ($newTask !== null) $exec->addTask($newTask);
             } else {
                 $targetNode = $model->getNode($nodeName);
                 if ($targetNode === null) {
                     throw new JeeflowException("根据节点名称[{$nodeName}]无法找到节点模型");
+                }
+                // issues/79 对齐 Java：跳转到首任务节点（start 直接后继）时 assignee 强制为发起人
+                if ($targetNode instanceof TaskModel && FlowUtil::isFirstTaskName($model, $targetNode->getName())) {
+                    $targetNode->setAssignee($exec->getProcessInstance()->getOperator());
                 }
                 $tm = new TransitionModel();
                 $tm->setTarget($targetNode);
@@ -153,6 +159,10 @@ class JeeflowEngine implements JeeflowEngineInterface
             if ($start !== null) {
                 foreach ($start->getOutputs() as $tm) {
                     $tm->setEnabled(true);
+                    // issues/79 对齐 Java：退回发起人时首个任务节点 assignee 强制为发起人
+                    if ($tm->getTarget() instanceof TaskModel) {
+                        $tm->getTarget()->setAssignee($exec->getProcessInstance()->getOperator());
+                    }
                     $tm->execute($exec);
                 }
             }

@@ -58,6 +58,23 @@ final class FlowUtil
         $args->set(FlowConst::AUTO_GEN_TITLE, $title);
     }
 
+    /**
+     * 指定任务名是否为第一个任务节点（start 的直接后继）—— 对齐 Java FlowUtil.isFirstTaskName
+     */
+    public static function isFirstTaskName(ProcessModel $model, string $taskName): bool
+    {
+        $start = $model->getStart();
+        if ($start === null) {
+            return false;
+        }
+        foreach ($start->getOutputs() as $tm) {
+            if (strcasecmp($tm->getTo(), $taskName) === 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static function filterFieldByPerm(FlowData $args, ProcessModel $model, string $taskName): void
     {
         $node = $model->getNode($taskName);
