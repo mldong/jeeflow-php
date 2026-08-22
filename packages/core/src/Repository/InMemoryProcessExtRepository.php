@@ -122,10 +122,63 @@ class InMemoryProcessExtRepository implements ProcessExtRepositoryInterface
 
     public function pageSurrogates(PageQuery $query): PageResult
     {
-        $rows = array_values($this->surrogates);
-        $total = count($rows);
-        $slice = array_slice($rows, $query->getOffset(), $query->getPageSize());
+        // m_ 条件（issues/82-7 委托搜索，对齐 Java/Go/Python/Node）
+        $conditions = $query->getConditions();
+        $all = array_values($this->surrogates);
+        if ($conditions !== []) {
+            $all = array_values(array_filter($all, function (array $s) use ($conditions) {
+                return $this->matchSurrogateConditions($s, $conditions);
+            }));
+        }
+        $total = count($all);
+        $slice = array_slice($all, $query->getOffset(), $query->getPageSize());
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $slice);
+    }
+
+    /**
+     * 委托分页 m_ 条件匹配（issues/82-7，内存路径）
+     *
+     * 白名单列 + 操作符对齐核心 InMemoryProcessRepository::matchCondition 与 JDBC 实现：
+     * 内存行键为 camelCase，条件列为 t.<snake_case>。
+     */
+    private function matchSurrogateConditions(array $row, array $conditions): bool
+    {
+        $fields = [
+            't.id' => $row['id'] ?? null,
+            't.process_name' => $row['processName'] ?? null,
+            't.operator' => $row['operator'] ?? null,
+            't.surrogate' => $row['surrogate'] ?? null,
+            't.enabled' => $row['enabled'] ?? null,
+            't.start_time' => $row['startTime'] ?? null,
+            't.end_time' => $row['endTime'] ?? null,
+            't.create_time' => $row['createTime'] ?? null,
+            't.update_time' => $row['updateTime'] ?? null,
+        ];
+        foreach ($conditions as $cond) {
+            $col = $cond['column'];
+            if (!array_key_exists($col, $fields)) {
+                continue; // 白名单外列跳过（对齐其他语言）
+            }
+            $actual = $fields[$col];
+            $value = $cond['value'];
+            if ($actual === null || $value === null || $value === '') {
+                continue;
+            }
+            $ok = match ($cond['op']) {
+                'EQ' => (string) $actual === (string) $value,
+                'NE' => (string) $actual !== (string) $value,
+                'LIKE' => str_contains((string) $actual, (string) $value),
+                'LLIKE' => str_ends_with((string) $actual, (string) $value),
+                'RLIKE' => str_starts_with((string) $actual, (string) $value),
+                'IN' => is_array($value) && in_array((string) $actual, array_map('strval', $value), true),
+                'NIN' => is_array($value) && !in_array((string) $actual, array_map('strval', $value), true),
+                default => true,
+            };
+            if (!$ok) {
+                return false;
+            }
+        }
+        return true;
     }
 
     public function findSurrogateById(int|string $id): ?array

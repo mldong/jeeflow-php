@@ -187,11 +187,19 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
         $offset = $query->getOffset();
         $limit = $query->getPageSize();
 
-        $total = (int) $this->pdo->query('SELECT COUNT(*) FROM wf_process_surrogate')->fetchColumn();
+        // m_ 条件（issues/82-7 委托搜索，对齐 Java/Go/Python/Node）：白名单 + 参数化
+        [$where, $params] = $this->buildSurrogateConditions($query);
 
-        $sql = 'SELECT * FROM wf_process_surrogate ORDER BY create_time DESC'
+        $countStmt = $this->pdo->prepare("SELECT COUNT(*) FROM wf_process_surrogate t WHERE 1=1" . $where);
+        $countStmt->execute($params);
+        $total = (int) $countStmt->fetchColumn();
+
+        $sql = 'SELECT * FROM wf_process_surrogate t WHERE 1=1' . $where
+            . ' ORDER BY create_time DESC'
             . SqlPaging::clause((int) $limit, (int) $offset);
-        $rows = $this->pdo->query($sql)->fetchAll(\PDO::FETCH_ASSOC);
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);
         foreach ($rows as &$row) {
             if (isset($row['id'])) {
                 $row['id'] = (string) $row['id'];
@@ -200,6 +208,82 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
         unset($row);
 
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
+    }
+
+    /**
+     * 委托分页 m_ 条件 WHERE（issues/82-7，白名单 + 参数化，防列名注入）
+     * @return array{0: string, 1: array}
+     */
+    private function buildSurrogateConditions(PageQuery $query): array
+    {
+        $whitelist = [
+            't.id', 't.process_name', 't.operator', 't.surrogate', 't.enabled',
+            't.start_time', 't.end_time', 't.create_time', 't.update_time',
+        ];
+        $sql = '';
+        $params = [];
+        foreach ($query->getConditions() as $cond) {
+            $col = $cond['column'];
+            if (!in_array($col, $whitelist, true)) {
+                continue;
+            }
+            $op = $cond['op'];
+            $val = $cond['value'];
+            if ($val === null || $val === '') {
+                continue;
+            }
+            switch ($op) {
+                case 'EQ':
+                    $sql .= " AND $col = ?";
+                    $params[] = $val;
+                    break;
+                case 'NE':
+                    $sql .= " AND $col <> ?";
+                    $params[] = $val;
+                    break;
+                case 'LIKE':
+                    $sql .= " AND $col LIKE ?";
+                    $params[] = '%' . $val . '%';
+                    break;
+                case 'LLIKE':
+                    $sql .= " AND $col LIKE ?";
+                    $params[] = '%' . $val;
+                    break;
+                case 'RLIKE':
+                    $sql .= " AND $col LIKE ?";
+                    $params[] = $val . '%';
+                    break;
+                case 'GT':
+                    $sql .= " AND $col > ?";
+                    $params[] = $val;
+                    break;
+                case 'GE':
+                    $sql .= " AND $col >= ?";
+                    $params[] = $val;
+                    break;
+                case 'LT':
+                    $sql .= " AND $col < ?";
+                    $params[] = $val;
+                    break;
+                case 'LE':
+                    $sql .= " AND $col <= ?";
+                    $params[] = $val;
+                    break;
+                case 'IN':
+                    if (is_array($val) && count($val) > 0) {
+                        $sql .= " AND $col IN (" . implode(',', array_fill(0, count($val), '?')) . ')';
+                        $params = array_merge($params, $val);
+                    }
+                    break;
+                case 'NIN':
+                    if (is_array($val) && count($val) > 0) {
+                        $sql .= " AND $col NOT IN (" . implode(',', array_fill(0, count($val), '?')) . ')';
+                        $params = array_merge($params, $val);
+                    }
+                    break;
+            }
+        }
+        return [$sql, $params];
     }
 
     public function findSurrogateById(int|string $id): ?array

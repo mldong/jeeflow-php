@@ -369,6 +369,75 @@ class JeeflowFacadeExtTest extends TestCase
         $this->assertSame(1, $row['enabled']);
     }
 
+    /**
+     * 委托分页 m_ 条件（issues/82-7 五语言基准）：m_IN_processName / m_EQ_enabled
+     *
+     * PHP facade surrogatePage 无 operator 通道（对齐 Java，仅 m_ 条件），
+     * 故基准用同一 operator 让 operator 过滤成为 no-op，m_ 条件为被测点。
+     * 显式 enabled=0 是合法值（停用），save 后须保留（applySurrogateFields 已处理）。
+     */
+    public function testSurrogatePageInAndEqConditions(): void
+    {
+        // 3 条委托：leave(启用) / overtime(启用) / sick(停用)
+        foreach ([['leave', 'lisi', 1], ['overtime', 'wangwu', 1], ['sick', 'zhaoliu', 0]] as [$name, $agent, $enabled]) {
+            $save = $this->facade->flow('processSurrogate/save', [
+                'operator' => 'zhangsan',
+                'surrogate' => $agent,
+                'processName' => $name,
+                'enabled' => $enabled,
+            ]);
+            $this->assertEquals(0, $save['code'], json_encode($save, JSON_UNESCAPED_UNICODE));
+        }
+
+        // 无过滤：3 条
+        $p0 = $this->facade->flow('processSurrogate/page', ['operator' => 'zhangsan']);
+        $this->assertEquals(0, $p0['code']);
+        $this->assertEquals(3, $p0['data']['recordCount']);
+
+        // m_IN_processName：IN 列表命中 2 条
+        $pIn = $this->facade->flow('processSurrogate/page', [
+            'operator' => 'zhangsan',
+            'm_IN_processName' => ['leave', 'overtime'],
+        ]);
+        $this->assertEquals(0, $pIn['code'], json_encode($pIn, JSON_UNESCAPED_UNICODE));
+        $this->assertEquals(2, $pIn['data']['recordCount']);
+        $names = array_column($pIn['data']['rows'], 'processName');
+        $this->assertContains('leave', $names);
+        $this->assertContains('overtime', $names);
+
+        // m_EQ_enabled：启用过滤命中 2 条（依赖 enabled=0 未被吞）
+        $pEq = $this->facade->flow('processSurrogate/page', [
+            'operator' => 'zhangsan',
+            'm_EQ_enabled' => 1,
+        ]);
+        $this->assertEquals(0, $pEq['code'], json_encode($pEq, JSON_UNESCAPED_UNICODE));
+        $this->assertEquals(2, $pEq['data']['recordCount']);
+
+        // m_IN + m_EQ 组合：sick/overtime 中仅启用 → 1 条（overtime）
+        $pCombo = $this->facade->flow('processSurrogate/page', [
+            'operator' => 'zhangsan',
+            'm_IN_processName' => ['sick', 'overtime'],
+            'm_EQ_enabled' => 1,
+        ]);
+        $this->assertEquals(0, $pCombo['code'], json_encode($pCombo, JSON_UNESCAPED_UNICODE));
+        $this->assertEquals(1, $pCombo['data']['recordCount']);
+        $this->assertSame('overtime', $pCombo['data']['rows'][0]['processName']);
+
+        // 负向：IN 全不命中 / EQ 无匹配 → 0 条
+        $pNone = $this->facade->flow('processSurrogate/page', [
+            'operator' => 'zhangsan',
+            'm_IN_processName' => ['none1', 'none2'],
+        ]);
+        $this->assertEquals(0, $pNone['code']);
+        $this->assertEquals(0, $pNone['data']['recordCount']);
+        $pEq2 = $this->facade->flow('processSurrogate/page', [
+            'operator' => 'zhangsan',
+            'm_EQ_enabled' => 2,
+        ]);
+        $this->assertEquals(0, $pEq2['code']);
+        $this->assertEquals(0, $pEq2['data']['recordCount']);
+    }
+
     public function testSurrogateDetailAndUpdate(): void
     {
         // 委托编辑链路（issues/77）：save（前端空格格式时间窗）→ detail 回显 →
