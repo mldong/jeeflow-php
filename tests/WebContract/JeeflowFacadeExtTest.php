@@ -302,6 +302,47 @@ class JeeflowFacadeExtTest extends TestCase
         $this->assertCount(1, $result['data']['notification']);
     }
 
+    /**
+     * issues/81：listByType items 必含 processDefineState（前端发起按钮硬依赖），取值随定义 state 联动。
+     * 场景 A：deploy → 定义 state=1 → 可发起；场景 B：upAndDown 禁用 → state=0 → 前端置灰。
+     */
+    public function testDesignListByTypeProcessDefineState(): void
+    {
+        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $save = $this->facade->flow('processDesign/save', ['name' => 'simple', 'content' => $json]);
+        $designId = $save['data']['id'];
+        $deploy = $this->facade->flow('processDesign/deploy', ['id' => $designId]);
+        $this->assertEquals(0, $deploy['code']);
+        $defineId = $deploy['data']['processDefineId'];
+
+        // 场景 A：启用定义 processDefineState=1（前端可发起）
+        $rA = $this->facade->flow('processDesign/listByType');
+        $this->assertEquals(0, $rA['code']);
+        $itemA = $this->listByTypeItem($rA['data'], 'simple');
+        $this->assertSame((string) $defineId, (string) $itemA['processDefineId']);
+        $this->assertSame(1, (int) $itemA['processDefineState'], '启用定义 processDefineState 应为 1: ' . json_encode($itemA, JSON_UNESCAPED_UNICODE));
+
+        // 场景 B：upAndDown 禁用 → processDefineState=0（前端置灰）
+        $ud = $this->facade->flow('processDefine/upAndDown', ['id' => $defineId, 'opType' => 0]);
+        $this->assertEquals(0, $ud['code']);
+        $rB = $this->facade->flow('processDesign/listByType');
+        $this->assertEquals(0, $rB['code']);
+        $itemB = $this->listByTypeItem($rB['data'], 'simple');
+        $this->assertSame(0, (int) $itemB['processDefineState'], '禁用定义 processDefineState 应为 0: ' . json_encode($itemB, JSON_UNESCAPED_UNICODE));
+    }
+
+    /** listByType 出口里按 design name 取 item（approval 分组） */
+    private function listByTypeItem(array $data, string $name): array
+    {
+        $approval = $data['approval'] ?? [];
+        foreach ($approval as $item) {
+            if (($item['name'] ?? '') === $name) {
+                return $item;
+            }
+        }
+        $this->fail("listByType 缺 {$name} item: " . json_encode($data, JSON_UNESCAPED_UNICODE));
+    }
+
     // ── processSurrogate ──
 
     public function testSurrogateSaveAndPage(): void
