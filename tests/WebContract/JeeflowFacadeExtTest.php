@@ -190,12 +190,22 @@ class JeeflowFacadeExtTest extends TestCase
 
     public function testDesignPage(): void
     {
-        $this->facade->flow('processDesign/save', ['name' => 'a', 'displayName' => 'A']);
+        // 82-9：save 带 remark/icon，page 行应回显（设计页回显字段，对齐 Java/Go/Python/Node）
+        $this->facade->flow('processDesign/save', ['name' => 'a', 'displayName' => 'A',
+            'icon' => 'icon-echo', 'remark' => '回显验证备注']);
         $this->facade->flow('processDesign/save', ['name' => 'b', 'displayName' => 'B']);
 
         $page = $this->facade->flow('processDesign/page', ['pageNum' => 1, 'pageSize' => 10]);
         $this->assertEquals(0, $page['code']);
         $this->assertEquals(2, $page['data']['recordCount']);
+
+        $rowA = null;
+        foreach ($page['data']['rows'] as $row) {
+            if ($row['name'] === 'a') { $rowA = $row; break; }
+        }
+        $this->assertNotNull($rowA, 'designPage 应含 name=a 行');
+        $this->assertSame('回显验证备注', $rowA['remark'] ?? null, 'designPage remark 应回显保存值');
+        $this->assertSame('icon-echo', $rowA['icon'] ?? null, 'designPage icon 应回显保存值');
 
         // issues/63：时间格式应为 yyyy-MM-dd HH:mm:ss
         $timeRe = '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/';
