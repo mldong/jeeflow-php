@@ -191,10 +191,11 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
 
     public function findHistoryTasks(int|string $instanceId): array
     {
+        // issues/82-10：历史任务=实例全部任务（含进行中），对齐 Java 内存/Go(state=-1)/Node(null)/Python。
+        // 此前排除 DOING 导致 highLight nodeProgress 拿不到会签进行中任务 → 成员/active 全丢。
         $result = [];
         foreach ($this->tasks as $task) {
             if ($task->getProcessInstanceId() !== (string) $instanceId) continue;
-            if ($task->getTaskState() === ProcessTaskState::DOING) continue;
             $result[] = $task;
         }
         return $result;

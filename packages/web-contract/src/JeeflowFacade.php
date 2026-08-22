@@ -7,11 +7,14 @@ namespace Jeeflow\WebContract;
 use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
+use Jeeflow\Core\Enum\CountersignType;
 use Jeeflow\Core\Enum\FlowConst;
+use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\JeeflowEngine;
+use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
 use Jeeflow\Core\Parser\ModelParser;
 use Jeeflow\Core\ServiceContext;
@@ -628,7 +631,7 @@ class JeeflowFacade
         if ($def !== null) {
             try {
                 $model = ModelParser::parse((string) ($def['content'] ?? ''));
-                $nodeProgress = $this->buildNodeProgress($history);
+                $nodeProgress = $this->buildNodeProgress($model, $history);
             } catch (\Throwable $ignored) {}
         }
 
@@ -781,7 +784,13 @@ class JeeflowFacade
         return $result ?: (object)[];
     }
 
-    private function buildNodeProgress(array $historyTasks): array
+    /** 节点成员进度（issues/41/82-10，对齐 Java/Go/Python）：按任务状态组装 nodeProgress——
+     *  会签节点带 type（PARALLEL/SEQUENTIAL），成员 done 按完成状态逐人标记、active 仅进行中任务
+     *  首位（非"所有未完成成员"）；动态参与人（无静态成员）不返回；name 走 UserProvider SPI
+     *  （未注册/查不到缺省空串，前端降级显示 id）。成员取任务 actorIds 并集
+     *  （PHP 引擎会签逐人建任务表驱动，无 operatorList 变量——与 Java/Go/Python 同构）。
+     *  会签判定与 type 取**模型节点属性**（引擎建任务时 performType 未落任务表，取模型为准）。 */
+    private function buildNodeProgress(ProcessModel $model, array $historyTasks): array
     {
         $progress = [];
         $names = [];
@@ -794,7 +803,7 @@ class JeeflowFacade
         }
         $userProvider = ServiceContext::find(UserProviderInterface::class);
         foreach ($names as $name) {
-            $ts = array_filter($historyTasks, fn($t) => $t->getTaskName() === $name);
+            $ts = array_values(array_filter($historyTasks, fn($t) => $t->getTaskName() === $name));
             if (empty($ts)) continue;
             $memberSet = [];
             foreach ($ts as $t) {
@@ -802,7 +811,7 @@ class JeeflowFacade
                     $memberSet[$aid] = true;
                 }
             }
-            if (empty($memberSet)) continue;
+            if (empty($memberSet)) continue; // 动态参与人：无静态成员，不返回
             $members = array_keys($memberSet);
             $doneSet = [];
             foreach ($ts as $t) {
@@ -810,6 +819,25 @@ class JeeflowFacade
                     foreach ($t->getActorIds() as $aid) {
                         $doneSet[$aid] = true;
                     }
+                }
+            }
+            // active 仅进行中任务的首位处理人（其余未完成成员不带任何标记）
+            $activeActor = null;
+            foreach ($ts as $t) {
+                if ($t->getTaskState() === ProcessTaskState::DOING && !empty($t->getActorIds())) {
+                    $activeActor = $t->getActorIds()[0];
+                    break;
+                }
+            }
+            // 会签判定：模型节点属性（非任务表——任务 performType 未落库）
+            $isCs = false;
+            $csType = null;
+            $node = $model->getNode($name);
+            if ($node instanceof TaskModel) {
+                $isCs = $node->getPerformType() === PerformType::COUNTERSIGN;
+                if ($node->getCountersignType() !== null) {
+                    $csType = $node->getCountersignType() === CountersignType::SERIAL
+                        ? 'SEQUENTIAL' : 'PARALLEL';
                 }
             }
             $nodeData = ['members' => []];
@@ -821,15 +849,13 @@ class JeeflowFacade
                 }
                 if (isset($doneSet[$mid])) {
                     $entry['done'] = true;
-                } else {
+                } elseif ($mid === $activeActor) {
                     $entry['active'] = true;
                 }
                 $nodeData['members'][] = $entry;
             }
-            // 会签节点带 type
-            $firstTask = reset($ts);
-            if ($firstTask->getPerformType() === 1) {
-                $nodeData['type'] = 'PARALLEL';
+            if ($isCs && $csType !== null) {
+                $nodeData['type'] = $csType;
             }
             $progress[$name] = $nodeData;
         }

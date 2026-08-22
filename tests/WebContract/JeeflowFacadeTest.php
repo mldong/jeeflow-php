@@ -399,6 +399,79 @@ class JeeflowFacadeTest extends TestCase
         $this->assertArrayHasKey('nodeProgress', $result['data']);
     }
 
+    /**
+     * highLight nodeProgress 成员进度回显（issues/41/82-10，五语言对齐 Java/Go/Python）：
+     * 会签节点 type=SEQUENTIAL，成员 done 按完成状态逐人标记、active 仅进行中任务首位，
+     * 其余未完成成员不带任何标记。
+     *
+     * 本测试同时钉住两处引擎缺口（此前 PHP 仅断言 nodeProgress 键存在）：
+     *  ① findHistoryTasks 排除 DOING → 会签进行中任务全丢（成员/active 无从计算）；
+     *  ② buildNodeProgress 无 activeActor 概念（把所有未完成成员都标 active）+ type 只出 PARALLEL。
+     */
+    public function testHighLightNodeProgress(): void
+    {
+        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/06-countersign-sequential.json');
+        $deploy = $this->facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'user1']);
+        $this->assertEquals(0, $deploy['code'], json_encode($deploy, JSON_UNESCAPED_UNICODE));
+        $startResult = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $deploy['data']['processDefineId'], 'operator' => 'user1',
+        ]);
+        $this->assertEquals(0, $startResult['code'], json_encode($startResult, JSON_UNESCAPED_UNICODE));
+        $instanceId = $startResult['data']['processInstanceId'];
+
+        $hl = $this->facade->flow('processInstance/highLight', ['id' => $instanceId]);
+        $this->assertEquals(0, $hl['code'], json_encode($hl, JSON_UNESCAPED_UNICODE));
+        $np = $hl['data']['nodeProgress'];
+
+        // 历史节点 apply：发起人 user1 done
+        $this->assertArrayHasKey('apply', $np, 'nodeProgress 应含 apply 节点');
+        $applyMembers = $np['apply']['members'];
+        $this->assertCount(1, $applyMembers);
+        $this->assertSame('user1', $applyMembers[0]['id']);
+        $this->assertTrue($applyMembers[0]['done'] ?? false, 'apply 发起人应 done');
+
+        // 顺序会签 task1：type=SEQUENTIAL、第一位(userA) active、第二位(userB) 无标记
+        $this->assertArrayHasKey('task1', $np, 'nodeProgress 应含会签 task1 节点');
+        $this->assertSame('SEQUENTIAL', $np['task1']['type'] ?? null, '顺序会签 type 应=SEQUENTIAL');
+        $m1 = $np['task1']['members'];
+        $this->assertCount(2, $m1, '会签成员应为 userA+userB');
+        $this->assertSame('userA', $m1[0]['id']);
+        $this->assertTrue($m1[0]['active'] ?? false, 'userA（进行中首位）应 active');
+        $this->assertArrayNotHasKey('done', $m1[0], 'userA 未完成不应有 done');
+        $this->assertSame('userB', $m1[1]['id']);
+        $this->assertArrayNotHasKey('active', $m1[1], 'userB（未完成非首位）不应 active');
+        $this->assertArrayNotHasKey('done', $m1[1], 'userB 未完成不应有 done');
+
+        // 推进会签：userA done → userB active
+        $todoA = $this->facade->flow('processTask/todoList', ['operator' => 'userA']);
+        $this->assertGreaterThanOrEqual(1, $todoA['data']['recordCount']);
+        $execA = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $todoA['data']['rows'][0]['id'], 'operator' => 'userA', 'submitType' => SubmitType::AGREE,
+        ]);
+        $this->assertEquals(0, $execA['code'], json_encode($execA, JSON_UNESCAPED_UNICODE));
+
+        $hl2 = $this->facade->flow('processInstance/highLight', ['id' => $instanceId]);
+        $m2 = $hl2['data']['nodeProgress']['task1']['members'];
+        $this->assertTrue($m2[0]['done'] ?? false, 'userA 完成后应 done');
+        $this->assertArrayNotHasKey('active', $m2[0], 'userA 完成后不应 active');
+        $this->assertTrue($m2[1]['active'] ?? false, 'userB（进行中首位）应 active');
+        $this->assertArrayNotHasKey('done', $m2[1], 'userB 未完成不应有 done');
+
+        // 全部完成 → 全部 done，无 active
+        $todoB = $this->facade->flow('processTask/todoList', ['operator' => 'userB']);
+        $this->assertGreaterThanOrEqual(1, $todoB['data']['recordCount']);
+        $execB = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $todoB['data']['rows'][0]['id'], 'operator' => 'userB', 'submitType' => SubmitType::AGREE,
+        ]);
+        $this->assertEquals(0, $execB['code'], json_encode($execB, JSON_UNESCAPED_UNICODE));
+
+        $hl3 = $this->facade->flow('processInstance/highLight', ['id' => $instanceId]);
+        $m3 = $hl3['data']['nodeProgress']['task1']['members'];
+        $this->assertTrue($m3[0]['done'] ?? false, 'userA 应 done');
+        $this->assertTrue($m3[1]['done'] ?? false, 'userB 应 done');
+        $this->assertArrayNotHasKey('active', $m3[1], '完成后不应有 active');
+    }
+
     // ── 抄送 ──
 
     public function testCreateCCInstanceAndCcList(): void

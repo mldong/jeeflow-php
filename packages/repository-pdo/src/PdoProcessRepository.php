@@ -350,8 +350,10 @@ class PdoProcessRepository implements ProcessRepositoryInterface
 
     public function findHistoryTasks(int|string $instanceId): array
     {
-        $stmt = $this->pdo->prepare('SELECT * FROM wf_process_task WHERE process_instance_id = ? AND task_state != ? ORDER BY create_time');
-        $stmt->execute([(string) $instanceId, ProcessTaskState::DOING]);
+        // issues/82-10：历史任务=实例全部任务（含进行中），对齐 Java 内存/Go(state=-1)/Node(null)/Python。
+        // 此前 task_state != DOING 导致 highLight nodeProgress 拿不到会签进行中任务 → 成员/active 全丢。
+        $stmt = $this->pdo->prepare('SELECT * FROM wf_process_task WHERE process_instance_id = ? ORDER BY create_time');
+        $stmt->execute([(string) $instanceId]);
         $result = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
             $result[] = $this->hydrateTask($row);
