@@ -379,9 +379,19 @@ class JeeflowFacade
         $inst = $this->repository->findInstanceById($task->getProcessInstanceId());
         $def = $inst !== null ? $this->repository->findDefineById($inst->getDefineId()) : null;
 
+        // issues/82-5：任务级 ext.isFirstTaskNode（前端 detail.vue 双兜底 record.ext?.isFirstTaskNode）
+        // 首个任务节点且 DOING → true，与 instance detail 的 activeTaskList 行语义一致
+        $tExt = $task->getVariables()->toArray();
+        $doing = $task->getTaskState() === ProcessTaskState::DOING;
+        $tExt['isFirstTaskNode'] = false;
         $vo = $this->taskVo($task);
+        $vo['ext'] = $tExt;
         $vo['executable'] = $task->isAllowed($operator);
         $vo['jsonObject'] = $def !== null ? $this->parseGraph($def['content'] ?? '') : null;
+        if ($def !== null) {
+            $tExt['isFirstTaskNode'] = $doing && $task->getTaskName() === $this->firstTaskNodeId($vo['jsonObject']);
+            $vo['ext'] = $tExt;
+        }
         // taskModel
         if ($def !== null) {
             try {

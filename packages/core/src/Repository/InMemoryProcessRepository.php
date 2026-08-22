@@ -131,10 +131,11 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
             // Enrich with define info (align Java instanceRowToMap L1257-1262)
             $def = $this->findDefineById($inst->getDefineId());
             if ($def !== null) {
+                // 兼容 PDO snake_case / 内存 camelCase 定义键（issues/82-6）
                 $row['processDefineName'] = $def['name'] ?? null;
-                $row['processDefineDisplayName'] = $def['display_name'] ?? null;
+                $row['processDefineDisplayName'] = $def['display_name'] ?? $def['displayName'] ?? null;
                 $row['processDefineVersion'] = isset($def['version']) ? (int) $def['version'] : null;
-                $row['displayName'] = $def['display_name'] ?? null;
+                $row['displayName'] = $def['display_name'] ?? $def['displayName'] ?? null;
                 $row['version'] = isset($def['version']) ? (int) $def['version'] : null;
             } else {
                 $row['processDefineName'] = null;
@@ -343,7 +344,13 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
 
     private function taskToRow(ProcessTask $task): array
     {
-        return [
+        // issues/82-3：instanceExt 容器（实例变量对象）+ ext 空回退实例变量
+        // —— 对齐 Java taskRowToMap / PDO pagedTaskQuery（门面 pass-through，仓储必须出契约）
+        $inst = $this->instances[(string) ($task->getProcessInstanceId() ?? '')] ?? null;
+        $instanceExt = $inst !== null ? ($inst->getVariables()->toArray() ?: []) : [];
+        $ext = $task->getVariables()->toArray();
+        if (empty($ext)) $ext = $instanceExt;
+        $row = [
             'id' => $task->getTaskId(),
             'processInstanceId' => $task->getProcessInstanceId(),
             'taskName' => $task->getTaskName(),
@@ -356,7 +363,8 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
             'taskParentId' => $task->getParentTaskId(),
             'taskActorIdList' => $task->getActorIds(),
             'variable' => $task->getVariables()->toArray() ?: (object)[],
-            'ext' => $task->getVariables()->toArray() ?: (object)[],
+            'ext' => $ext ?: (object)[],
+            'instanceExt' => $instanceExt ?: (object)[],
             'taskFormData' => (object)[],
             'finishTime' => $task->getFinishTime(),
             'expireTime' => $task->getExpireTime(),
@@ -365,6 +373,15 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
             'updateTime' => $task->getUpdateTime(),
             'updateUser' => $task->getUpdateUser(),
         ];
+        if ($inst !== null) {
+            $row['instanceCreateTime'] = $inst->getCreateTime();
+            $def = $this->findDefineById($inst->getDefineId());
+            $row['processDefineName'] = $def['name'] ?? null;
+            $row['processDefineDisplayName'] = $def['display_name'] ?? $def['displayName'] ?? null;
+            $row['processDefineVersion'] = $def['version'] ?? null;
+            $row['version'] = isset($def['version']) ? (int) $def['version'] : null;
+        }
+        return $row;
     }
 
     private function getDefineField(array $row, string $col): mixed
@@ -398,10 +415,34 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         return array_values($rows);
     }
 
+    /**
+     * m_ 查询列 → 行键值解析（issues/82-6：对齐 Java in-memory 的 pd./t. 白名单映射）
+     *
+     * 旧实现只剥表别名后按裸键取（pd.name→name / t.display_name→display_name），
+     * 而内存行键是 camelCase（processDefineName / displayName），导致 pd. 前缀/snake_case 列
+     * 静默失配。现：剥别名 + snake→camel，pd. 前缀映射到 processDefine 行键。
+     */
+    private function resolveColumnValue(array $row, string $col): mixed
+    {
+        $alias = '';
+        if (str_contains($col, '.')) {
+            [$alias, $col] = explode('.', $col, 2);
+        }
+        $field = $this->snakeToCamel($col);
+        if ($alias === 'pd') {
+            return $row['processDefine' . ucfirst($field)] ?? null;
+        }
+        return $row[$field] ?? null;
+    }
+
+    private function snakeToCamel(string $s): string
+    {
+        return lcfirst(str_replace(' ', '', ucwords(str_replace('_', ' ', $s))));
+    }
+
     private function matchCondition(array $row, string $col, string $op, mixed $value): bool
     {
-        $clean = preg_replace('/^[a-z]+\./', '', $col);
-        $actual = $row[$clean] ?? null;
+        $actual = $this->resolveColumnValue($row, $col);
         return match ($op) {
             'EQ' => (string) $actual === (string) $value,
             'LIKE' => str_contains((string) $actual, (string) $value),
