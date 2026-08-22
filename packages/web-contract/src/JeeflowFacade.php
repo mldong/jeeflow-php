@@ -484,13 +484,16 @@ class JeeflowFacade
                         $user = $userProvider->getUser($actorId);
                         if ($user !== null) {
                             $u = ['userId' => $actorId, 'realName' => $user['realName'] ?? ''];
+                            if (!empty($user['deptName'])) {
+                                $u['deptName'] = $user['deptName'];
+                            }
                         }
                     }
                 }
                 if ($u === null) {
                     $u = ['userId' => $actorId, 'realName' => $actorId];
                 }
-                $rows[] = $u;
+                $rows[] = $this->candidateRow($actorId, $u);
             }
             return $this->pageResult(new PageResult(1, 10, count($rows), $rows));
         }
@@ -499,6 +502,29 @@ class JeeflowFacade
             return $this->error('未配置 UserSearchProviderInterface（用户搜索钩子）');
         }
         return $this->pageResult($this->userSearchProvider->page($this->queryParser->parse($args)));
+    }
+
+    /**
+     * candidatePage 模型候选行键归一（issues/80，对齐 Java candidateRow）
+     *
+     * 前端 UserSelect 按 valueField='id'/labelField='realName' 取值：
+     * 主键 id（取 src.id → src.userId → actorId），realName 兜底 id，
+     * 保留 userId 兼容旧消费方；userName/deptName 有则透传。
+     */
+    private function candidateRow(string $actorId, array $src): array
+    {
+        $id = $src['id'] ?? $src['userId'] ?? $actorId;
+        $row = ['id' => (string) $id, 'realName' => $src['realName'] ?? (string) $id];
+        if (isset($src['userId'])) {
+            $row['userId'] = $src['userId'];
+        }
+        if (isset($src['userName'])) {
+            $row['userName'] = $src['userName'];
+        }
+        if (isset($src['deptName'])) {
+            $row['deptName'] = $src['deptName'];
+        }
+        return $row;
     }
 
     /**

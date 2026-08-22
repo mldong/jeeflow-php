@@ -134,6 +134,48 @@ class JeeflowFacadeIssue61Test extends TestCase
         // 单页固定 1/10 结构
         $this->assertEquals(1, $result['data']['pageNum']);
         $this->assertEquals(10, $result['data']['pageSize']);
+        // issues/80：行键契约 {id, realName}（对齐前端 UserSelect valueField='id'）
+        $ids = [];
+        foreach ($result['data']['rows'] as $row) {
+            $this->assertArrayHasKey('id', $row, '候选行缺 id 键: ' . json_encode($row, JSON_UNESCAPED_UNICODE));
+            $this->assertArrayHasKey('realName', $row, '候选行缺 realName 键: ' . json_encode($row, JSON_UNESCAPED_UNICODE));
+            if (isset($row['userId'])) {
+                $this->assertSame($row['id'], $row['userId'], 'id 与 userId 应一一对齐（行键归一）');
+            }
+            $ids[] = $row['id'];
+        }
+        $this->assertContains('userA', $ids);
+    }
+
+    public function testCandidatePageUserProviderDeptNamePassThrough(): void
+    {
+        // issues/80：UserProvider 子路径 realName/deptName 可得时透传，id 行键归一
+        ServiceContext::put(UserProviderInterface::class, new class implements UserProviderInterface {
+            public function getUser(string $userId): ?array
+            {
+                return $userId === 'userA'
+                    ? ['userId' => 'userA', 'realName' => '张三', 'deptName' => '财务部']
+                    : null;
+            }
+        });
+
+        $defineId = $this->deployFlow('12-candidate-page.json');
+        $inst = $this->engine->startProcessInstanceById($defineId, 'user1', FlowData::create());
+        $doing = $this->repo->findDoingTasks($inst->getInstanceId());
+
+        $result = $this->facade->flow('processTask/candidatePage', ['processTaskId' => $doing[0]->getTaskId()]);
+        $this->assertEquals(0, $result['code'], $result['msg']);
+        $rowA = null;
+        foreach ($result['data']['rows'] as $row) {
+            if ($row['id'] === 'userA') {
+                $rowA = $row;
+            }
+        }
+        $this->assertNotNull($rowA);
+        $this->assertEquals('张三', $rowA['realName']);
+        $this->assertEquals('财务部', $rowA['deptName']);
+        // 保留 userId 兼容旧消费方
+        $this->assertEquals('userA', $rowA['userId']);
     }
 
     // ── candidatePage：无模型候选 → 用户分页搜索 ──
