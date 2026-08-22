@@ -235,6 +235,14 @@ class JeeflowFacadeTest extends TestCase
         $done = $this->facade->flow('processTask/doneList', ['operator' => 'leader']);
         $this->assertEquals(0, $done['code']);
         $this->assertGreaterThanOrEqual(1, $done['data']['recordCount']);
+        // 82-8：doneList 行 finishTime 已格式化（yyyy-MM-dd HH:mm:ss 无 T，对齐 Java/Go/Python/Node）
+        $row = $done['data']['rows'][0];
+        $this->assertNotNull($row['finishTime'] ?? null, 'doneList 行 finishTime 应非空（已办任务）');
+        $this->assertMatchesRegularExpression(
+            '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/',
+            $row['finishTime'],
+            "doneList finishTime 应 yyyy-MM-dd HH:mm:ss（无 T）: {$row['finishTime']}"
+        );
     }
 
     public function testTaskDetail(): void
