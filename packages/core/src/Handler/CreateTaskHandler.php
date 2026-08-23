@@ -43,7 +43,8 @@ class CreateTaskHandler implements HandlerInterface
                 $this->taskModel->getPerformType(),
                 $this->taskModel->getForm() ?: null,
                 $actors,
-                $operator
+                $operator,
+                $this->taskModel->getCountersignType()
             );
         } else {
             $task = $instance->createTask(

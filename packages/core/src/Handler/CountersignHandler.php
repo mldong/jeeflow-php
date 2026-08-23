@@ -7,6 +7,7 @@ namespace Jeeflow\Core\Handler;
 use Jeeflow\Core\Execution;
 use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Domain\ProcessTask;
+use Jeeflow\Core\Enum\CountersignType;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
@@ -56,9 +57,31 @@ class CountersignHandler implements HandlerInterface
         $csType = $this->taskModel->getCountersignType();
         $merged = false;
 
-        // 串行会签 (countersignType=2): 全部成员完成才流转
-        if ($csType === 2) {
-            $merged = $finishedCount >= count($allTasks);
+        // 串行会签逐个创建（issues/93，对齐内置版 createCountersignTask + Java/Go/Python/Node）：
+        // 每次仅 1 个 DOING 成员任务。本位（最后一位）完成 → 流转；否则创建下一位成员任务并停留。
+        // 会签计数状态在首位任务变量（createCountersignTasks 写入），prepareExecution 已把
+        // 刚完成任务变量同步到 execution.getProcessTask()，由此读取 loopCounter/operatorList。
+        // 注：CountersignType::SERIAL === 1（此前误写 === 2 为死分支，串行被当作并行全员等待；
+        // 在逐个创建下会导致首位完成即误判 merged 提前流转，故一并修正，对齐 Java）。
+        if ($csType === CountersignType::SERIAL) {
+            $completed = $execution->getProcessTask();
+            $operatorList = null;
+            $loopCounter = 0;
+            if ($completed !== null && $completed->getVariables() !== null) {
+                $operatorList = $this->toStringList($completed->getVariables()->get(
+                    FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $this->taskModel->getName()));
+                $loopCounter = $completed->getVariables()->getInt(
+                    FlowConst::LOOP_COUNTER . '_' . $this->taskModel->getName(), 0);
+            }
+            if (!empty($operatorList) && $loopCounter + 1 < count($operatorList)) {
+                $this->createNextCountersignTask(
+                    $instance, $execution,
+                    $operatorList[$loopCounter + 1], $loopCounter + 1, count($operatorList)
+                );
+            } else {
+                // 最后一位完成 → 流转（全部成员完成才推进，issues/44 E16）
+                $merged = true;
+            }
         } else {
             // 并行会签：检查条件
             $cond = $this->taskModel->getCountersignCompletionCondition();
@@ -106,6 +129,51 @@ class CountersignHandler implements HandlerInterface
                 $task->abandon($operator);
             }
         }
+    }
+
+    /** 串行会签推进：创建下一位成员任务（issues/93）。
+     *  新任务同时加入聚合根（$instance->tasks，供 updateInstance 级联/后续查询）与 execution
+     *  （供 persistTasks 经 saveTask 落库并分配任务 id——saveTask 对 null id 自动分配）。
+     *  会签计数状态随任务变量持久化（loopCounter+1 / operatorList 全量 / nrOfInstances），
+     *  下一位完成时由本处理器再次读取推进，直至最后一位完成才 merged。 */
+    private function createNextCountersignTask($instance, Execution $execution,
+                                               string $nextActor, int $nextLoopCounter, int $total): void
+    {
+        $tm = $this->taskModel;
+        $node = $tm->getName();
+        $next = ProcessTask::create(
+            $instance->getInstanceId(), $node, $tm->getDisplayName(),
+            $tm->getTaskType(), $tm->getPerformType(), $tm->getForm() ?: null,
+            [$nextActor], $execution->getOperator()
+        );
+        $completed = $execution->getProcessTask();
+        $operatorList = $completed !== null
+            ? $this->toStringList($completed->getVariables()->get(FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $node))
+            : [];
+        $next->getVariables()->set(FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $node, $operatorList);
+        $next->getVariables()->set(FlowConst::LOOP_COUNTER . '_' . $node, $nextLoopCounter);
+        $next->getVariables()->set(FlowConst::NR_OF_INSTANCES . '_' . $node, $total);
+        $tasks = $instance->getTasks();
+        $tasks[] = $next;
+        $instance->setTasks($tasks);
+        $execution->addTask($next);
+    }
+
+    /** 会签办理人列表取值兼容（JSON 反序列化后可能是数组 / 其他标量） */
+    private function toStringList(mixed $value): array
+    {
+        $result = [];
+        if ($value === null) return $result;
+        if (is_array($value)) {
+            foreach ($value as $o) {
+                $s = trim((string) $o);
+                if ($s !== '') $result[] = $s;
+            }
+        } else {
+            $s = trim((string) $value);
+            if ($s !== '') $result[] = $s;
+        }
+        return $result;
     }
 
     private function buildCountersignVars($instance, array $allTasks): FlowData

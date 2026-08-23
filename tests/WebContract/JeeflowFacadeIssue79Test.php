@@ -238,8 +238,11 @@ class JeeflowFacadeIssue79Test extends TestCase
         ]);
         $this->assertSame(0, $r1['code'], 'startAndExecute 失败: ' . json_encode($r1, JSON_UNESCAPED_UNICODE));
         $instanceId = $r1['data']['processInstanceId'];
+        // 串行会签逐个创建（issues/93）：发起后仅 userA 的 DOING 任务，userB 尚未创建
         $taskA = $this->doingTaskIdByActor($instanceId, 'task1', 'userA');
         $this->assertNotSame('', $taskA, '会签节点应有 userA 的 DOING 任务');
+        $this->assertSame('', $this->doingTaskIdByActor($instanceId, 'task1', 'userB'),
+            '串行逐个创建：发起后 userB 不应已有任务');
         $this->repo->addTaskActor($taskA, ['userA']);
         // userA 会签不同意（未配 ONE_VOTE_VETO → 软拒绝）
         $r = $this->facade->flow('processTask/execute', [
@@ -253,9 +256,9 @@ class JeeflowFacadeIssue79Test extends TestCase
         $this->assertSame(ProcessTaskState::FINISHED, $doneA->getTaskState(), '软拒绝任务应正常完成');
         $this->assertEquals(1, (int) $doneA->getVariables()->get('countersignDisagreeFlag'), 'countersignDisagreeFlag=1 应落任务变量');
         $this->assertSame('userA', $doneA->getActorId(), '否决人应记录为实际操作人 userA');
-        // 软拒绝不应废弃其余成员：userB 保持 DOING（预创建或串行推进到 userB 均成立）
+        // 软拒绝按常规串行推进：userA 完成后应创建下一位 userB 的 DOING 任务（不阻断、不废弃）
         $taskB = $this->doingTaskIdByActor($instanceId, 'task1', 'userB');
-        $this->assertNotSame('', $taskB, '软拒绝不应废弃 userB，应保持 DOING');
+        $this->assertNotSame('', $taskB, '软拒绝后应推进创建 userB 的 DOING 任务');
     }
 
     public function testExecuteCountersignOneVoteVeto(): void

@@ -805,14 +805,21 @@ class JeeflowFacade
         foreach ($names as $name) {
             $ts = array_values(array_filter($historyTasks, fn($t) => $t->getTaskName() === $name));
             if (empty($ts)) continue;
-            $memberSet = [];
-            foreach ($ts as $t) {
-                foreach ($t->getActorIds() as $aid) {
-                    $memberSet[$aid] = true;
+            // 完整成员列表：会签串行任务变量 operatorList_{node} 优先（逐个创建时仅 1 个任务，
+            // 全量办理人存于其变量——对齐 Go/Java buildNodeProgress），否则任务 actorIds 并集
+            $csMembers = $this->readCountersignOperatorList($ts, $name);
+            if (!empty($csMembers)) {
+                $members = $csMembers;
+            } else {
+                $memberSet = [];
+                foreach ($ts as $t) {
+                    foreach ($t->getActorIds() as $aid) {
+                        $memberSet[$aid] = true;
+                    }
                 }
+                if (empty($memberSet)) continue; // 动态参与人：无静态成员，不返回
+                $members = array_keys($memberSet);
             }
-            if (empty($memberSet)) continue; // 动态参与人：无静态成员，不返回
-            $members = array_keys($memberSet);
             $doneSet = [];
             foreach ($ts as $t) {
                 if ($t->getTaskState() === ProcessTaskState::FINISHED) {
@@ -860,6 +867,28 @@ class JeeflowFacade
             $progress[$name] = $nodeData;
         }
         return $progress;
+    }
+
+    /** 会签全量办理人：从任务变量 operatorList_{node} 还原（issues/93 串行逐个创建时仅 1 个任务，
+     *  全量办理人存于该任务变量，对齐 Go/Java）。遍历节点全部任务，返回第一个非空列表（首位
+     *  任务必带）；兼容 JSON 反序列化后的数组形态 */
+    private function readCountersignOperatorList(array $ts, string $name): array
+    {
+        $key = FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $name;
+        foreach ($ts as $t) {
+            $value = $t->getVariables()->get($key);
+            if (is_array($value)) {
+                $list = [];
+                foreach ($value as $o) {
+                    $s = trim((string) $o);
+                    if ($s !== '') $list[] = $s;
+                }
+                if (!empty($list)) return $list;
+            } elseif ($value !== null && trim((string) $value) !== '') {
+                return [trim((string) $value)];
+            }
+        }
+        return [];
     }
 
     // ── 响应构造 ──

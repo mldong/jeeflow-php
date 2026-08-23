@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Jeeflow\Core\Domain;
 
+use Jeeflow\Core\Enum\CountersignType;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
@@ -143,12 +144,32 @@ class ProcessInstance
 
     /**
      * 创建会签任务（每个 actor 一个独立 task）
+     *
+     * 串行会签（issues/93）：仅创建第一位成员任务，并把会签计数状态写入该任务变量
+     * （operatorList_{node} 全量办理人 / loopCounter_{node} 当前序号 / nrOfInstances_{node} 总数），
+     * 由 CountersignHandler 在每位成员完成时推进创建下一位——任意时刻仅 1 个 DOING 会签任务，
+     * 对齐 mldong 内置引擎 createCountersignTask 与 Java/Go/Python/Node 的串行逐个创建。
+     * PARALLEL / 未配置类型保持全员预创建。
+     *
      * @param string[] $actorIds
      * @return ProcessTask[]
      */
     public function createCountersignTasks(string $taskName, string $displayName, ?int $taskType,
-                                            ?int $performType, ?string $formKey, array $actorIds, string $operator): array
+                                            ?int $performType, ?string $formKey, array $actorIds,
+                                            string $operator, ?int $countersignType = null): array
     {
+        // 串行会签逐个创建（issues/93）：仅建首位 + 记录任务变量
+        if ($countersignType === CountersignType::SERIAL) {
+            $first = ProcessTask::create(
+                $this->instanceId, $taskName, $displayName,
+                $taskType, $performType, $formKey, [$actorIds[0]], $operator
+            );
+            $first->getVariables()->set(FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $taskName, $actorIds);
+            $first->getVariables()->set(FlowConst::LOOP_COUNTER . '_' . $taskName, 0);
+            $first->getVariables()->set(FlowConst::NR_OF_INSTANCES . '_' . $taskName, count($actorIds));
+            $this->tasks[] = $first;
+            return [$first];
+        }
         $list = [];
         foreach ($actorIds as $actorId) {
             $task = ProcessTask::create(
