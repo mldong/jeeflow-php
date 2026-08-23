@@ -107,6 +107,18 @@ class JeeflowFacadeIssue79Test extends TestCase
         return $t->getActorIds();
     }
 
+    /** 会签场景：同节点多个 DOING 任务（每 actor 一个），按 actor 定位 */
+    private function doingTaskIdByActor(string $instanceId, string $taskName, string $actor): string
+    {
+        foreach ($this->repo->findDoingTasks($instanceId) as $t) {
+            if ($t->getTaskName() !== $taskName) continue;
+            if (in_array($actor, $t->getActorIds(), true)) {
+                return (string) $t->getTaskId();
+            }
+        }
+        return '';
+    }
+
     private function stateOf(string $instanceId): int
     {
         $inst = $this->repo->findInstanceById($instanceId);
@@ -213,11 +225,12 @@ class JeeflowFacadeIssue79Test extends TestCase
         $this->assertSame(0, count($this->repo->findDoingTasks($instId)), 'REJECT 后应无 DOING 任务');
     }
 
-    // ── submitType=20 会签一票否决（PHP 引擎已有 CountersignHandler::setMerged，钉住行为）──
+    // ── submitType=20 会签拒绝：软拒绝（默认）与一票否决（ONE_VOTE_VETO）+ merged 废弃残留（issues/91）──
 
-    public function testExecuteCountersignDisagree(): void
+    public function testExecuteCountersignDisagreeSoft(): void
     {
-        // 06-countersign-sequential：apply 自动完成 → task1 串行会签 userA（userB 未开始）
+        // issues/91：06-countersign-sequential 未配置 ONE_VOTE_VETO → submitType=20 为软拒绝
+        // （否决者任务正常完成、flag 记录、流程不阻断，继续等其余成员）
         $defineId = $this->deployFlow('06-countersign-sequential.json');
         $r1 = $this->facade->flow('processInstance/startAndExecute', [
             'processDefineId' => $defineId,
@@ -225,22 +238,91 @@ class JeeflowFacadeIssue79Test extends TestCase
         ]);
         $this->assertSame(0, $r1['code'], 'startAndExecute 失败: ' . json_encode($r1, JSON_UNESCAPED_UNICODE));
         $instanceId = $r1['data']['processInstanceId'];
-        $taskA = $this->doingTaskId($instanceId, 'task1');
-        $this->assertNotSame('', $taskA, '会签节点应有 DOING 任务');
+        $taskA = $this->doingTaskIdByActor($instanceId, 'task1', 'userA');
+        $this->assertNotSame('', $taskA, '会签节点应有 userA 的 DOING 任务');
         $this->repo->addTaskActor($taskA, ['userA']);
-        // submitType=20：门面自动注入 countersignDisagreeFlag=1 → 引擎一票否决
-        // （串行会签提前流转 end）；flag 落任务/实例变量
+        // userA 会签不同意（未配 ONE_VOTE_VETO → 软拒绝）
+        $r = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $taskA, 'operator' => 'userA', 'submitType' => SubmitType::COUNTERSIGN_DISAGREE,
+        ]);
+        $this->assertSame(0, $r['code'], '会签软拒绝执行失败: ' . json_encode($r, JSON_UNESCAPED_UNICODE));
+        $inst = $this->repo->findInstanceById($instanceId);
+        $this->assertSame(ProcessInstanceState::DOING, $inst->getState(), '软拒绝后实例应保持 DOING(10)，继续等 userB');
+        $this->assertEquals(1, (int) $inst->getVariables()->get('countersignDisagreeFlag'), 'countersignDisagreeFlag=1 应落实例变量');
+        $doneA = $this->repo->findTaskById($taskA);
+        $this->assertSame(ProcessTaskState::FINISHED, $doneA->getTaskState(), '软拒绝任务应正常完成');
+        $this->assertEquals(1, (int) $doneA->getVariables()->get('countersignDisagreeFlag'), 'countersignDisagreeFlag=1 应落任务变量');
+        $this->assertSame('userA', $doneA->getActorId(), '否决人应记录为实际操作人 userA');
+        // 软拒绝不应废弃其余成员：userB 保持 DOING（预创建或串行推进到 userB 均成立）
+        $taskB = $this->doingTaskIdByActor($instanceId, 'task1', 'userB');
+        $this->assertNotSame('', $taskB, '软拒绝不应废弃 userB，应保持 DOING');
+    }
+
+    public function testExecuteCountersignOneVoteVeto(): void
+    {
+        // issues/91：13-countersign-one-vote-veto（并行 + ONE_VOTE_VETO）→ 任一成员
+        // submitType=20 一票否决 → 会签节点立即推进 end，其余 DOING 会签任务废弃(ABANDON 99)
+        $defineId = $this->deployFlow('13-countersign-one-vote-veto.json');
+        $r1 = $this->facade->flow('processInstance/startAndExecute', [
+            'processDefineId' => $defineId,
+            'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $r1['code'], 'startAndExecute 失败: ' . json_encode($r1, JSON_UNESCAPED_UNICODE));
+        $instanceId = $r1['data']['processInstanceId'];
+        // 并行会签全员预创建：userA/userB/userC 三个 DOING 任务
+        $taskA = $this->doingTaskIdByActor($instanceId, 'task1', 'userA');
+        $taskB = $this->doingTaskIdByActor($instanceId, 'task1', 'userB');
+        $taskC = $this->doingTaskIdByActor($instanceId, 'task1', 'userC');
+        $this->assertNotSame('', $taskA, '会签节点应有 userA 的 DOING 任务');
+        $this->assertNotSame('', $taskB, '会签节点应有 userB 的 DOING 任务');
+        $this->assertNotSame('', $taskC, '会签节点应有 userC 的 DOING 任务');
+        $this->repo->addTaskActor($taskA, ['userA']);
+        // userA 会签不同意（已配 ONE_VOTE_VETO → 一票否决）
         $r = $this->facade->flow('processTask/execute', [
             'processTaskId' => $taskA, 'operator' => 'userA', 'submitType' => SubmitType::COUNTERSIGN_DISAGREE,
         ]);
         $this->assertSame(0, $r['code'], '会签否决执行失败: ' . json_encode($r, JSON_UNESCAPED_UNICODE));
         $inst = $this->repo->findInstanceById($instanceId);
-        // 一票否决效果：会签节点被提前流转 end（若否决未生效，串行会签将停在 DOING 等 userB）
-        $this->assertSame(ProcessInstanceState::FINISHED, $inst->getState(), '会签否决后实例应完成 FINISHED(20)（无否决则停留 DOING）');
+        $this->assertSame(ProcessInstanceState::FINISHED, $inst->getState(), '一票否决后会签节点应立即推进 end（实例 FINISHED 20）');
         $this->assertEquals(1, (int) $inst->getVariables()->get('countersignDisagreeFlag'), 'countersignDisagreeFlag=1 应落实例变量');
         $doneA = $this->repo->findTaskById($taskA);
         $this->assertSame(ProcessTaskState::FINISHED, $doneA->getTaskState(), '否决任务应已完成');
-        $this->assertEquals(1, (int) $doneA->getVariables()->get('countersignDisagreeFlag'), 'countersignDisagreeFlag=1 应落任务变量');
         $this->assertSame('userA', $doneA->getActorId(), '否决人应记录为实际操作人 userA');
+        // 否决应废弃其余成员（ABANDON 99）
+        $this->assertSame(ProcessTaskState::ABANDON, $this->repo->findTaskById($taskB)->getTaskState(), '否决应废弃其余成员 userB（ABANDON 99）');
+        $this->assertSame(ProcessTaskState::ABANDON, $this->repo->findTaskById($taskC)->getTaskState(), '否决应废弃其余成员 userC（ABANDON 99）');
+        $this->assertSame(0, count($this->repo->findDoingTasks($instanceId)), '否决后应无 DOING 任务');
+    }
+
+    public function testExecuteCountersignDisagreeParallelSoft(): void
+    {
+        // issues/91：05-countersign-parallel 未配置 ONE_VOTE_VETO → 并行会签 submitType=20 软拒绝
+        // （否决者任务完成、flag 记录、流程不阻断，其余成员仍 DOING 等待）
+        $defineId = $this->deployFlow('05-countersign-parallel.json');
+        $r1 = $this->facade->flow('processInstance/startAndExecute', [
+            'processDefineId' => $defineId,
+            'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $r1['code'], 'startAndExecute 失败: ' . json_encode($r1, JSON_UNESCAPED_UNICODE));
+        $instanceId = $r1['data']['processInstanceId'];
+        $taskA = $this->doingTaskIdByActor($instanceId, 'task1', 'userA');
+        $taskB = $this->doingTaskIdByActor($instanceId, 'task1', 'userB');
+        $taskC = $this->doingTaskIdByActor($instanceId, 'task1', 'userC');
+        $this->assertNotSame('', $taskA, '会签节点应有 userA 的 DOING 任务');
+        $this->assertNotSame('', $taskB, '会签节点应有 userB 的 DOING 任务');
+        $this->assertNotSame('', $taskC, '会签节点应有 userC 的 DOING 任务');
+        $this->repo->addTaskActor($taskA, ['userA']);
+        // userA 会签不同意（未配 ONE_VOTE_VETO → 软拒绝）
+        $r = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $taskA, 'operator' => 'userA', 'submitType' => SubmitType::COUNTERSIGN_DISAGREE,
+        ]);
+        $this->assertSame(0, $r['code'], '会签软拒绝执行失败: ' . json_encode($r, JSON_UNESCAPED_UNICODE));
+        $inst = $this->repo->findInstanceById($instanceId);
+        $this->assertSame(ProcessInstanceState::DOING, $inst->getState(), '并行软拒绝后实例应保持 DOING(10)，等 userB/userC');
+        $this->assertEquals(1, (int) $inst->getVariables()->get('countersignDisagreeFlag'), 'countersignDisagreeFlag=1 应落实例变量');
+        $doneA = $this->repo->findTaskById($taskA);
+        $this->assertSame(ProcessTaskState::FINISHED, $doneA->getTaskState(), '软拒绝任务应正常完成');
+        $this->assertSame(ProcessTaskState::DOING, $this->repo->findTaskById($taskB)->getTaskState(), '软拒绝不应废弃 userB');
+        $this->assertSame(ProcessTaskState::DOING, $this->repo->findTaskById($taskC)->getTaskState(), '软拒绝不应废弃 userC');
     }
 }

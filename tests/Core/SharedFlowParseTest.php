@@ -64,10 +64,11 @@ class SharedFlowParseTest extends TestCase
         return $cases;
     }
 
-    public function testAllFlowsCountIs14(): void
+    public function testAllFlowsCountIs15(): void
     {
         $files = glob(self::$flowsDir . '/*.json');
         $this->assertNotFalse($files);
-        $this->assertCount(14, $files, '应有 14 个共享流程定义');
+        // issues/91：新增 13-countersign-one-vote-veto.json → 共享流程 15 个
+        $this->assertCount(15, $files, '应有 15 个共享流程定义');
     }
 }
