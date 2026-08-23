@@ -52,6 +52,11 @@ interface ProcessExtRepositoryInterface
     /** 委托详情（issues/77） */
     public function findSurrogateById(int|string $id): ?array;
 
+    /** 查生效中的委托（issues/82-12，对齐 Java/Go/Python/Node）：enabled=1 且处于
+     *  startTime/endTime 时间窗内（起止为 null = 不限），processName 精确命中优先，
+     * processName 为空（全流程委托）作兜底；无命中返回 null。$time 缺省取当前时间。 */
+    public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array;
+
     /** 保存委托 */
     public function saveSurrogate(array $surrogate): string;
 

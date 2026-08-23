@@ -262,4 +262,52 @@ SQL);
         $qBadCol->add('t.nonexistent_col', 'EQ', 'x'); // 白名单外 → 忽略，仍 3 条
         $this->assertSame(3, $this->extRepo->pageSurrogates($qBadCol)->getRecordCount());
     }
+
+    /**
+     * issues/82-12：委托生效判断——时间窗 startTime/endTime + enabled 过滤
+     * （PDO 路径，SQLite：验证 WHERE enabled=1 + start_time/end_time IS NULL 兜底）
+     */
+    public function testGetSurrogateEffectiveWindowAndEnabled(): void
+    {
+        $op = 'winop';
+
+        $save = function (string $agent, string $pn, array $extra = []) use ($op): void {
+            $this->extRepo->saveSurrogate(array_merge([
+                'operator' => $op,
+                'surrogate' => $agent,
+                'processName' => $pn,
+                'enabled' => 1,
+            ], $extra));
+        };
+
+        // A 在窗（2026-08-01 ~ 08-31）
+        $save('sA', 'winA', ['startTime' => '2026-08-01 00:00:00', 'endTime' => '2026-08-31 23:59:59']);
+        // B 未到（2026-09-01 起）
+        $save('sB', 'winB', ['startTime' => '2026-09-01 00:00:00']);
+        // C 已过（07-31 止）
+        $save('sC', 'winC', ['endTime' => '2026-07-31 23:59:59']);
+        // D 无窗但停用（enabled=0）
+        $save('sD', 'winD', ['enabled' => 0]);
+        // E 无窗且启用（enabled=1）
+        $save('sE', 'winE');
+
+        $at = '2026-08-15 12:00:00';
+        $hit = $this->extRepo->getSurrogate($op, 'winA', $at);
+        $this->assertNotNull($hit, '在窗委托应生效');
+        $this->assertSame('sA', $hit['surrogate']);
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winB', $at), '未到窗委托不应生效');
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winC', $at), '已过窗委托不应生效');
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winD', $at), 'enabled=0 不应生效');
+        $hit = $this->extRepo->getSurrogate($op, 'winE', $at);
+        $this->assertNotNull($hit, '无窗启用委托应生效（NULL=不限）');
+        $this->assertSame('sE', $hit['surrogate']);
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winZ', $at), '无匹配流程应返回 null');
+
+        // 换时间验证窗口边界随时间变化：B 在 9 月生效、A 在 9 月失效
+        $atSep = '2026-09-15 12:00:00';
+        $hit = $this->extRepo->getSurrogate($op, 'winB', $atSep);
+        $this->assertNotNull($hit, '9 月：B 进入窗口应生效');
+        $this->assertSame('sB', $hit['surrogate']);
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winA', $atSep), '9 月：A 已出窗口不应生效');
+    }
 }

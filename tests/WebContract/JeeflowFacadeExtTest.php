@@ -74,6 +74,7 @@ class PdoLikeExtRepo implements ProcessExtRepositoryInterface
     public function listDesignsByType(): array { return []; }
     public function pageSurrogates(PageQuery $query): PageResult { return new PageResult(1, 10, 0, []); }
     public function findSurrogateById(int|string $id): ?array { return null; }
+    public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array { return null; }
     public function saveSurrogate(array $surrogate): string { return '1'; }
     public function updateSurrogate(array $surrogate): void {}
     public function removeSurrogate(int|string $id): void {}
@@ -446,6 +447,57 @@ class JeeflowFacadeExtTest extends TestCase
         ]);
         $this->assertEquals(0, $pEq2['code']);
         $this->assertEquals(0, $pEq2['data']['recordCount']);
+    }
+
+    /**
+     * issues/82-12：委托生效判断——时间窗 startTime/endTime + enabled 过滤
+     * （内存仓储 getSurrogate 首次落地，对齐 Java/Go/Python/Node 基准）。
+     * 5 条委托各对应一个时间态：在窗/未到/已过/无窗(enabled=0)/无窗(enabled=1)，
+     * 每条查询只命中其中一条（processName 精确区分）→ 不依赖仓储返回顺序。
+     */
+    public function testSurrogateEffectiveWindowAndEnabled(): void
+    {
+        $op = 'winop';
+
+        $save = function (string $agent, string $pn, array $extra = []) use ($op): void {
+            $r = $this->facade->flow('processSurrogate/save', array_merge([
+                'operator' => $op,
+                'surrogate' => $agent,
+                'processName' => $pn,
+                'enabled' => 1,
+            ], $extra));
+            $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        };
+
+        // A 在窗（2026-08-01 ~ 08-31）
+        $save('sA', 'winA', ['startTime' => '2026-08-01 00:00:00', 'endTime' => '2026-08-31 23:59:59']);
+        // B 未到（2026-09-01 起）
+        $save('sB', 'winB', ['startTime' => '2026-09-01 00:00:00']);
+        // C 已过（07-31 止）
+        $save('sC', 'winC', ['endTime' => '2026-07-31 23:59:59']);
+        // D 无窗但停用（enabled=0）
+        $save('sD', 'winD', ['enabled' => 0]);
+        // E 无窗且启用（enabled=1）
+        $save('sE', 'winE');
+
+        $at = '2026-08-15 12:00:00';
+        $hit = $this->extRepo->getSurrogate($op, 'winA', $at);
+        $this->assertNotNull($hit, '在窗委托应生效');
+        $this->assertSame('sA', $hit['surrogate']);
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winB', $at), '未到窗委托不应生效');
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winC', $at), '已过窗委托不应生效');
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winD', $at), 'enabled=0 不应生效');
+        $hit = $this->extRepo->getSurrogate($op, 'winE', $at);
+        $this->assertNotNull($hit, '无窗启用委托应生效（NULL=不限）');
+        $this->assertSame('sE', $hit['surrogate']);
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winZ', $at), '无匹配流程应返回 null');
+
+        // 换时间验证窗口边界随时间变化：B 在 9 月生效、A 在 9 月失效
+        $atSep = '2026-09-15 12:00:00';
+        $hit = $this->extRepo->getSurrogate($op, 'winB', $atSep);
+        $this->assertNotNull($hit, '9 月：B 进入窗口应生效');
+        $this->assertSame('sB', $hit['surrogate']);
+        $this->assertNull($this->extRepo->getSurrogate($op, 'winA', $atSep), '9 月：A 已出窗口不应生效');
     }
 
     public function testSurrogateDetailAndUpdate(): void

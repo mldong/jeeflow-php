@@ -294,6 +294,29 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
         return $row === false ? null : $row;
     }
 
+    /** 查生效中的委托（issues/82-12，对齐 Java/Go/Python/Node 参考实现）：
+     *  enabled=1 + 时间窗 start<=at<=end（NULL=不限）；processName 精确命中优先，
+     *  空 processName（全流程委托）兜底；$time 缺省取当前时间。返回原始行（snake_case）。 */
+    public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array
+    {
+        $at = $time !== null ? $time : date('Y-m-d H:i:s');
+        $sql = 'SELECT * FROM wf_process_surrogate
+                WHERE operator = ? AND enabled = 1 AND (start_time IS NULL OR start_time <= ?)
+                  AND (end_time IS NULL OR end_time >= ?) ORDER BY id DESC';
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute([$operator, $at, $at]);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        // 精确匹配流程优先
+        foreach ($rows as $row) {
+            if ($processName !== '' && ($row['process_name'] ?? null) === $processName) return $row;
+        }
+        // 全流程委托兜底
+        foreach ($rows as $row) {
+            if (($row['process_name'] ?? null) === null || $row['process_name'] === '') return $row;
+        }
+        return null;
+    }
+
     public function saveSurrogate(array $surrogate): string
     {
         $id = (string) ($surrogate['id'] ?? $this->idGenerator->nextId());

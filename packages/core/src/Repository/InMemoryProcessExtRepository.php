@@ -186,6 +186,34 @@ class InMemoryProcessExtRepository implements ProcessExtRepositoryInterface
         return $this->surrogates[(string) $id] ?? null;
     }
 
+    /** 查生效中的委托（issues/82-12，对齐 Java/Go/Python/Node 参考实现）：
+     *  enabled=1 + 时间窗 start<=at<=end（null=不限，'Y-m-d H:i:s' 字符串可直接字典序比较）；
+     *  processName 精确命中优先，空 processName（全流程委托）兜底；$time 缺省取当前时间。 */
+    public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array
+    {
+        $at = $time !== null ? $time : date('Y-m-d H:i:s');
+        $candidates = [];
+        foreach ($this->surrogates as $s) {
+            if (($s['operator'] ?? null) !== $operator) continue;
+            if ((int) ($s['enabled'] ?? 0) !== 1) continue;
+            $start = $s['startTime'] ?? null;
+            $end = $s['endTime'] ?? null;
+            if ($start !== null && $start !== '' && $at < $start) continue;
+            if ($end !== null && $end !== '' && $at > $end) continue;
+            $candidates[] = $s;
+        }
+        // 精确匹配流程优先
+        foreach ($candidates as $s) {
+            if ($processName !== '' && ($s['processName'] ?? '') === $processName) return $s;
+        }
+        // 全流程委托兜底
+        foreach ($candidates as $s) {
+            $pn = $s['processName'] ?? null;
+            if ($pn === null || $pn === '') return $s;
+        }
+        return null;
+    }
+
     public function saveSurrogate(array $surrogate): string
     {
         $id = (string) ($surrogate['id'] ?? $this->idGenerator->nextId());
