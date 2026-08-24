@@ -2,7 +2,7 @@
     "name": "mldong/jeeflow-php",
     "description": "jeeflow workflow engine — PHP implementation (5th language in the multilingual federation)",
     "type": "library",
-    "license": "MIT",
+    "license": "Apache-2.0",
     "minimum-stability": "stable",
     "prefer-stable": true,
     "require": {
