@@ -32,7 +32,7 @@ class MultiTaskFlowTest extends TestCase
         $this->repo = new InMemoryProcessRepository();
         $this->engine = new JeeflowEngine($this->repo);
 
-        $flowJson = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/02-multi-task.json');
+        $flowJson = file_get_contents(jeeflow_flows_dir() . '/02-multi-task.json');
         $this->assertNotFalse($flowJson);
         $this->repo->addDefine([
             'id' => '2',

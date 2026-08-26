@@ -134,7 +134,7 @@ class JeeflowRequestHandlerTest extends TestCase
     public function testFullFlowViaHandler(): void
     {
         // 部署流程定义
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $deployResult = $this->facade->flow('processDefine/deploy', [
             'name' => 'simple',
             'displayName' => '简单审批',

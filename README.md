@@ -35,7 +35,7 @@ composer test
 
 - 引擎语义：`jeeflow-java`（Java 是参考实现）
 - HTTP 契约：`jeeflow-doc/docs/spec/06-facade.md`
-- 共享流程定义：`jeeflow-java/jeeflow-core/src/test/resources/flows/`
+- 共享流程定义：本仓 `flows/`（唯一编辑源 `jeeflow-java/jeeflow-core/src/test/resources/flows/`，`jeeflow-flows-dir.php` 在维护者机器上执行时把 Java 源精确镜像进本仓，单语言用户下载即用）
 
 ## 已实现能力
 

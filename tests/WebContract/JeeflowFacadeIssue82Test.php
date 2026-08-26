@@ -23,7 +23,7 @@ use PHPUnit\Framework\TestCase;
  *          与 Java in-memory pd./t. 白名单映射对齐）
  * - 负向：define/instance/design/task 按 id 查不存在 → 99999999 + 明确 msg
  *
- * 流程 JSON 复用 jeeflow-java 共享 fixtures（01-simple）。
+ * 流程 JSON 用本仓 flows/ 共享 fixtures（01-simple，编辑源 jeeflow-java）。
  */
 class JeeflowFacadeIssue82Test extends TestCase
 {
@@ -53,7 +53,7 @@ class JeeflowFacadeIssue82Test extends TestCase
 
     private function deploySimpleFlow(): string
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $this->assertNotFalse($json, '缺少流程 fixture: 01-simple.json');
         $r = $this->facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'zhangsan']);
         $this->assertSame(0, $r['code'], 'deploy 失败: ' . json_encode($r, JSON_UNESCAPED_UNICODE));
@@ -122,7 +122,7 @@ class JeeflowFacadeIssue82Test extends TestCase
         $repo2 = new InMemoryProcessRepository();
         $engine2 = new JeeflowEngine($repo2);
         $facade2 = new JeeflowFacade($engine2, $repo2);
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $r0 = $facade2->flow('processDefine/deploy', ['content' => $json, 'operator' => 'zhangsan']);
         $this->assertSame(0, $r0['code'], json_encode($r0, JSON_UNESCAPED_UNICODE));
         $inst2 = $engine2->startProcessInstanceById($r0['data']['processDefineId'], 'zhangsan');

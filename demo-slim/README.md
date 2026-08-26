@@ -47,7 +47,7 @@ php bin/demo-init.php
 
 ## 预部署流程
 
-`bin/demo-init.php` 幂等部署以下示例流程（来自 `jeeflow-java` 共享流程定义）：
+`bin/demo-init.php` 幂等部署以下示例流程（来自本仓 `flows/` 副本，唯一编辑源在 `jeeflow-java` 仓，`jeeflow-flows-dir.php` 在维护者机器上执行时精确镜像进本仓）：
 
 | 流程名 | 文件 | 说明 |
 |--------|------|------|

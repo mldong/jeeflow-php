@@ -79,7 +79,7 @@ class PdoFlowAdvancedTest extends TestCase
 
     private function flowsDir(): string
     {
-        return __DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/';
+        return jeeflow_flows_dir() . '/';
     }
 
     private function findDoingTask(\Jeeflow\Core\Domain\ProcessInstance $inst, string $name): ?\Jeeflow\Core\Domain\ProcessTask

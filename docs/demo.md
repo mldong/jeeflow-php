@@ -16,7 +16,7 @@ composer start           # php -S localhost:8090 -t public
 - 对接 jeeflow-ui（`:5173`）时右上角切到 `🐘 PHP :8090`
 - 接口规范（code=0/msg、submitType 枚举）见[统一门面接口文档](../../spec/06-facade)
 
-> demo-init 会从 `jeeflow-java/jeeflow-core/src/test/resources/flows/` 加载全部共享流程 JSON（与 Python/Node 对齐）；本地没有 jeeflow-java 检出时提示 `flows dir not found` 并跳过（Docker 构建会自动 checkout）。
+> demo-init 从本仓 `flows/` 加载全部共享流程 JSON（唯一编辑源在 `jeeflow-java/jeeflow-core/src/test/resources/flows/`，`jeeflow-flows-dir.php` 在维护者机器上执行时把 Java 源精确镜像进本仓；与 Python/Node 对齐）。单语言用户下载即用，无需检出 jeeflow-java。
 
 ## 存储模式切换（`JEEFLOW_DEMO_STORE`）
 
@@ -70,7 +70,7 @@ php demo-slim/smoke_test.php
 
 ## Docker 部署
 
-仓库根 `Dockerfile.demo` 提供镜像构建（自动 checkout jeeflow-java 共享流程 JSON + composer install）：
+仓库根 `Dockerfile.demo` 提供镜像构建（流程定义用本仓 `flows/` 副本 + composer install）：
 
 ```bash
 docker build -f Dockerfile.demo -t jeeflow-php-demo .

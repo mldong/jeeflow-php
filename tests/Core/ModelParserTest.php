@@ -35,7 +35,7 @@ class ModelParserTest extends TestCase
 
     private function flowsDir(): string
     {
-        return __DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/';
+        return jeeflow_flows_dir() . '/';
     }
 
     // ═══ 节点类型解析 ═══

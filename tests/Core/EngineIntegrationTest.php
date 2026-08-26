@@ -34,7 +34,7 @@ class EngineIntegrationTest extends TestCase
         $this->engine = new JeeflowEngine($this->repo);
 
         // 注册 01-simple.json 流程定义
-        $flowJson = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $flowJson = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $this->assertNotFalse($flowJson, '01-simple.json 必须存在（共享流程定义）');
         $this->repo->addDefine([
             'id' => '1',
@@ -55,7 +55,7 @@ class EngineIntegrationTest extends TestCase
 
     public function testModelParser(): void
     {
-        $flowJson = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $flowJson = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $model = ModelParser::parse($flowJson);
 
         $this->assertSame('simple', $model->getName());

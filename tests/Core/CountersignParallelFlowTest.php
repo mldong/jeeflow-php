@@ -34,7 +34,7 @@ class CountersignParallelFlowTest extends TestCase
         $this->repo = new InMemoryProcessRepository();
         $this->engine = new JeeflowEngine($this->repo);
 
-        $flowJson = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/05-countersign-parallel.json');
+        $flowJson = file_get_contents(jeeflow_flows_dir() . '/05-countersign-parallel.json');
         $this->assertNotFalse($flowJson);
         $this->repo->addDefine([
             'id' => '5',

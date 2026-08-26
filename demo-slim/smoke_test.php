@@ -4,6 +4,7 @@
  * 模拟 jeeflow-ui 会调用的 API 路径
  */
 require __DIR__ . '/vendor/autoload.php';
+require dirname(__DIR__) . '/jeeflow-flows-dir.php'; // 本仓 flows/ 解析（维护者机器上镜像 Java 源）
 
 use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\Repository\InMemoryProcessRepository;
@@ -22,7 +23,7 @@ ServiceContext::put(TransactionTemplateInterface::class, new class implements Tr
 });
 
 // 1. 部署流程
-$json = file_get_contents(dirname(__DIR__, 2) . '/jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+$json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
 $r = $facade->flow('processDefine/deploy', ['name' => 'simple', 'displayName' => '简单审批', 'content' => $json]);
 assert($r['code'] === 0, "deploy failed: {$r['msg']}");
 $defineId = $r['data']['processDefineId'];

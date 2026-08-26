@@ -68,7 +68,7 @@
 | `performType` | 0=普通参与（任一人完成即推进） 1=会签参与（`CountersignHandler`） |
 | `candidateUsers` / `candidateGroups` | 候选人 / 候选组（参与人解析扩展点，见[SPI 实现指南](./spi-guide.md)） |
 | `countersignType` | `PARALLEL` 并行会签 / `SEQUENTIAL` 串行会签 |
-| `countersignCompletionCondition` | 会签完成条件表达式 |
+| `countersignCompletionCondition` | 会签完成条件表达式；特殊值 `ONE_VOTE_VETO` = 开启一票否决 |
 
 ### 会签完成条件
 
@@ -77,7 +77,7 @@
 | 全部完成 | 为空或 `#nrOfCompletedInstances==#nrOfInstances` |
 | 按数量通过 | `#nrOfCompletedInstances==N` |
 | 一票通过 | `#nrOfCompletedInstances==1` |
-| 一票否决 | 审批时 submitType=20（COUNTERSIGN_DISAGREE） |
+| 一票否决 | 节点条件填 `ONE_VOTE_VETO` 后，任一成员 submitType=20 即推进整单；**未配置时 submitType=20 为软拒绝**（flag 记录、不阻断） |
 
 ## 决策节点与条件边
 
@@ -140,5 +140,5 @@ ServiceContext::put(ExpressionEvaluatorInterface::class, new class implements Ex
 ## 部署与共享流程 JSON
 
 - 部署：`processDefine/deploy` action（`content` 传 JSON 字符串），版本自增
-- demo-slim 初始化时从 `jeeflow-java/jeeflow-core/src/test/resources/flows/` 加载**全部共享流程 JSON**（与 Python/Node 对齐），见[演示站](./demo.md)
+- demo-slim 初始化时从本仓 `flows/` 加载**全部共享流程 JSON**（唯一编辑源在 `jeeflow-java/jeeflow-core/src/test/resources/flows/`，`jeeflow-flows-dir.php` 在维护者机器上执行时把 Java 源精确镜像进本仓；与 Python/Node 对齐），见[演示站](./demo.md)
 - 流程定义里的 key（`assignee`、`u_*` 变量、表达式）须与 mldong 框架兼容（接入 mldong 生态时）

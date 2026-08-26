@@ -138,7 +138,7 @@ class JeeflowFacadeExtTest extends TestCase
 
     public function testDesignSaveWithContent(): void
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $result = $this->facade->flow('processDesign/save', [
             'name' => 'simple',
             'displayName' => '简单审批',
@@ -175,7 +175,7 @@ class JeeflowFacadeExtTest extends TestCase
         $save = $this->facade->flow('processDesign/save', ['name' => 'test']);
         $designId = $save['data']['id'];
 
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $result = $this->facade->flow('processDesign/updateDefine', [
             'processDesignId' => $designId,
             'content' => $json,
@@ -230,7 +230,7 @@ class JeeflowFacadeExtTest extends TestCase
 
     public function testDesignDeploy(): void
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $save = $this->facade->flow('processDesign/save', [
             'name' => 'simple',
             'content' => $json,
@@ -254,7 +254,7 @@ class JeeflowFacadeExtTest extends TestCase
 
     public function testDesignRedeploy(): void
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $save = $this->facade->flow('processDesign/save', ['name' => 'simple', 'content' => $json]);
         $designId = $save['data']['id'];
 
@@ -319,7 +319,7 @@ class JeeflowFacadeExtTest extends TestCase
      */
     public function testDesignListByTypeProcessDefineState(): void
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $save = $this->facade->flow('processDesign/save', ['name' => 'simple', 'content' => $json]);
         $designId = $save['data']['id'];
         $deploy = $this->facade->flow('processDesign/deploy', ['id' => $designId]);

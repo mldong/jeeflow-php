@@ -48,7 +48,7 @@ class JeeflowFacadeTest extends TestCase
 
     private function deploySimpleFlow(): string
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $result = $this->facade->flow('processDefine/deploy', [
             'content' => $json,
             'operator' => 'user1',
@@ -150,7 +150,7 @@ class JeeflowFacadeTest extends TestCase
     public function testRedeploy(): void
     {
         $defineId = $this->deploySimpleFlow();
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $data = json_decode($json, true);
         $data['displayName'] = '简单流程v2';
         $result = $this->facade->flow('processDefine/redeploy', [
@@ -279,7 +279,7 @@ class JeeflowFacadeTest extends TestCase
         $this->assertSame(0, $detail['data']['taskType'], '普通任务 taskType 应=0');
 
         // 会签流程：task1 performType=1
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/06-countersign-sequential.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/06-countersign-sequential.json');
         $deploy = $this->facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'user1']);
         $this->assertEquals(0, $deploy['code']);
         $this->facade->flow('processDefine/startAndExecute', ['processDefineId' => $deploy['data']['processDefineId'], 'operator' => 'user1']);
@@ -410,7 +410,7 @@ class JeeflowFacadeTest extends TestCase
      */
     public function testHighLightNodeProgress(): void
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/06-countersign-sequential.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/06-countersign-sequential.json');
         $deploy = $this->facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'user1']);
         $this->assertEquals(0, $deploy['code'], json_encode($deploy, JSON_UNESCAPED_UNICODE));
         $startResult = $this->facade->flow('processDefine/startAndExecute', [

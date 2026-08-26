@@ -169,7 +169,7 @@ class PdoProcessRepositoryTest extends TestCase
 
     public function testEngineFullLifecycleWithPdo(): void
     {
-        $flowJson = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $flowJson = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $this->assertNotFalse($flowJson);
         $this->repo->addDefine([
             'id' => '100',
@@ -232,7 +232,7 @@ class PdoProcessRepositoryTest extends TestCase
 
     public function testMultiTaskWithPdo(): void
     {
-        $flowJson = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/02-multi-task.json');
+        $flowJson = file_get_contents(jeeflow_flows_dir() . '/02-multi-task.json');
         $this->assertNotFalse($flowJson);
         $this->repo->addDefine([
             'id' => '200',

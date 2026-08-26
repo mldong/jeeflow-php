@@ -25,7 +25,7 @@ use PHPUnit\Framework\TestCase;
  * - submitType=2 REJECT：实例 REJECT(45)（PHP 已有分发，钉住行为）
  * - 负向：非处理人执行 → 99999999
  *
- * 流程 JSON 复用 jeeflow-java 共享 fixtures（02-multi-task / 06-countersign-sequential）。
+ * 流程 JSON 用本仓 flows/ 共享 fixtures（02-multi-task / 06-countersign-sequential，编辑源 jeeflow-java）。
  */
 class JeeflowFacadeIssue79Test extends TestCase
 {
@@ -53,7 +53,7 @@ class JeeflowFacadeIssue79Test extends TestCase
 
     private function deployFlow(string $file): string
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/' . $file);
+        $json = file_get_contents(jeeflow_flows_dir() . '/' . $file);
         $this->assertNotFalse($json, "缺少流程 fixture: {$file}");
         $r = $this->facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'user1']);
         $this->assertSame(0, $r['code'], 'deploy 失败: ' . json_encode($r, JSON_UNESCAPED_UNICODE));

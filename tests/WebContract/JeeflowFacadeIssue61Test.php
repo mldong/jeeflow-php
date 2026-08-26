@@ -50,7 +50,7 @@ class JeeflowFacadeIssue61Test extends TestCase
 
     private function deployFlow(string $file): string
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/' . $file);
+        $json = file_get_contents(jeeflow_flows_dir() . '/' . $file);
         $result = $this->facade->flow('processDefine/deploy', [
             'content' => $json,
             'operator' => 'user1',
@@ -63,7 +63,7 @@ class JeeflowFacadeIssue61Test extends TestCase
     private function deployFlowWithRelTable(string $tableName): string
     {
         $json = json_decode(
-            file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json'),
+            file_get_contents(jeeflow_flows_dir() . '/01-simple.json'),
             true
         );
         $json['relTableName'] = $tableName;

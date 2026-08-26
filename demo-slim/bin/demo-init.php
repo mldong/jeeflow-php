@@ -16,6 +16,7 @@ declare(strict_types=1);
  */
 
 require __DIR__ . '/../vendor/autoload.php';
+require dirname(__DIR__, 2) . '/jeeflow-flows-dir.php'; // 本仓 flows/ 解析（维护者机器上镜像 Java 源）
 
 use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\ServiceContext;
@@ -80,7 +81,7 @@ if ($mode === RepositoryFactory::MODE_MEMORY) {
 
 // ── 3. 部署示例流程（幂等，对齐 Python/Node：加载全部共享 flow JSON） ──
 
-$flowsDir = dirname(__DIR__, 3) . '/jeeflow-java/jeeflow-core/src/test/resources/flows';
+$flowsDir = jeeflow_flows_dir();
 
 echo "Deploying demo flows...\n";
 

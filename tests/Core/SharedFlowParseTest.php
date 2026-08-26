@@ -21,7 +21,7 @@ class SharedFlowParseTest extends TestCase
     {
         ServiceContext::clear();
         ServiceContext::put(JsonProviderInterface::class, new BuiltinJsonProvider());
-        self::$flowsDir = dirname(__DIR__, 3) . '/jeeflow-java/jeeflow-core/src/test/resources/flows';
+        self::$flowsDir = jeeflow_flows_dir();
     }
 
     protected function tearDown(): void
@@ -51,7 +51,7 @@ class SharedFlowParseTest extends TestCase
      */
     public static function flowFileProvider(): array
     {
-        $dir = dirname(__DIR__, 3) . '/jeeflow-java/jeeflow-core/src/test/resources/flows';
+        $dir = jeeflow_flows_dir();
         if (!is_dir($dir)) {
             return [['01-simple.json']]; // fallback if dir missing
         }

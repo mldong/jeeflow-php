@@ -39,7 +39,7 @@ class DecisionExprFlowTest extends TestCase
         $this->repo = new InMemoryProcessRepository();
         $this->engine = new JeeflowEngine($this->repo);
 
-        $flowJson = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/03-decision-expr.json');
+        $flowJson = file_get_contents(jeeflow_flows_dir() . '/03-decision-expr.json');
         $this->assertNotFalse($flowJson);
         $this->repo->addDefine([
             'id' => '3',

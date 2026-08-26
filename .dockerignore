@@ -1,0 +1,9 @@
+vendor
+demo-slim/vendor
+tests
+.git
+.github
+docs
+*.md
+.phpunit.cache
+demo-slim/data

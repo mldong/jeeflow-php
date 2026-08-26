@@ -43,7 +43,7 @@ class JeeflowFacadeIssue62Test extends TestCase
 
     private function deploySimpleFlow(): string
     {
-        $json = file_get_contents(__DIR__ . '/../../../jeeflow-java/jeeflow-core/src/test/resources/flows/01-simple.json');
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
         $result = $this->facade->flow('processDefine/deploy', [
             'content' => $json,
             'operator' => 'user1',
