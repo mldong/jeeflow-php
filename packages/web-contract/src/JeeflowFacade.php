@@ -227,13 +227,8 @@ class JeeflowFacade
 
     private function defineRemove(array $args): array
     {
-        $ids = $args['ids'] ?? null;
-        if (is_array($ids)) {
-            foreach ($ids as $id) {
-                $this->repository->removeDefine($this->toStr($id));
-            }
-        } else {
-            $this->repository->removeDefine($this->toStr($args['id'] ?? ''));
+        foreach ($this->idListArgs($args) as $id) {
+            $this->repository->removeDefine($id);
         }
         return $this->ok();
     }
@@ -241,13 +236,8 @@ class JeeflowFacade
     private function defineUpAndDown(array $args): array
     {
         $state = (int) ($args['opType'] ?? $args['state'] ?? 1);
-        $ids = $args['ids'] ?? null;
-        if (is_array($ids)) {
-            foreach ($ids as $id) {
-                $this->repository->updateDefineState($this->toStr($id), $state);
-            }
-        } else {
-            $this->repository->updateDefineState($this->toStr($args['id'] ?? ''), $state);
+        foreach ($this->idListArgs($args) as $id) {
+            $this->repository->updateDefineState($id, $state);
         }
         return $this->ok();
     }
@@ -1087,11 +1077,8 @@ class JeeflowFacade
     private function designRemove(array $args): array
     {
         $ext = $this->requireExt();
-        $ids = $args['ids'] ?? null;
-        if (is_array($ids)) {
-            foreach ($ids as $id) $ext->removeDesign($this->toStr($id));
-        } else {
-            $ext->removeDesign($this->toStr($args['id'] ?? ''));
+        foreach ($this->idListArgs($args) as $id) {
+            $ext->removeDesign($id);
         }
         return $this->ok();
     }
@@ -1254,11 +1241,39 @@ class JeeflowFacade
         return $this->ok($this->surrogateRowToMap($surrogate));
     }
 
+    /** 删除委托（issues/95：前端「我的委托」行内/批量删除统一发 {ids}，与 define/design remove 同惯例） */
     private function surrogateRemove(array $args): array
     {
         $ext = $this->requireExt();
-        $ext->removeSurrogate($this->toStr($args['id'] ?? ''));
+        foreach ($this->idListArgs($args) as $id) {
+            $ext->removeSurrogate($id);
+        }
         return $this->ok();
+    }
+
+    /** 删除/启停类 action 的批量主键：mldong IdsParam 惯例下 {ids} 数组优先，兼容单 {id}；
+     *  两者皆缺失、空数组或含非法值一律报错，不得静默成功（issues/95，对齐 Java idListArgs） */
+    private function idListArgs(array $args): array
+    {
+        if (isset($args['ids']) && is_array($args['ids'])) {
+            $out = [];
+            foreach ($args['ids'] as $id) {
+                $s = $this->toStr($id);
+                if ($s === '') {
+                    throw new \InvalidArgumentException('id 缺失或非法');
+                }
+                $out[] = $s;
+            }
+            if ($out === []) {
+                throw new \InvalidArgumentException('id 缺失或非法');
+            }
+            return $out;
+        }
+        $single = $this->toStr($args['id'] ?? '');
+        if ($single === '') {
+            throw new \InvalidArgumentException('id 缺失或非法');
+        }
+        return [$single];
     }
 
     // 操作人兜底（对齐 Java toStr(args.get("operator"), "user1")）

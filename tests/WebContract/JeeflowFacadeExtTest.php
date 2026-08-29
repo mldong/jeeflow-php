@@ -558,6 +558,61 @@ class JeeflowFacadeExtTest extends TestCase
         $this->assertEquals(99999999, $this->facade->flow('processSurrogate/update', ['surrogate' => 'x'])['code']);
     }
 
+    /** 委托删除 {ids} 批量（issues/95）：前端「我的委托」行内与批量删除统一发 ids 数组
+     *  （行内 = 长度 1），此前门面只读单数 id → 该页删除整体不可用；单 id 保留兼容。 */
+    public function testSurrogateRemoveBatchIds(): void
+    {
+        $save = function (string $op, string $agent, string $name): string {
+            $r = $this->facade->flow('processSurrogate/save', [
+                'operator' => $op, 'surrogate' => $agent, 'processName' => $name,
+            ]);
+            $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+            return (string) $r['data']['id'];
+        };
+
+        $a = $save('zhangsan', 'lisiA', 'leaveA');
+        $b = $save('zhangsan', 'lisiB', 'leaveB');
+        $r = $this->facade->flow('processSurrogate/remove', ['ids' => [$a, $b]]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertNull($this->extRepo->findSurrogateById($a), '批量 a 应已删除');
+        $this->assertNull($this->extRepo->findSurrogateById($b), '批量 b 应已删除');
+
+        // 行内删除：前端同样走 {ids}，长度 1
+        $c = $save('lisiC', 'lisiD', 'leaveC');
+        $r = $this->facade->flow('processSurrogate/remove', ['ids' => [$c]]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertNull($this->extRepo->findSurrogateById($c), '行内 c 应已删除');
+
+        // 单 {id} 兼容形态回归（移动端 workflow.uts 发这个）
+        $d = $save('zhangsan', 'lisiE', 'leaveD');
+        $r = $this->facade->flow('processSurrogate/remove', ['id' => $d]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertNull($this->extRepo->findSurrogateById($d), '单 id d 应已删除');
+    }
+
+    /** {ids}/{id} 缺失或空数组一律报错，禁止静默成功（issues/95 §5②）：
+     *  PHP 曾把 $args['id'] ?? '' 的空串绑进 DELETE，删 0 行仍回 code=0。 */
+    public function testRemoveEmptyIdsRejected(): void
+    {
+        $cases = [
+            ['processSurrogate/remove', ['ids' => []]],
+            ['processSurrogate/remove', ['surrogate' => 'lisi']],
+            ['processSurrogate/remove', ['ids' => [123, null]]],
+            ['processDefine/remove', ['ids' => []]],
+            ['processDesign/remove', ['ids' => []]],
+            ['processDefine/upAndDown', ['ids' => [], 'opType' => 0]],
+        ];
+        foreach ($cases as [$action, $args]) {
+            $r = $this->facade->flow($action, $args);
+            $this->assertEquals(
+                99999999,
+                $r['code'],
+                $action . ' ' . json_encode($args, JSON_UNESCAPED_UNICODE) . ' 应报错而非静默成功'
+            );
+            $this->assertStringContainsString('id 缺失或非法', (string) $r['msg'], $action . ' msg=' . $r['msg']);
+        }
+    }
+
     public function testSurrogateRemove(): void
     {
         $save = $this->facade->flow('processSurrogate/save', [
