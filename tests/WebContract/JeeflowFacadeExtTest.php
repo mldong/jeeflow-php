@@ -613,6 +613,224 @@ class JeeflowFacadeExtTest extends TestCase
         }
     }
 
+    // ── issues/96 B 档：入口批量参数形态矩阵（4 个 IdsParam action × 4 态）──
+    //
+    // A 档只在 processSurrogate/remove 上验了 {ids}；B 档把同一套形态钉到四个 action。
+    // 每态：① {ids:[a,b]} 批量正向（事后回查两条都取不到）② {id:c} 旧形态回归
+    // ③ {ids:[]} 必须非零 ④ {ids:[""]} / 含 null 必须非零。
+    // PHP 的特殊意义（issues/95 §2）：旧实现 $args['id'] ?? '' 会把空串绑进
+    // DELETE ... WHERE id=''，删 0 行仍回 code=0 静默成功——所以 ③④ 钉的是
+    // 「不得静默成功」，①② 的回查钉的是「真删掉了 / 真没被牵连」。
+
+    /** 矩阵 · processSurrogate/remove：前端「我的委托」行内与批量删除统一发 {ids} */
+    public function testSurrogateRemoveIdsParamMatrix(): void
+    {
+        $save = function (string $processName, string $surrogate): string {
+            $r = $this->facade->flow('processSurrogate/save', [
+                'processName' => $processName,
+                'surrogate' => $surrogate,
+                'startTime' => '2026-08-01 00:00:00',
+                'endTime' => '2026-08-31 23:59:59',
+                'enabled' => 1,
+            ]);
+            $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+            return (string) $r['data']['id'];
+        };
+        $a = $save('matrixA', 'sA');
+        $b = $save('matrixB', 'sB');
+        $c = $save('matrixC', 'sC');
+        $d = $save('matrixD', 'sD');
+
+        // 态 1：{ids:[a,b]} → 成功且事后回查两条都取不到
+        $r = $this->facade->flow('processSurrogate/remove', ['ids' => [$a, $b]]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        foreach ([$a, $b] as $id) {
+            $this->assertNull($this->extRepo->findSurrogateById($id), "批量删除后 {$id} 仓储应取不到");
+            $this->assertSame(99999999, $this->facade->flow('processSurrogate/detail', ['id' => $id])['code'],
+                "批量删除后 {$id} 门面 detail 应报不存在");
+        }
+        $this->assertNotNull($this->extRepo->findSurrogateById($c), '态 1 不应波及未传入的 c');
+
+        // 态 2：{id:c} 旧形态（移动端 workflow.uts 载荷）回归保护
+        $r = $this->facade->flow('processSurrogate/remove', ['id' => $c]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertNull($this->extRepo->findSurrogateById($c), '单 id 形态 c 应已删除');
+
+        // 态 3：{ids:[]} → 必须非零（PHP 专项：空载荷不得假成功）
+        $this->assertIdsParamRejected('processSurrogate/remove', ['ids' => []]);
+        $this->assertNotNull($this->extRepo->findSurrogateById($d), '被拒的空数组载荷不得删掉 d');
+
+        // 态 4：{ids:[""]} / {ids:[d,null]} → 必须非零，且整批不落地
+        $this->assertIdsParamRejected('processSurrogate/remove', ['ids' => ['']]);
+        $this->assertIdsParamRejected('processSurrogate/remove', ['ids' => [$d, null]]);
+        $this->assertNotNull($this->extRepo->findSurrogateById($d), '含非法元素应整批拒绝，d 不得被部分删除');
+        // 两者皆缺（既无 ids 也无 id）同样非零
+        $this->assertIdsParamRejected('processSurrogate/remove', ['surrogate' => 'sD']);
+    }
+
+    /** 矩阵 · processDesign/remove：前端「流程设计」行内与批量删除统一发 {ids} */
+    public function testDesignRemoveIdsParamMatrix(): void
+    {
+        $save = function (string $name): string {
+            $r = $this->facade->flow('processDesign/save', ['name' => $name, 'displayName' => 'B档' . $name]);
+            $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+            return (string) $r['data']['id'];
+        };
+        $a = $save('matrixDesignA');
+        $b = $save('matrixDesignB');
+        $c = $save('matrixDesignC');
+        $d = $save('matrixDesignD');
+
+        // 态 1
+        $r = $this->facade->flow('processDesign/remove', ['ids' => [$a, $b]]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        foreach ([$a, $b] as $id) {
+            $this->assertNull($this->extRepo->findDesignById($id), "批量删除后设计 {$id} 应取不到");
+            $this->assertSame(99999999, $this->facade->flow('processDesign/detail', ['id' => $id])['code'],
+                "批量删除后 {$id} 门面 detail 应报设计不存在");
+        }
+        $this->assertNotNull($this->extRepo->findDesignById($c), '态 1 不应波及未传入的 c');
+
+        // 态 2
+        $r = $this->facade->flow('processDesign/remove', ['id' => $c]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertNull($this->extRepo->findDesignById($c), '单 id 形态 c 应已删除');
+
+        // 态 3
+        $this->assertIdsParamRejected('processDesign/remove', ['ids' => []]);
+        $this->assertNotNull($this->extRepo->findDesignById($d), '被拒的空数组载荷不得删掉 d');
+
+        // 态 4
+        $this->assertIdsParamRejected('processDesign/remove', ['ids' => ['']]);
+        $this->assertIdsParamRejected('processDesign/remove', ['ids' => [$d, null]]);
+        $this->assertNotNull($this->extRepo->findDesignById($d), '含非法元素应整批拒绝，d 不得被部分删除');
+        $this->assertIdsParamRejected('processDesign/remove', ['displayName' => 'B档']);
+    }
+
+    /** 矩阵 · processDefine/remove：前端「流程定义」行内与批量删除统一发 {ids} */
+    public function testDefineRemoveIdsParamMatrix(): void
+    {
+        $a = $this->deployDefineOf('01-simple.json');
+        $b = $this->deployDefineOf('02-multi-task.json');
+        $c = $this->deployDefineOf('09-with-reject.json');
+        $d = $this->deployDefineOf('10-mixed-mode.json');
+
+        // 态 1
+        $r = $this->facade->flow('processDefine/remove', ['ids' => [$a, $b]]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        foreach ([$a, $b] as $id) {
+            $this->assertNull($this->repo->findDefineById($id), "批量删除后定义 {$id} 应取不到");
+            $this->assertSame(99999999, $this->facade->flow('processDefine/detail', ['id' => $id])['code'],
+                "批量删除后 {$id} 门面 detail 应报流程定义不存在");
+        }
+        $this->assertNotNull($this->repo->findDefineById($c), '态 1 不应波及未传入的 c');
+
+        // 态 2
+        $r = $this->facade->flow('processDefine/remove', ['id' => $c]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertNull($this->repo->findDefineById($c), '单 id 形态 c 应已删除');
+
+        // 态 3
+        $this->assertIdsParamRejected('processDefine/remove', ['ids' => []]);
+        $this->assertNotNull($this->repo->findDefineById($d), '被拒的空数组载荷不得删掉 d');
+
+        // 态 4
+        $this->assertIdsParamRejected('processDefine/remove', ['ids' => ['']]);
+        $this->assertIdsParamRejected('processDefine/remove', ['ids' => [$d, null]]);
+        $this->assertNotNull($this->repo->findDefineById($d), '含非法元素应整批拒绝，d 不得被部分删除');
+        $this->assertIdsParamRejected('processDefine/remove', ['name' => 'simple']);
+    }
+
+    /**
+     * 矩阵 · processDefine/upAndDown：前端「流程定义」启用/停用统一发 {ids,opType}。
+     * ⚠ 除 ids 外还有 opType/state：每个载荷都显式带 opType，并回查 state 真按 opType 变了。
+     * 不带 opType 时 PHP 侧 $args['opType'] ?? $args['state'] ?? 1 会静默取默认值（不报错），
+     * 但断言仍必须锚在「非零 code 来自 ids 解析」上，否则 ③④ 会变恒真。
+     */
+    public function testDefineUpAndDownIdsParamMatrix(): void
+    {
+        $a = $this->deployDefineOf('01-simple.json');
+        $b = $this->deployDefineOf('02-multi-task.json');
+        $c = $this->deployDefineOf('09-with-reject.json');
+        $d = $this->deployDefineOf('10-mixed-mode.json');
+        // 前置：deploy 出的定义 state=1，否则下面「变 0」断言无鉴别力
+        foreach ([$a, $b, $c, $d] as $id) {
+            $this->assertSame(1, $this->defineState($id), "初始 state 应为 1: {$id}");
+        }
+
+        // 态 1：{ids:[a,b],opType:0} → 成功且两条 state 真的变 0
+        $r = $this->facade->flow('processDefine/upAndDown', ['ids' => [$a, $b], 'opType' => 0]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(0, $this->defineState($a), '批量停用后 a state 应为 0');
+        $this->assertSame(0, $this->defineState($b), '批量停用后 b state 应为 0');
+        $this->assertSame(1, $this->defineState($c), '态 1 不应波及未传入的 c');
+
+        // 态 2：{id:c,opType:0} 旧形态
+        $r = $this->facade->flow('processDefine/upAndDown', ['id' => $c, 'opType' => 0]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(0, $this->defineState($c), '单 id 形态 c 应已停用');
+
+        // 态 3
+        $this->assertIdsParamRejected('processDefine/upAndDown', ['ids' => [], 'opType' => 0]);
+        $this->assertSame(1, $this->defineState($d), '被拒的空数组载荷不得改 d 的 state');
+
+        // 态 4
+        $this->assertIdsParamRejected('processDefine/upAndDown', ['ids' => [''], 'opType' => 0]);
+        $this->assertIdsParamRejected('processDefine/upAndDown', ['ids' => [$d, null], 'opType' => 0]);
+        $this->assertSame(1, $this->defineState($d), '含非法元素应整批拒绝，d 的 state 不得被部分改动');
+        $this->assertIdsParamRejected('processDefine/upAndDown', ['opType' => 0]);
+
+        // state 别名（opType 缺省时走 state）同样支持 {ids}，并让 d 在这一态里被停用
+        $r = $this->facade->flow('processDefine/upAndDown', ['ids' => [$d], 'state' => 0]);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(0, $this->defineState($d), 'state 别名的 {ids} 批量停用应生效');
+    }
+
+    /** 批量主键负向态共用断言：非零 code（契约 99999999）+ msg 含「id 缺失或非法」 */
+    private function assertIdsParamRejected(string $action, array $args): void
+    {
+        $payload = json_encode($args, JSON_UNESCAPED_UNICODE);
+        $r = $this->facade->flow($action, $args);
+        $this->assertNotSame(0, $r['code'],
+            "{$action} {$payload} 不得静默成功（PHP 旧实现把空串绑进 DELETE，删 0 行仍回 code=0）；实际: "
+            . json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(99999999, $r['code'],
+            "{$action} {$payload} 实际响应: " . json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertStringContainsString('id 缺失或非法', (string) $r['msg'], "{$action} {$payload} msg=" . $r['msg']);
+    }
+
+    /** 造一条已发布定义：processDesign/save → updateDefine(content) → deploy → getLastByName 回查 id */
+    private function deployDefineOf(string $flowFile): string
+    {
+        $json = file_get_contents(jeeflow_flows_dir() . '/' . $flowFile);
+        $this->assertNotFalse($json, "流程文件读取失败: {$flowFile}");
+
+        $save = $this->facade->flow('processDesign/save', ['name' => 'matrix_' . $flowFile, 'displayName' => 'B档矩阵']);
+        $this->assertEquals(0, $save['code'], json_encode($save, JSON_UNESCAPED_UNICODE));
+        $designId = (string) $save['data']['id'];
+
+        $upd = $this->facade->flow('processDesign/updateDefine', [
+            'processDesignId' => $designId, 'content' => $json, 'operator' => 'user1',
+        ]);
+        $this->assertEquals(0, $upd['code'], json_encode($upd, JSON_UNESCAPED_UNICODE));
+
+        $dep = $this->facade->flow('processDesign/deploy', ['id' => $designId]);
+        $this->assertEquals(0, $dep['code'], json_encode($dep, JSON_UNESCAPED_UNICODE));
+
+        $name = (string) json_decode($json, true)['name'];
+        $last = $this->facade->flow('processDefine/getLastByName', ['processDefineName' => $name]);
+        $this->assertEquals(0, $last['code'], json_encode($last, JSON_UNESCAPED_UNICODE));
+        return (string) $last['data']['id'];
+    }
+
+    /** 回查定义 state（走 processDefine/detail 出口） */
+    private function defineState(string $defineId): int
+    {
+        $r = $this->facade->flow('processDefine/detail', ['id' => $defineId]);
+        $this->assertEquals(0, $r['code'], "定义 {$defineId} 回查失败: " . json_encode($r, JSON_UNESCAPED_UNICODE));
+        return (int) ($r['data']['state'] ?? -1);
+    }
+
     public function testSurrogateRemove(): void
     {
         $save = $this->facade->flow('processSurrogate/save', [
