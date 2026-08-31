@@ -996,17 +996,18 @@ class JeeflowFacade
         $his = $ext->findLatestDesignHis($id);
         $jsonObject = $his !== null ? $this->parseGraph($his['content'] ?? '') : null;
         // 如果 jsonObject 缺失基本信息，从 design 补齐
+        // issues/98：行键双读（PDO snake_case / InMemory camelCase），与 designRowToMap 同构
         if (is_array($jsonObject)) {
             if (empty($jsonObject['name'])) $jsonObject['name'] = $design['name'] ?? '';
-            if (empty($jsonObject['displayName'])) $jsonObject['displayName'] = $design['displayName'] ?? '';
+            if (empty($jsonObject['displayName'])) $jsonObject['displayName'] = $design['displayName'] ?? $design['display_name'] ?? '';
         }
         $data = [
             'id' => $design['id'],
             'name' => $design['name'] ?? '',
-            'displayName' => $design['displayName'] ?? '',
+            'displayName' => $design['displayName'] ?? $design['display_name'] ?? '',
             'type' => $design['type'] ?? null,
             'icon' => $design['icon'] ?? null,
-            'isDeployed' => $design['isDeployed'] ?? 0,
+            'isDeployed' => (int) ($design['isDeployed'] ?? $design['is_deployed'] ?? 0),
             'remark' => $design['remark'] ?? null,
             'jsonObject' => $jsonObject,
             'his' => $ext->findDesignHisList($id),
@@ -1161,7 +1162,8 @@ class JeeflowFacade
                 $result[$type][] = [
                     'processDesignId' => (string) ($d['id'] ?? ''),
                     'name' => $d['name'] ?? '',
-                    'displayName' => $d['displayName'] ?? '',
+                    // issues/98：行键双读（PDO snake_case / InMemory camelCase），与 designRowToMap 同构
+                    'displayName' => $d['displayName'] ?? $d['display_name'] ?? '',
                     'icon' => $d['icon'] ?? null,
                     'remark' => $d['remark'] ?? null,
                     'processDefineId' => $def['id'] ?? null,

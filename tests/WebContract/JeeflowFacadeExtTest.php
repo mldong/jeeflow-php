@@ -71,7 +71,23 @@ class PdoLikeExtRepo implements ProcessExtRepositoryInterface
     public function saveDesignHis(int|string $designId, string $content, ?string $operator = null): void {}
     public function removeDesign(int|string $id): void {}
     public function updateDesignDeployed(int|string $designId, int $isDeployed): void {}
-    public function listDesignsByType(): array { return []; }
+    public function listDesignsByType(): array
+    {
+        // issues/98：返回一条与 findDesignById 同记录的 snake_case 原生行（type 分组键 '1'）
+        return [
+            '1' => [[
+                'id' => $this->designId,
+                'name' => 'e2e_leave',
+                'display_name' => 'L3请假申请',
+                'type' => '1',
+                'icon' => null,
+                'is_deployed' => 1,
+                'remark' => 'E2E 场景流程',
+                'create_time' => '2026-08-19 14:41:24',
+                'update_time' => '2026-08-19 14:41:24',
+            ]],
+        ];
+    }
     public function pageSurrogates(PageQuery $query): PageResult { return new PageResult(1, 10, 0, []); }
     public function findSurrogateById(int|string $id): ?array { return null; }
     public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array { return null; }
@@ -297,6 +313,36 @@ class JeeflowFacadeExtTest extends TestCase
             $this->assertIsString($his['process_design_id'], 'his.process_design_id must be string');
             $this->assertSame((string) $bigIntId, $his['process_design_id']);
         }
+    }
+
+    /**
+     * issues/98：design 读路径必须兼容 PDO snake_case 行键（display_name/is_deployed）。
+     * PdoLikeExtRepo 是 snake_case 行键夹具（issues/75 而造）——修复前 listByType 出口
+     * displayName 恒空、detail 顶层 isDeployed 恒 0（S13 laravel 栈流程名称列空白根因）。
+     */
+    public function testDesignReadPathPdoSnakeCaseKeys(): void
+    {
+        $bigIntId = 17769128440810003;
+        $pdoLike = new PdoLikeExtRepo($bigIntId, 9000000000000000007);
+        $facade = new JeeflowFacade($this->engine, $this->repo, $pdoLike);
+
+        // listByType 出口：displayName 必须从 snake_case display_name 读出
+        $list = $facade->flow('processDesign/listByType');
+        $this->assertEquals(0, $list['code']);
+        $item = null;
+        foreach (($list['data']['1'] ?? []) as $d) {
+            if (($d['name'] ?? '') === 'e2e_leave') $item = $d;
+        }
+        $this->assertNotNull($item, 'listByType type=1 分组缺 e2e_leave item: ' . json_encode($list['data'], JSON_UNESCAPED_UNICODE));
+        $this->assertSame('L3请假申请', $item['displayName'], 'listByType 出口 displayName 必须非空（PDO snake_case display_name 行）');
+
+        // detail 顶层：isDeployed 必须从 snake_case is_deployed 读出为 1，displayName 非空
+        $detail = $facade->flow('processDesign/detail', ['id' => (string) $bigIntId]);
+        $this->assertEquals(0, $detail['code']);
+        $this->assertSame(1, $detail['data']['isDeployed'], 'detail 顶层 isDeployed 应为 1（PDO snake_case is_deployed 行）');
+        $this->assertSame('L3请假申请', $detail['data']['displayName'], 'detail 顶层 displayName 必须非空');
+        // jsonObject 补值路径（his content 无 displayName 时从 design 行补齐）
+        $this->assertSame('L3请假申请', $detail['data']['jsonObject']['displayName'] ?? '', 'jsonObject.displayName 补值必须来自 display_name');
     }
 
     public function testDesignListByType(): void
