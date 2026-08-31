@@ -33,5 +33,5 @@
 ## 相关
 
 - 引擎规范（唯一事实来源）：[规范总览](../../spec/)
-- 发布通道：Packagist（`mldong/jeeflow-php`），独立版本线（当前 1.1.x），版本号与四语言不对齐，对齐的是 API 契约
+- 发布通道：Packagist（`mldong/jeeflow-php`），独立版本线（当前 1.3.x），版本号与四语言不对齐，对齐的是 API 契约
 - 设计原理 / 通用指南：[jeeflow-doc](../../)
