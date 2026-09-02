@@ -8,6 +8,9 @@ use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\FlowConst;
+use Jeeflow\Core\Enum\ProcessEventTypeEnum;
+use Jeeflow\Core\Event\ProcessEvent;
+use Jeeflow\Core\Event\ProcessPublisher;
 use Jeeflow\Core\Model\EndModel;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\StartModel;
@@ -74,8 +77,12 @@ class JeeflowEngine implements JeeflowEngineInterface
                 $start->execute($exec);
             }
             // 8. 持久化产生的任务，并更新实例
+            //    TASK_START 事件须在 saveTask 落库（分配 taskId）之后 fire——对齐
+            //    spec §4.4「任务落库后逐任务 fire，监听器可按 taskId 反查」与 Java
+            //    JeeflowEngineImpl start 内循环（CreateTaskHandler 阶段 taskId 尚未生成，不 fire）。
             foreach ($exec->getProcessTaskList() as $task) {
                 $this->repository->saveTask($task);
+                $this->notifyTaskStart($task);
             }
             $this->repository->updateInstance($instance);
             return $instance;
@@ -236,8 +243,12 @@ class JeeflowEngine implements JeeflowEngineInterface
 
     private function persistTasks(Execution $exec): void
     {
+        // 共用 executeProcessTask / executeAndJumpTask / executeAndJumpToEnd /
+        // executeAndJumpToFirstTaskNode 全部办理路径：saveTask 落库（分配 taskId）
+        // 之后逐任务 fire TASK_START（对齐 Java JeeflowEngineImpl.persistTasks）。
         foreach ($exec->getProcessTaskList() as $task) {
             $this->repository->saveTask($task);
+            $this->notifyTaskStart($task);
         }
         if ($exec->getProcessTask() !== null && $exec->getProcessTask()->getTaskId() !== null) {
             $this->repository->updateTask($exec->getProcessTask());
@@ -257,6 +268,17 @@ class JeeflowEngine implements JeeflowEngineInterface
         }
         if (!empty($ccArr) && $instanceId !== null) {
             $this->repository->createCcInstance($instanceId, $operator, $ccArr);
+            // CC_CREATE（issues/102 新增；本批次仅 PHP 引擎实现）：逐抄送人 fire，与
+            // createCcInstance 逐行 INSERT 的粒度对应（issue 102 表头「逐抄送人」）。
+            // sourceId=instanceId，ccActorId=抄送人 id（监听器直接取用免反查 cc 表）。
+            // fire 在 runInTx 事务内，监听器同连接反查可见本事务写入（与 Java 同事务一致）。
+            foreach ($ccArr as $actorId) {
+                ProcessPublisher::notify(ProcessEvent::of(
+                    ProcessEventTypeEnum::CC_CREATE,
+                    $instanceId,
+                    (string) $actorId,
+                ));
+            }
         }
     }
 
@@ -267,5 +289,25 @@ class JeeflowEngine implements JeeflowEngineInterface
             return $tx->required($action);
         }
         return $action();
+    }
+
+    /**
+     * fire「任务开始」事件（TASK_START / 新待办）。
+     *
+     * 引擎契约（spec §4.4 / Java JeeflowEngineImpl.notifyTaskStart）：事件在任务行
+     * **落库之后**触发，{@code sourceId = taskId} 必须可被监听器 findTaskById 反查。
+     * 故本方法只在 saveTask（分配 taskId）之后调用；{@code getTaskId()===null} 不 fire
+     * （对齐 Java 的 taskId 守卫注释——handler 阶段 taskId 尚为 null，那时 fire 会因
+     * 监听器 sourceId 空守卫漏发「新待办」）。
+     */
+    private function notifyTaskStart(ProcessTask $task): void
+    {
+        if ($task->getTaskId() === null) {
+            return;
+        }
+        ProcessPublisher::notify(ProcessEvent::of(
+            ProcessEventTypeEnum::TASK_START,
+            $task->getTaskId(),
+        ));
     }
 }
