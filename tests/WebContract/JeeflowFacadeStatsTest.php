@@ -113,8 +113,11 @@ class JeeflowFacadeStatsTest extends TestCase
             'granularity' => 'day', 'start' => '2026-09-01 00:00:00', 'end' => '2026-09-03 00:00:00',
         ]);
         $this->assertEquals(0, $r['code']);
-        $this->assertCount(2, $r['data']['series']);
-        foreach ($r['data']['series'] as $bucket) {
+        // A：data 本体为裸数组（无 {granularity, series} 包装）
+        $this->assertIsArray($r['data']);
+        $this->assertArrayNotHasKey('granularity', $r['data']);
+        $this->assertCount(2, $r['data']);
+        foreach ($r['data'] as $bucket) {
             $this->assertSame(0, $bucket['started']);
             $this->assertSame(0, $bucket['finished']);
         }
@@ -124,7 +127,8 @@ class JeeflowFacadeStatsTest extends TestCase
     {
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'state']);
         $this->assertEquals(0, $r['code']);
-        $this->assertEmpty($r['data']['rows']);
+        // A：data 本体为裸数组（无 {dimension, rows} 包装）
+        $this->assertEmpty($r['data']);
     }
 
     // ═══ 正向：overview 13 字段 ═══
@@ -239,7 +243,7 @@ class JeeflowFacadeStatsTest extends TestCase
             'granularity' => 'day', 'start' => '2026-09-01 00:00:00', 'end' => '2026-09-04 00:00:00',
         ]);
         $this->assertEquals(0, $r['code']);
-        $series = $r['data']['series'];
+        $series = $r['data'];
         $this->assertCount(3, $series);
         $this->assertSame('2026-09-01', $series[0]['bucket']);
         $this->assertSame('2026-09-02', $series[1]['bucket']);
@@ -256,8 +260,8 @@ class JeeflowFacadeStatsTest extends TestCase
             'granularity' => 'hour', 'start' => '2026-09-01 10:00:00', 'end' => '2026-09-01 13:00:00',
         ]);
         $this->assertEquals(0, $r['code']);
-        $this->assertCount(3, $r['data']['series']);
-        $this->assertSame('2026-09-01 10:00', $r['data']['series'][0]['bucket']);
+        $this->assertCount(3, $r['data']);
+        $this->assertSame('2026-09-01 10:00', $r['data'][0]['bucket']);
     }
 
     public function testTrendMonthGranularity(): void
@@ -266,7 +270,7 @@ class JeeflowFacadeStatsTest extends TestCase
             'granularity' => 'month', 'start' => '2026-07-01 00:00:00', 'end' => '2026-10-01 00:00:00',
         ]);
         $this->assertEquals(0, $r['code']);
-        $series = $r['data']['series'];
+        $series = $r['data'];
         $this->assertCount(3, $series);
         $this->assertSame('2026-07', $series[0]['bucket']);
         $this->assertSame('2026-09', $series[2]['bucket']);
@@ -278,7 +282,7 @@ class JeeflowFacadeStatsTest extends TestCase
             'granularity' => 'week', 'start' => '2026-09-01 00:00:00', 'end' => '2026-09-22 00:00:00',
         ]);
         $this->assertEquals(0, $r['code']);
-        $series = $r['data']['series'];
+        $series = $r['data'];
         $this->assertGreaterThanOrEqual(3, count($series));
         // ISO week format: yyyy-Www
         $this->assertMatchesRegularExpression('/^\d{4}-W\d{2}$/', $series[0]['bucket']);
@@ -286,9 +290,12 @@ class JeeflowFacadeStatsTest extends TestCase
 
     public function testTrendNoStartEnd(): void
     {
+        // C 自证：缺 start/end → code!=0，不再静默返回空 series
         $r = $this->facade->flow('processInstance/stats/trend', ['granularity' => 'day']);
-        $this->assertEquals(0, $r['code']);
-        $this->assertEmpty($r['data']['series']);
+        $this->assertNotEquals(0, $r['code']);
+        $r2 = $this->facade->flow('processInstance/stats/trend',
+            ['granularity' => 'day', 'start' => '2026-09-01 00:00:00']);
+        $this->assertNotEquals(0, $r2['code']);
     }
 
     // ═══ 正向：group 9 维度 ═══
@@ -305,7 +312,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'state']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         $this->assertNotEmpty($rows);
         // FINISHED(20) count=2 should be first
         $this->assertSame('20', $rows[0]['key']);
@@ -333,7 +340,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'define']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         $this->assertSame('leave', $rows[0]['key']);
         $this->assertSame('请假', $rows[0]['label']);
         $this->assertSame(2, $rows[0]['count']);
@@ -356,7 +363,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'category']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         $this->assertSame('oa', $rows[0]['key']);
         $this->assertSame(2, $rows[0]['count']);
         $this->assertSame('biz', $rows[1]['key']);
@@ -375,7 +382,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'approver']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         $this->assertCount(2, $rows);
         $this->assertSame(1, $rows[0]['count']);
     }
@@ -392,7 +399,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'applicant']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         $this->assertSame('alice', $rows[0]['key']);
         $this->assertSame(2, $rows[0]['count']);
         $this->assertSame('bob', $rows[1]['key']);
@@ -411,7 +418,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'node']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         $this->assertSame('经理审批', $rows[0]['key']);
         $this->assertSame(2, $rows[0]['count']);
         // avg = (3600 + 7200) / 2 = 5400
@@ -430,7 +437,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'stuckNode']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         $this->assertSame('总监审批', $rows[0]['key']);
         $this->assertSame(2, $rows[0]['count']);
     }
@@ -446,7 +453,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'stuckApprover']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         $this->assertCount(2, $rows);
         $this->assertSame(1, $rows[0]['count']);
         $this->assertSame(1, $rows[1]['count']);
@@ -469,7 +476,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'durationBucket']);
         $this->assertEquals(0, $r['code']);
-        $rows = $r['data']['rows'];
+        $rows = $r['data'];
         // fixed 4-bucket order
         $this->assertCount(4, $rows);
         $this->assertSame('sameDay', $rows[0]['key']);
@@ -494,7 +501,7 @@ class JeeflowFacadeStatsTest extends TestCase
 
         $r = $this->facade->flow('processInstance/stats/group', ['dimension' => 'applicant', 'limit' => 3]);
         $this->assertEquals(0, $r['code']);
-        $this->assertCount(3, $r['data']['rows']);
+        $this->assertCount(3, $r['data']);
     }
 
     // ═══ 回归：未知 action ═══

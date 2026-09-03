@@ -926,9 +926,11 @@ class JeeflowFacade
             if ($ct !== null && $ct >= $todayStart && $ct < $todayEnd) $todayNew++;
         }
 
+        // avgDurationSeconds：state=20 完成实例平均时长，不受 stateIn 影响（对齐内置线 avgCompletedInstanceDurationSeconds）
+        $instsForAvg = $this->statsFilterInstances($allInsts, null, $start, $end);
         $totalDur = 0;
         $durCount = 0;
-        foreach ($insts as $inst) {
+        foreach ($instsForAvg as $inst) {
             if ($inst->getState() !== ProcessInstanceState::FINISHED) continue;
             $maxFinish = null;
             foreach ($inst->getTasks() as $task) {
@@ -955,18 +957,17 @@ class JeeflowFacade
             }
         }
 
+        // countersignRate/onTimeRate：全量已完成任务聚合，不限时间、不受 stateIn 影响（对齐内置线 countCompletedTask）
         $csTotal = $csCount = $onTime = $onTimeDenom = 0;
-        foreach ($insts as $inst) {
-            foreach ($inst->getTasks() as $task) {
-                if ($task->getTaskState() !== ProcessTaskState::FINISHED) continue;
-                $csTotal++;
-                if ($task->getPerformType() === PerformType::COUNTERSIGN) $csCount++;
-                $exp = $task->getExpireTime();
-                if ($exp !== null) {
-                    $onTimeDenom++;
-                    $ft = $task->getFinishTime();
-                    if ($ft !== null && $ft <= $exp) $onTime++;
-                }
+        foreach ($this->repository->getAllTasks() as $task) {
+            if ($task->getTaskState() !== ProcessTaskState::FINISHED) continue;
+            $csTotal++;
+            if ($task->getPerformType() === PerformType::COUNTERSIGN) $csCount++;
+            $exp = $task->getExpireTime();
+            if ($exp !== null) {
+                $onTimeDenom++;
+                $ft = $task->getFinishTime();
+                if ($ft !== null && $ft <= $exp) $onTime++;
             }
         }
         $countersignRate = $csTotal > 0 ? self::statsRound4($csCount / $csTotal) : 0.0;
@@ -990,12 +991,13 @@ class JeeflowFacade
         }
         $start = $this->parseSurrogateTime($args['start'] ?? null);
         $end = $this->parseSurrogateTime($args['end'] ?? null);
+        // C：start/end 必填（对齐内置线 20010012 缺参语义），不再静默返回空 series
         if ($start === null || $end === null) {
-            return $this->ok(['granularity' => $granularity, 'series' => []]);
+            return $this->error('trend 缺少必填参数：start/end/granularity');
         }
 
-        $stateIn = self::DEFAULT_STATE_IN;
-        $insts = $this->statsFilterInstances($this->repository->getAllInstances(), $stateIn, $start, $end);
+        // 实例侧无 state 过滤（对齐内置线 countInstanceStartedByBucket）
+        $insts = $this->statsFilterInstances($this->repository->getAllInstances(), null, $start, $end);
         $doneTasks = $this->statsFilterTasks($this->repository->getAllTasks(), [ProcessTaskState::FINISHED], $start, $end, 'finish');
 
         $buckets = self::statsEnumerateBuckets($start, $end, $granularity);
@@ -1020,7 +1022,8 @@ class JeeflowFacade
         foreach ($buckets as $b) {
             $series[] = ['bucket' => $b, 'started' => $startedMap[$b] ?? 0, 'finished' => $finishedMap[$b] ?? 0];
         }
-        return $this->ok(['granularity' => $granularity, 'series' => $series]);
+        // A：data 本体为裸数组（去掉 {granularity, series} 包装，对齐契约 spec 06 §4.2 / 内置线）
+        return $this->ok($series);
     }
 
     private function statsGroup(array $args): array
@@ -1032,17 +1035,18 @@ class JeeflowFacade
         $start = $this->parseSurrogateTime($args['start'] ?? null);
         $end = $this->parseSurrogateTime($args['end'] ?? null);
         $limit = isset($args['limit']) ? (int)$args['limit'] : self::DEFAULT_STATS_LIMIT;
-        $stateIn = self::DEFAULT_STATE_IN;
-        $insts = $this->statsFilterInstances($this->repository->getAllInstances(), $stateIn, $start, $end);
+        // 无 state 过滤（对齐内置线 groupByDimension：仅按时间限定，契约 group 无 stateIn 入参）
+        $insts = $this->statsFilterInstances($this->repository->getAllInstances(), null, $start, $end);
         $doneTasks = $this->statsFilterTasks($this->repository->getAllTasks(), [ProcessTaskState::FINISHED], $start, $end, 'finish');
         $doingTasks = $this->statsFilterTasks($this->repository->getAllTasks(), [ProcessTaskState::DOING], null, null, 'create');
 
         $rows = [];
         if ($dimension === 'define') {
+            // D 对齐内置线 mapper：count 全实例、avg 仅对 state=20 且有 finish 的实例聚合（除数=完成数）
             $grouped = [];
             foreach ($insts as $inst) {
                 $did = $inst->getDefineId();
-                if (!isset($grouped[$did])) $grouped[$did] = ['count' => 0, 'totalDur' => 0];
+                if (!isset($grouped[$did])) $grouped[$did] = ['count' => 0, 'totalDur' => 0, 'durCount' => 0];
                 $grouped[$did]['count']++;
                 if ($inst->getState() === ProcessInstanceState::FINISHED) {
                     $maxFinish = null;
@@ -1052,6 +1056,7 @@ class JeeflowFacade
                     }
                     if ($maxFinish !== null && $inst->getCreateTime() !== null) {
                         $grouped[$did]['totalDur'] += max(0, strtotime($maxFinish) - strtotime($inst->getCreateTime()));
+                        $grouped[$did]['durCount']++;
                     }
                 }
             }
@@ -1062,7 +1067,7 @@ class JeeflowFacade
                     'key' => $def['name'] ?? (string)$did,
                     'label' => $def['displayName'] ?? $def['display_name'] ?? null,
                     'count' => $agg['count'],
-                    'avgDurationSeconds' => $agg['count'] > 0 ? intdiv($agg['totalDur'], $agg['count']) : null,
+                    'avgDurationSeconds' => $agg['durCount'] > 0 ? intdiv($agg['totalDur'], $agg['durCount']) : null,
                 ];
             }
             usort($entries, fn($a, $b) => $b['count'] - $a['count']);
@@ -1217,7 +1222,8 @@ class JeeflowFacade
             }
         }
 
-        return $this->ok(['dimension' => $dimension, 'rows' => $rows]);
+        // A：data 本体为裸数组（去掉 {dimension, rows} 包装，对齐契约 spec 06 §4.2 / 内置线）
+        return $this->ok($rows);
     }
 
     // ── 统计辅助函数 ──
@@ -1236,13 +1242,13 @@ class JeeflowFacade
         return self::DEFAULT_STATE_IN;
     }
 
-    /** @param ProcessInstance[] $insts  @param int[] $stateIn */
-    private function statsFilterInstances(array $insts, array $stateIn, ?string $start, ?string $end): array
+    /** @param ProcessInstance[] $insts  @param int[]|null $stateIn null=无 state 过滤（对齐内置线：仅 overview 用 stateIn） */
+    private function statsFilterInstances(array $insts, ?array $stateIn, ?string $start, ?string $end): array
     {
-        $stateSet = array_flip($stateIn);
+        $stateSet = $stateIn !== null ? array_flip($stateIn) : null;
         $result = [];
         foreach ($insts as $inst) {
-            if (!isset($stateSet[$inst->getState()])) continue;
+            if ($stateSet !== null && !isset($stateSet[$inst->getState()])) continue;
             $ct = $inst->getCreateTime();
             if ($start !== null && ($ct === null || $ct < $start)) continue;
             if ($end !== null && ($ct === null || $ct >= $end)) continue;
