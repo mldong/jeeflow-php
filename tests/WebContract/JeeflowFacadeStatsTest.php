@@ -113,10 +113,10 @@ class JeeflowFacadeStatsTest extends TestCase
             'granularity' => 'day', 'start' => '2026-09-01 00:00:00', 'end' => '2026-09-03 00:00:00',
         ]);
         $this->assertEquals(0, $r['code']);
-        // A：data 本体为裸数组（无 {granularity, series} 包装）
+        // A：data 本体为裸数组（无 {granularity, series} 包装）；含 end 桶 → 09-01..09-03 共 3 桶
         $this->assertIsArray($r['data']);
         $this->assertArrayNotHasKey('granularity', $r['data']);
-        $this->assertCount(2, $r['data']);
+        $this->assertCount(3, $r['data']);
         foreach ($r['data'] as $bucket) {
             $this->assertSame(0, $bucket['started']);
             $this->assertSame(0, $bucket['finished']);
@@ -244,7 +244,8 @@ class JeeflowFacadeStatsTest extends TestCase
         ]);
         $this->assertEquals(0, $r['code']);
         $series = $r['data'];
-        $this->assertCount(3, $series);
+        // 含 end 桶 → 09-01..09-04 共 4 桶
+        $this->assertCount(4, $series);
         $this->assertSame('2026-09-01', $series[0]['bucket']);
         $this->assertSame('2026-09-02', $series[1]['bucket']);
         $this->assertSame('2026-09-03', $series[2]['bucket']);
@@ -260,7 +261,8 @@ class JeeflowFacadeStatsTest extends TestCase
             'granularity' => 'hour', 'start' => '2026-09-01 10:00:00', 'end' => '2026-09-01 13:00:00',
         ]);
         $this->assertEquals(0, $r['code']);
-        $this->assertCount(3, $r['data']);
+        // 含 end 桶 → 10:00..13:00 共 4 桶
+        $this->assertCount(4, $r['data']);
         $this->assertSame('2026-09-01 10:00', $r['data'][0]['bucket']);
     }
 
@@ -271,7 +273,8 @@ class JeeflowFacadeStatsTest extends TestCase
         ]);
         $this->assertEquals(0, $r['code']);
         $series = $r['data'];
-        $this->assertCount(3, $series);
+        // 含 end 桶 → 2026-07..2026-10 共 4 桶
+        $this->assertCount(4, $series);
         $this->assertSame('2026-07', $series[0]['bucket']);
         $this->assertSame('2026-09', $series[2]['bucket']);
     }

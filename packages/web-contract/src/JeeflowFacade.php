@@ -1251,7 +1251,8 @@ class JeeflowFacade
             if ($stateSet !== null && !isset($stateSet[$inst->getState()])) continue;
             $ct = $inst->getCreateTime();
             if ($start !== null && ($ct === null || $ct < $start)) continue;
-            if ($end !== null && ($ct === null || $ct >= $end)) continue;
+            // end 含端（对齐内置线 create_time < date_add(end, interval 1 second)）
+            if ($end !== null && ($ct === null || $ct > $end)) continue;
             $result[] = $inst;
         }
         return $result;
@@ -1266,7 +1267,8 @@ class JeeflowFacade
             if (!isset($stateSet[$task->getTaskState()])) continue;
             $t = $timeField === 'finish' ? $task->getFinishTime() : $task->getCreateTime();
             if ($start !== null && ($t === null || $t < $start)) continue;
-            if ($end !== null && ($t === null || $t >= $end)) continue;
+            // end 含端（对齐内置线 finish_time < date_add(end, interval 1 second)）
+            if ($end !== null && ($t === null || $t > $end)) continue;
             $result[] = $task;
         }
         return $result;
@@ -1283,7 +1285,8 @@ class JeeflowFacade
         $cur = new \DateTimeImmutable($start);
         $endDt = new \DateTimeImmutable($end);
 
-        while ($cur < $endDt) {
+        // 含 end 桶（对齐内置线枚举：start→end 双闭）——原来 < 少了末端桶
+        while ($cur <= $endDt) {
             $buckets[] = self::statsBucketKey($cur->format('Y-m-d H:i:s'), $granularity);
             $cur = match ($granularity) {
                 'hour' => $cur->modify('+1 hour'),
