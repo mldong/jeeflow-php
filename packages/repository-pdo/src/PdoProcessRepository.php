@@ -476,6 +476,28 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
     }
 
+    // ── 统计（issues/103） ──
+
+    public function getAllInstances(): array
+    {
+        $stmt = $this->pdo->query('SELECT * FROM wf_process_instance ORDER BY create_time');
+        $result = [];
+        while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+            $result[] = $this->hydrateInstance($row);
+        }
+        return $result;
+    }
+
+    public function getAllTasks(): array
+    {
+        $stmt = $this->pdo->query('SELECT * FROM wf_process_task ORDER BY create_time');
+        $result = [];
+        while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+            $result[] = $this->hydrateTask($row);
+        }
+        return $result;
+    }
+
     // ── 内部方法 ──
 
     private function defineRow(array $row): array

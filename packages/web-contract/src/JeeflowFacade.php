@@ -42,6 +42,15 @@ class JeeflowFacade
     private JeeflowQueryParser $queryParser;
     private ?UserSearchProviderInterface $userSearchProvider = null;
 
+    private const DEFAULT_STATE_IN = [10, 20, 30, 40, 45, 50];
+    private const DEFAULT_STATS_LIMIT = 10;
+    private const VALID_GRANULARITY = ['hour' => true, 'day' => true, 'week' => true, 'month' => true];
+    private const VALID_DIMENSION = [
+        'state' => true, 'define' => true, 'category' => true,
+        'approver' => true, 'applicant' => true, 'node' => true,
+        'stuckNode' => true, 'stuckApprover' => true, 'durationBucket' => true,
+    ];
+
     public function __construct(JeeflowEngine $engine, ProcessRepositoryInterface $repository,
                                 ?ProcessExtRepositoryInterface $extRepository = null)
     {
@@ -79,6 +88,10 @@ class JeeflowFacade
                 'processInstance/detail' => $this->instanceDetail($args),
                 'processInstance/startAndExecute' => $this->startAndExecute($args),
                 'processInstance/withdraw' => $this->withdraw($args),
+                // ── 统计（issues/103） ──
+                'processInstance/stats/overview' => $this->statsOverview($args),
+                'processInstance/stats/trend' => $this->statsTrend($args),
+                'processInstance/stats/group' => $this->statsGroup($args),
                 // ── 流程任务 ──
                 'processTask/todoList' => $this->todoList($args),
                 'processTask/doneList' => $this->doneList($args),
@@ -879,6 +892,421 @@ class JeeflowFacade
             }
         }
         return [];
+    }
+
+    // ═══ 统计（issues/103） ═══
+
+    private function statsOverview(array $args): array
+    {
+        $stateIn = $this->statsParseStateIn($args);
+        $start = $this->parseSurrogateTime($args['start'] ?? null);
+        $end = $this->parseSurrogateTime($args['end'] ?? null);
+
+        $allInsts = $this->repository->getAllInstances();
+        $insts = $this->statsFilterInstances($allInsts, $stateIn, $start, $end);
+        $total = count($insts);
+        $inProgress = $completed = $withdrawn = $rejected = $suspended = 0;
+        foreach ($insts as $inst) {
+            match ($inst->getState()) {
+                ProcessInstanceState::DOING => $inProgress++,
+                ProcessInstanceState::FINISHED => $completed++,
+                ProcessInstanceState::WITHDRAW => $withdrawn++,
+                ProcessInstanceState::REJECTED => $rejected++,
+                ProcessInstanceState::PENDING => $suspended++,
+                default => null,
+            };
+        }
+
+        $now = new \DateTimeImmutable();
+        $todayStart = $now->setTime(0, 0, 0)->format('Y-m-d H:i:s');
+        $todayEnd = $now->setTime(0, 0, 0)->modify('+1 day')->format('Y-m-d H:i:s');
+        $todayNew = 0;
+        foreach ($allInsts as $inst) {
+            $ct = $inst->getCreateTime();
+            if ($ct !== null && $ct >= $todayStart && $ct < $todayEnd) $todayNew++;
+        }
+
+        $totalDur = 0;
+        $durCount = 0;
+        foreach ($insts as $inst) {
+            if ($inst->getState() !== ProcessInstanceState::FINISHED) continue;
+            $maxFinish = null;
+            foreach ($inst->getTasks() as $task) {
+                $ft = $task->getFinishTime();
+                if ($ft !== null && ($maxFinish === null || $ft > $maxFinish)) $maxFinish = $ft;
+            }
+            if ($maxFinish !== null && $inst->getCreateTime() !== null) {
+                $totalDur += max(0, strtotime($maxFinish) - strtotime($inst->getCreateTime()));
+                $durCount++;
+            }
+        }
+        $avgDur = $durCount > 0 ? intdiv($totalDur, $durCount) : 0;
+
+        $rejectRate = self::statsRound4($rejected / max(1, $completed + $rejected));
+
+        $allTasks = $this->repository->getAllTasks();
+        $pending = $overdue = 0;
+        $nowStr = date('Y-m-d H:i:s');
+        foreach ($allTasks as $task) {
+            if ($task->getTaskState() === ProcessTaskState::DOING) {
+                $pending++;
+                $exp = $task->getExpireTime();
+                if ($exp !== null && $exp < $nowStr) $overdue++;
+            }
+        }
+
+        $csTotal = $csCount = $onTime = $onTimeDenom = 0;
+        foreach ($insts as $inst) {
+            foreach ($inst->getTasks() as $task) {
+                if ($task->getTaskState() !== ProcessTaskState::FINISHED) continue;
+                $csTotal++;
+                if ($task->getPerformType() === PerformType::COUNTERSIGN) $csCount++;
+                $exp = $task->getExpireTime();
+                if ($exp !== null) {
+                    $onTimeDenom++;
+                    $ft = $task->getFinishTime();
+                    if ($ft !== null && $ft <= $exp) $onTime++;
+                }
+            }
+        }
+        $countersignRate = $csTotal > 0 ? self::statsRound4($csCount / $csTotal) : 0.0;
+        $onTimeRate = $onTimeDenom > 0 ? self::statsRound4($onTime / $onTimeDenom) : 0.0;
+
+        return $this->ok([
+            'total' => $total, 'inProgress' => $inProgress, 'completed' => $completed,
+            'rejected' => $rejected, 'withdrawn' => $withdrawn, 'suspended' => $suspended,
+            'todayNew' => $todayNew, 'avgDurationSeconds' => $avgDur,
+            'rejectRate' => $rejectRate, 'pendingTaskCount' => $pending,
+            'overdueTaskCount' => $overdue, 'countersignRate' => $countersignRate,
+            'onTimeRate' => $onTimeRate,
+        ]);
+    }
+
+    private function statsTrend(array $args): array
+    {
+        $granularity = (string)($args['granularity'] ?? '');
+        if (!isset(self::VALID_GRANULARITY[$granularity])) {
+            return $this->error('不支持的 granularity: ' . $granularity);
+        }
+        $start = $this->parseSurrogateTime($args['start'] ?? null);
+        $end = $this->parseSurrogateTime($args['end'] ?? null);
+        if ($start === null || $end === null) {
+            return $this->ok(['granularity' => $granularity, 'series' => []]);
+        }
+
+        $stateIn = self::DEFAULT_STATE_IN;
+        $insts = $this->statsFilterInstances($this->repository->getAllInstances(), $stateIn, $start, $end);
+        $doneTasks = $this->statsFilterTasks($this->repository->getAllTasks(), [ProcessTaskState::FINISHED], $start, $end, 'finish');
+
+        $buckets = self::statsEnumerateBuckets($start, $end, $granularity);
+        $startedMap = [];
+        foreach ($insts as $inst) {
+            $ct = $inst->getCreateTime();
+            if ($ct !== null) {
+                $bk = self::statsBucketKey($ct, $granularity);
+                $startedMap[$bk] = ($startedMap[$bk] ?? 0) + 1;
+            }
+        }
+        $finishedMap = [];
+        foreach ($doneTasks as $task) {
+            $ft = $task->getFinishTime();
+            if ($ft !== null) {
+                $bk = self::statsBucketKey($ft, $granularity);
+                $finishedMap[$bk] = ($finishedMap[$bk] ?? 0) + 1;
+            }
+        }
+
+        $series = [];
+        foreach ($buckets as $b) {
+            $series[] = ['bucket' => $b, 'started' => $startedMap[$b] ?? 0, 'finished' => $finishedMap[$b] ?? 0];
+        }
+        return $this->ok(['granularity' => $granularity, 'series' => $series]);
+    }
+
+    private function statsGroup(array $args): array
+    {
+        $dimension = (string)($args['dimension'] ?? '');
+        if (!isset(self::VALID_DIMENSION[$dimension])) {
+            return $this->error('不支持的 dimension: ' . $dimension);
+        }
+        $start = $this->parseSurrogateTime($args['start'] ?? null);
+        $end = $this->parseSurrogateTime($args['end'] ?? null);
+        $limit = isset($args['limit']) ? (int)$args['limit'] : self::DEFAULT_STATS_LIMIT;
+        $stateIn = self::DEFAULT_STATE_IN;
+        $insts = $this->statsFilterInstances($this->repository->getAllInstances(), $stateIn, $start, $end);
+        $doneTasks = $this->statsFilterTasks($this->repository->getAllTasks(), [ProcessTaskState::FINISHED], $start, $end, 'finish');
+        $doingTasks = $this->statsFilterTasks($this->repository->getAllTasks(), [ProcessTaskState::DOING], null, null, 'create');
+
+        $rows = [];
+        if ($dimension === 'define') {
+            $grouped = [];
+            foreach ($insts as $inst) {
+                $did = $inst->getDefineId();
+                if (!isset($grouped[$did])) $grouped[$did] = ['count' => 0, 'totalDur' => 0];
+                $grouped[$did]['count']++;
+                if ($inst->getState() === ProcessInstanceState::FINISHED) {
+                    $maxFinish = null;
+                    foreach ($inst->getTasks() as $task) {
+                        $ft = $task->getFinishTime();
+                        if ($ft !== null && ($maxFinish === null || $ft > $maxFinish)) $maxFinish = $ft;
+                    }
+                    if ($maxFinish !== null && $inst->getCreateTime() !== null) {
+                        $grouped[$did]['totalDur'] += max(0, strtotime($maxFinish) - strtotime($inst->getCreateTime()));
+                    }
+                }
+            }
+            $entries = [];
+            foreach ($grouped as $did => $agg) {
+                $def = $this->repository->findDefineById($did);
+                $entries[] = [
+                    'key' => $def['name'] ?? (string)$did,
+                    'label' => $def['displayName'] ?? $def['display_name'] ?? null,
+                    'count' => $agg['count'],
+                    'avgDurationSeconds' => $agg['count'] > 0 ? intdiv($agg['totalDur'], $agg['count']) : null,
+                ];
+            }
+            usort($entries, fn($a, $b) => $b['count'] - $a['count']);
+            $rows = array_slice($entries, 0, $limit);
+
+        } elseif ($dimension === 'state') {
+            $grouped = [];
+            foreach ($insts as $inst) {
+                $k = (string)$inst->getState();
+                $grouped[$k] = ($grouped[$k] ?? 0) + 1;
+            }
+            arsort($grouped);
+            $rows = [];
+            $i = 0;
+            foreach ($grouped as $k => $c) {
+                if ($i++ >= $limit) break;
+                $rows[] = ['key' => (string)$k, 'label' => null, 'count' => $c, 'avgDurationSeconds' => null];
+            }
+
+        } elseif ($dimension === 'category') {
+            $defineTypes = [];
+            foreach ($insts as $inst) {
+                $did = $inst->getDefineId();
+                if (!isset($defineTypes[$did])) {
+                    $def = $this->repository->findDefineById($did);
+                    $defineTypes[$did] = $def['type'] ?? '';
+                }
+            }
+            $grouped = [];
+            foreach ($insts as $inst) {
+                $tp = $defineTypes[$inst->getDefineId()] ?? '';
+                $grouped[$tp] = ($grouped[$tp] ?? 0) + 1;
+            }
+            arsort($grouped);
+            $rows = [];
+            $i = 0;
+            foreach ($grouped as $k => $c) {
+                if ($i++ >= $limit) break;
+                $rows[] = ['key' => $k, 'label' => null, 'count' => $c, 'avgDurationSeconds' => null];
+            }
+
+        } elseif ($dimension === 'approver') {
+            $grouped = [];
+            foreach ($doneTasks as $task) {
+                $op = $task->getActorId();
+                if ($op === null || $op === '') continue;
+                $grouped[$op] = ($grouped[$op] ?? 0) + 1;
+            }
+            arsort($grouped);
+            $rows = [];
+            $i = 0;
+            foreach ($grouped as $k => $c) {
+                if ($i++ >= $limit) break;
+                $rows[] = ['key' => $k, 'label' => null, 'count' => $c, 'avgDurationSeconds' => null];
+            }
+
+        } elseif ($dimension === 'applicant') {
+            $grouped = [];
+            foreach ($insts as $inst) {
+                $op = $inst->getOperator();
+                if ($op === null || $op === '') continue;
+                $grouped[$op] = ($grouped[$op] ?? 0) + 1;
+            }
+            arsort($grouped);
+            $rows = [];
+            $i = 0;
+            foreach ($grouped as $k => $c) {
+                if ($i++ >= $limit) break;
+                $rows[] = ['key' => $k, 'label' => null, 'count' => $c, 'avgDurationSeconds' => null];
+            }
+
+        } elseif ($dimension === 'node') {
+            $nodeAgg = [];
+            foreach ($doneTasks as $task) {
+                $dn = $task->getDisplayName();
+                if ($dn === null || $dn === '') continue;
+                $dur = 0;
+                $ft = $task->getFinishTime();
+                $ct = $task->getCreateTime();
+                if ($ft !== null && $ct !== null) $dur = max(0, strtotime($ft) - strtotime($ct));
+                if (!isset($nodeAgg[$dn])) $nodeAgg[$dn] = ['count' => 0, 'totalDur' => 0];
+                $nodeAgg[$dn]['count']++;
+                $nodeAgg[$dn]['totalDur'] += $dur;
+            }
+            uasort($nodeAgg, fn($a, $b) => $b['count'] - $a['count']);
+            $rows = [];
+            $i = 0;
+            foreach ($nodeAgg as $name => $agg) {
+                if ($i++ >= $limit) break;
+                $rows[] = [
+                    'key' => $name, 'label' => null, 'count' => $agg['count'],
+                    'avgDurationSeconds' => $agg['count'] > 0 ? intdiv($agg['totalDur'], $agg['count']) : null,
+                ];
+            }
+
+        } elseif ($dimension === 'stuckNode') {
+            $grouped = [];
+            foreach ($doingTasks as $task) {
+                $dn = $task->getDisplayName();
+                if ($dn === null || $dn === '') continue;
+                $grouped[$dn] = ($grouped[$dn] ?? 0) + 1;
+            }
+            arsort($grouped);
+            $rows = [];
+            $i = 0;
+            foreach ($grouped as $k => $c) {
+                if ($i++ >= $limit) break;
+                $rows[] = ['key' => $k, 'label' => null, 'count' => $c, 'avgDurationSeconds' => null];
+            }
+
+        } elseif ($dimension === 'stuckApprover') {
+            $grouped = [];
+            foreach ($doingTasks as $task) {
+                foreach ($task->getActorIds() as $actorId) {
+                    if ($actorId === null || $actorId === '') continue;
+                    $grouped[$actorId] = ($grouped[$actorId] ?? 0) + 1;
+                }
+            }
+            arsort($grouped);
+            $rows = [];
+            $i = 0;
+            foreach ($grouped as $k => $c) {
+                if ($i++ >= $limit) break;
+                $rows[] = ['key' => $k, 'label' => null, 'count' => $c, 'avgDurationSeconds' => null];
+            }
+
+        } elseif ($dimension === 'durationBucket') {
+            $durations = [];
+            foreach ($insts as $inst) {
+                if ($inst->getState() !== ProcessInstanceState::FINISHED) continue;
+                $maxFinish = null;
+                foreach ($inst->getTasks() as $task) {
+                    $ft = $task->getFinishTime();
+                    if ($ft !== null && ($maxFinish === null || $ft > $maxFinish)) $maxFinish = $ft;
+                }
+                if ($maxFinish !== null && $inst->getCreateTime() !== null) {
+                    $durations[] = max(0, strtotime($maxFinish) - strtotime($inst->getCreateTime()));
+                }
+            }
+            $sameDay = $d1to3 = $d3to7 = $over7d = 0;
+            foreach ($durations as $dur) {
+                if ($dur < 86400) $sameDay++;
+                elseif ($dur < 259200) $d1to3++;
+                elseif ($dur < 604800) $d3to7++;
+                else $over7d++;
+            }
+            $keys = ['sameDay', '1to3d', '3to7d', 'over7d'];
+            $counts = [$sameDay, $d1to3, $d3to7, $over7d];
+            $rows = [];
+            foreach ($keys as $idx => $k) {
+                $rows[] = ['key' => $k, 'label' => null, 'count' => $counts[$idx], 'avgDurationSeconds' => null];
+            }
+        }
+
+        return $this->ok(['dimension' => $dimension, 'rows' => $rows]);
+    }
+
+    // ── 统计辅助函数 ──
+
+    private static function statsRound4(float $v): float
+    {
+        return round($v, 4);
+    }
+
+    /** @return int[] */
+    private function statsParseStateIn(array $args): array
+    {
+        if (isset($args['stateIn']) && is_array($args['stateIn']) && count($args['stateIn']) > 0) {
+            return array_map('intval', $args['stateIn']);
+        }
+        return self::DEFAULT_STATE_IN;
+    }
+
+    /** @param ProcessInstance[] $insts  @param int[] $stateIn */
+    private function statsFilterInstances(array $insts, array $stateIn, ?string $start, ?string $end): array
+    {
+        $stateSet = array_flip($stateIn);
+        $result = [];
+        foreach ($insts as $inst) {
+            if (!isset($stateSet[$inst->getState()])) continue;
+            $ct = $inst->getCreateTime();
+            if ($start !== null && ($ct === null || $ct < $start)) continue;
+            if ($end !== null && ($ct === null || $ct >= $end)) continue;
+            $result[] = $inst;
+        }
+        return $result;
+    }
+
+    /** @param ProcessTask[] $tasks  @param int[] $states  @param 'finish'|'create' $timeField */
+    private function statsFilterTasks(array $tasks, array $states, ?string $start, ?string $end, string $timeField): array
+    {
+        $stateSet = array_flip($states);
+        $result = [];
+        foreach ($tasks as $task) {
+            if (!isset($stateSet[$task->getTaskState()])) continue;
+            $t = $timeField === 'finish' ? $task->getFinishTime() : $task->getCreateTime();
+            if ($start !== null && ($t === null || $t < $start)) continue;
+            if ($end !== null && ($t === null || $t >= $end)) continue;
+            $result[] = $task;
+        }
+        return $result;
+    }
+
+    /** @return string[] */
+    private static function statsEnumerateBuckets(string $start, string $end, string $granularity): array
+    {
+        $startTs = strtotime($start);
+        $endTs = strtotime($end);
+        if ($startTs === false || $endTs === false) return [];
+
+        $buckets = [];
+        $cur = new \DateTimeImmutable($start);
+        $endDt = new \DateTimeImmutable($end);
+
+        while ($cur < $endDt) {
+            $buckets[] = self::statsBucketKey($cur->format('Y-m-d H:i:s'), $granularity);
+            $cur = match ($granularity) {
+                'hour' => $cur->modify('+1 hour'),
+                'day' => $cur->modify('+1 day'),
+                'week' => $cur->modify('+7 days'),
+                'month' => $cur->modify('+1 month'),
+            };
+        }
+        return array_values(array_unique($buckets));
+    }
+
+    private static function statsBucketKey(string $datetime, string $granularity): string
+    {
+        $ts = strtotime($datetime);
+        if ($ts === false) return '';
+        return match ($granularity) {
+            'hour' => date('Y-m-d H:00', $ts),
+            'day' => date('Y-m-d', $ts),
+            'week' => self::statsWeekKey($ts),
+            'month' => date('Y-m', $ts),
+            default => '',
+        };
+    }
+
+    private static function statsWeekKey(int $ts): string
+    {
+        $isoYear = (int)date('o', $ts);
+        $isoWeek = (int)date('W', $ts);
+        return sprintf('%d-W%02d', $isoYear, $isoWeek);
     }
 
     // ── 响应构造 ──

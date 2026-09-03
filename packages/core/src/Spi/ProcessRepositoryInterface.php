@@ -85,4 +85,12 @@ interface ProcessRepositoryInterface
 
     /** 抄送列表分页 */
     public function pageCcInstances(PageQuery $query): PageResult;
+
+    // ── 统计（issues/103） ──
+
+    /** 获取全部流程实例（统计聚合用） */
+    public function getAllInstances(): array;
+
+    /** 获取全部流程任务（统计聚合用） */
+    public function getAllTasks(): array;
 }
