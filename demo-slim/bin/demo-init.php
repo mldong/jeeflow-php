@@ -17,6 +17,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/../vendor/autoload.php';
 require dirname(__DIR__, 2) . '/jeeflow-flows-dir.php'; // 本仓 flows/ 解析（维护者机器上镜像 Java 源）
+require __DIR__ . '/seed-business.php'; // T003：业务数据种子 driver
 
 use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\ServiceContext;
@@ -132,6 +133,17 @@ if (!is_dir($flowsDir)) {
         }
     }
 }
+
+// ── 4. T003：业务数据种子（引擎真实启动；demo 无 /api/reset，每次构建重跑前先清业务表保幂等）──
+
+echo "\nSeeding business data (T003 driver)...\n";
+
+foreach (['wf_process_task_actor', 'wf_process_task', 'wf_process_cc_instance',
+          'wf_process_instance', 'wf_process_surrogate'] as $table) {
+    $pdo->exec("DELETE FROM $table");
+}
+
+seed_business($facade);
 
 echo "\nDone.\n";
 echo "Now run: composer start\n";
