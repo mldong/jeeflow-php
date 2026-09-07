@@ -5,11 +5,13 @@ declare(strict_types=1);
 namespace Jeeflow\Demo;
 
 use Jeeflow\Core\Repository\InMemoryProcessExtRepository;
+use Jeeflow\Core\Spi\IdGeneratorInterface;
 use Jeeflow\Core\Repository\InMemoryProcessRepository;
 use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
 use Jeeflow\RepositoryPDO\PdoProcessExtRepository;
 use Jeeflow\RepositoryPDO\PdoProcessRepository;
+use Jeeflow\Demo\DbAwareIdGenerator;
 
 /**
  * 仓储工厂 —— 根据环境变量选择存储后端
@@ -26,6 +28,7 @@ class RepositoryFactory
     public const MODE_MYSQL = 'mysql';
 
     private static ?\PDO $sharedPdo = null;
+    private static ?IdGeneratorInterface $sharedIdGenerator = null;
 
     /**
      * 获取当前存储模式
@@ -44,7 +47,7 @@ class RepositoryFactory
 
         return match ($mode) {
             self::MODE_MEMORY => new InMemoryProcessRepository(),
-            self::MODE_SQLITE, self::MODE_MYSQL => new PdoProcessRepository(self::getPdo()),
+            self::MODE_SQLITE, self::MODE_MYSQL => new PdoProcessRepository(self::getPdo(), self::getIdGenerator()),
             default => throw new \RuntimeException("Unknown JEEFLOW_DEMO_STORE mode: $mode"),
         };
     }
@@ -58,9 +61,21 @@ class RepositoryFactory
 
         return match ($mode) {
             self::MODE_MEMORY => new InMemoryProcessExtRepository(),
-            self::MODE_SQLITE, self::MODE_MYSQL => new PdoProcessExtRepository(self::getPdo()),
+            self::MODE_SQLITE, self::MODE_MYSQL => new PdoProcessExtRepository(self::getPdo(), self::getIdGenerator()),
             default => throw new \RuntimeException("Unknown JEEFLOW_DEMO_STORE mode: $mode"),
         };
+    }
+
+    /**
+     * 获取共享 ID 生成器（基于库内 MAX(id)，跨进程重启幂等）
+     */
+    public static function getIdGenerator(): IdGeneratorInterface
+    {
+        if (self::$sharedIdGenerator === null) {
+            self::$sharedIdGenerator = new DbAwareIdGenerator(self::getPdo());
+        }
+
+        return self::$sharedIdGenerator;
     }
 
     /**
