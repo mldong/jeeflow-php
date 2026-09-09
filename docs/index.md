@@ -24,10 +24,10 @@
 | 能力 | PHP 1.1.x | 说明 |
 |------|-----------|------|
 | 引擎核心（状态机 / 聚合根 / Handler） | ✅ | 对齐 Java 参考实现 |
-| 统一门面 action | ✅ 40 个，与 Java 对齐（issues/61 已闭环） | `JeeflowFacade`，code=0/msg 契约 |
+| 统一门面 action | ✅ 40 个，与 Java 对齐（已闭环） | `JeeflowFacade`，code=0/msg 契约 |
 | PDO 持久化（MySQL 八表 / SQLite） | ✅ | `packages/repository-pdo` |
 | PSR-15 接入 | ✅ | `JeeflowRequestHandler`（web-psr） |
-| 业务数据入库（persist / persist-meta） | ✅ 1.1.2 | `packages/persist`：拦截器调度 + ARCHIVE/SYNC 写侧（issues/69）；读侧仍由集成方挂 `metaTableReader` |
+| 业务数据入库（persist / persist-meta） | ✅ 1.1.2 | `packages/persist`：拦截器调度 + ARCHIVE/SYNC 写侧；读侧仍由集成方挂 `metaTableReader` |
 | `snaker:custom` 自定义节点 | ⏳ 规划中 | 无 CustomModel，含该节点的流程 JSON 无法解析 |
 
 ## 相关
