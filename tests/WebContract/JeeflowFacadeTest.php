@@ -353,6 +353,8 @@ class JeeflowFacadeTest extends TestCase
             'operator' => 'user1',
         ]);
         $instanceId = $startResult['data']['processInstanceId'];
+        $doingBefore = $this->repo->findDoingTasks($instanceId);
+        $this->assertNotEmpty($doingBefore, '撤回前应有进行中任务');
 
         $result = $this->facade->flow('processInstance/withdraw', [
             'id' => $instanceId,
@@ -362,6 +364,16 @@ class JeeflowFacadeTest extends TestCase
 
         $detail = $this->facade->flow('processInstance/detail', ['id' => $instanceId]);
         $this->assertEquals(ProcessInstanceState::WITHDRAW, $detail['data']['state']);
+
+        // issues/113：原 doing 任务须落 WITHDRAW(30)，不能落 ABANDON(99)。
+        // 只断"实例态 + doing 清空"抓不到这个缺陷——go/python/node 三栈正是从这条缝隙漏掉的。
+        foreach ($doingBefore as $task) {
+            $stored = $this->repo->findTaskById($task->getTaskId());
+            $this->assertNotNull($stored, '撤回后任务应仍可读到');
+            $this->assertSame(ProcessTaskState::WITHDRAW, $stored->getTaskState(),
+                '撤回任务态应=30(WITHDRAW)，99(ABANDON) 是废弃码，两码不得混用');
+        }
+        $this->assertCount(0, $this->repo->findDoingTasks($instanceId), '撤回后不应再有进行中任务');
     }
 
     // ── 审批记录 ──

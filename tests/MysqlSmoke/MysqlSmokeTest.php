@@ -6,6 +6,7 @@ namespace Jeeflow\Tests\MysqlSmoke;
 
 use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Enum\FlowConst;
+use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\Interceptor\FlowInterceptorRegistry;
 use Jeeflow\Core\JeeflowEngine;
@@ -228,6 +229,35 @@ class MysqlSmokeTest extends TestCase
         $row = $this->fetchBiz($instance->getInstanceId());
         $this->assertSame('orig', $row['title'], '只读 title 不被办理改掉');
         $this->assertSame('99', (string) $row['amount']);
+    }
+
+    /**
+     * M5 issues/113：门面 withdraw 须把进行中任务以 30（WITHDRAW）落 MySQL。
+     * PHP 此前只有模型层 AggregateRootTest 断过 30，PDO 落库层零覆盖；
+     * go/python/node/rust 四栈的缺陷恰好都藏在门面分支与 SQL 回写之间。
+     */
+    public function testM5WithdrawPersistsTaskState30(): void
+    {
+        $this->addPersistDefine('900040', 'ARCHIVE', false);
+        $instance = $this->engine->startProcessInstanceById('900040', 'user1', FlowData::of(['f_title' => 'w']));
+        $doing = $instance->getDoingTasks();
+        $this->assertNotEmpty($doing, '撤回前应有进行中任务');
+
+        $r = $this->facade->flow('processInstance/withdraw', [
+            'id' => $instance->getInstanceId(),
+            'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+
+        foreach ($doing as $task) {
+            $raw = self::$pdo->query(
+                'SELECT task_state FROM wf_process_task WHERE id = ' . (int) $task->getTaskId()
+            )->fetch(\PDO::FETCH_ASSOC);
+            $this->assertNotFalse($raw);
+            $this->assertSame(ProcessTaskState::WITHDRAW, (int) $raw['task_state'],
+                '撤回任务落库应=30(WITHDRAW)，99(ABANDON) 是废弃码');
+        }
+        $this->assertCount(0, $this->repo->findDoingTasks($instance->getInstanceId()), '撤回后不应再有进行中任务');
     }
 
     private function addPersistDefine(string $id, string $persistMode, bool $withPerm): void
