@@ -260,6 +260,84 @@ class MysqlSmokeTest extends TestCase
         $this->assertCount(0, $this->repo->findDoingTasks($instance->getInstanceId()), '撤回后不应再有进行中任务');
     }
 
+    /**
+     * M6 issues/115：门面 processTask/transfer 须真落 MySQL 行——
+     * 参与者表摘原人/加新人、variable 列 JSON 里 tf_transferHistory 是「数组套对象」
+     * （六键 camelCase + time 为 yyyy-MM-dd HH:mm:ss 串，中文 reason 过 utf8mb4 往返）、
+     * wf_process_task.operator 列**恒 NULL**（契约严禁覆写；写进去会让撤回后的单凭空出现在
+     * 被摘走的人的 doneList 里，因为 pageDoneTasks 按 state<>10 AND operator=? 过滤）。
+     */
+    public function testM6TransferPersistsLedgerAndNeverWritesOperatorColumn(): void
+    {
+        $this->addPersistDefine('900050', 'ARCHIVE', false);
+        $instance = $this->engine->startProcessInstanceById('900050', 'user1', FlowData::of(['f_title' => '转办']));
+        $task = $instance->getDoingTasks()[0];
+        $taskId = (string) $task->getTaskId();
+        $instanceId = (string) $instance->getInstanceId();
+        $this->assertSame(['user1'], $this->actorsOf($taskId), '前置：参与者只有发起人');
+
+        $r = $this->facade->flow('processTask/transfer', [
+            'processTaskId' => $taskId, 'fromActor' => 'user1', 'toActor' => 'lisi',
+            'reason' => '出差一周 αβγ', 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertNull($r['data']);
+
+        // 参与者表：摘 user1、加 lisi（同一 taskId）
+        $this->assertSame(['lisi'], $this->actorsOf($taskId));
+        $raw = self::$pdo->query('SELECT * FROM wf_process_task WHERE id = ' . (int) $taskId)
+            ->fetch(\PDO::FETCH_ASSOC);
+        $this->assertNotFalse($raw);
+        $this->assertNull($raw['operator'], 'PDO 路：转办严禁覆写 wf_process_task.operator 列');
+        $this->assertSame('user1', $raw['update_user'], '办理人记谁由 update_user 承载');
+        $this->assertSame(ProcessTaskState::DOING, (int) $raw['task_state'], '转办不置任务态');
+
+        // variable 列 JSON：数组套对象 + 六键同序 + 中文往返 + time 跨栈格式
+        $decoded = json_decode((string) $raw['variable'], true);
+        $this->assertSame(7, $decoded['submitType'] ?? null, '留痕① submitType=7 落库');
+        $ledger = $decoded['tf_transferHistory'] ?? null;
+        $this->assertIsArray($ledger, '留痕② 落库应为 JSON 数组');
+        $this->assertCount(1, $ledger);
+        $this->assertSame(['submitType', 'fromActor', 'toActor', 'reason', 'time', 'operator'],
+            array_keys($ledger[0]));
+        $this->assertSame('出差一周 αβγ', $ledger[0]['reason'], '中文 reason 须原样往返（utf8mb4）');
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', (string) $ledger[0]['time'],
+            'time 须 yyyy-MM-dd HH:mm:ss 字符串，不得用 ISO 方言（跨栈同形）');
+        $this->assertSame('user1 转办给 lisi（出差一周 αβγ）', $decoded['tf_approvalComment'] ?? null,
+            '留痕③ 末跳可读文案主语是 fromActor');
+        $this->assertSame('lisi', $decoded['tf_transferTo'] ?? null);
+        $this->assertSame('出差一周 αβγ', $decoded['tf_transferReason'] ?? null);
+
+        // 撤回整单后再查 operator 列与 doneList 红线（pageDoneTasks = state<>10 AND operator=?）
+        $w = $this->facade->flow('processInstance/withdraw', ['id' => $instanceId, 'operator' => 'lisi']);
+        $this->assertSame(0, $w['code'], json_encode($w, JSON_UNESCAPED_UNICODE));
+        $after = self::$pdo->query('SELECT operator, task_state, update_user FROM wf_process_task WHERE id = '
+            . (int) $taskId)->fetch(\PDO::FETCH_ASSOC);
+        $this->assertSame(ProcessTaskState::WITHDRAW, (int) $after['task_state']);
+        $this->assertNull($after['operator'], '撤回后 operator 列仍须 NULL（转办没写过它）');
+        $this->assertSame('lisi', $after['update_user']);
+
+        $done = $this->facade->flow('processTask/doneList', ['operator' => 'user1']);
+        $this->assertSame(0, $done['code'], json_encode($done, JSON_UNESCAPED_UNICODE));
+        $this->assertSame([], array_values(array_filter(
+            $done['data']['rows'], fn($row) => (string) ($row['processInstanceId'] ?? '') === $instanceId
+        )), '被摘走的 user1 不得在「我已办」凭空看到这条他没办过的单');
+        // 转办不存在的任务 / 非进行中：明确报错且不动参与者表
+        $bad = $this->facade->flow('processTask/transfer', [
+            'processTaskId' => $taskId, 'fromActor' => 'lisi', 'toActor' => 'wangwu', 'operator' => 'lisi',
+        ]);
+        $this->assertSame(99999999, $bad['code']);
+        $this->assertSame('任务非进行中，不可转办', $bad['msg']);
+        $this->assertSame(['lisi'], $this->actorsOf($taskId), '被拒转办不得改参与者表');
+    }
+
+    private function actorsOf(string $taskId): array
+    {
+        $stmt = self::$pdo->prepare('SELECT actor_id FROM wf_process_task_actor WHERE process_task_id = ? ORDER BY id');
+        $stmt->execute([$taskId]);
+        return array_map(strval(...), $stmt->fetchAll(\PDO::FETCH_COLUMN));
+    }
+
     private function addPersistDefine(string $id, string $persistMode, bool $withPerm): void
     {
         $field = $withPerm

@@ -27,6 +27,12 @@ final class FlowConst
 
     public const APPROVAL_COMMENT = 'tf_approvalComment';
     public const APPROVAL_ATTACHMENT = 'tf_approvalAttachment';
+    // issues/115 转办留痕键（跨栈契约键，camelCase 勿改 snake_case）：
+    // TRANSFER_HISTORY 是**跨跳追加式账本**（每跳 append 一条，只追加不覆盖），
+    // TRANSFER_TO/TRANSFER_REASON 是末跳便捷键（省前端一次遍历）。
+    public const TRANSFER_HISTORY = 'tf_transferHistory';
+    public const TRANSFER_TO = 'tf_transferTo';
+    public const TRANSFER_REASON = 'tf_transferReason';
     public const NEXT_NODE_OPERATOR = 'tf_nextNodeOperator';
     public const PROCESS_START_NEXT_NODE_OPERATOR = 'f_nextNodeOperator';
     public const CC_ACTORS = 'tf_ccActors';

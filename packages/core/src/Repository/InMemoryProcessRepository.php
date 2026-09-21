@@ -214,6 +214,23 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         $task->setActorIds($existing);
     }
 
+    /**
+     * issues/115：按人摘行——只剔掉传入的那几个人，其余参与人原样保留。
+     * 与 addTaskActor 同为**增量**语义（不是全量重置），转办摘原人依赖它。
+     */
+    public function removeTaskActor(int|string $taskId, array $actorIds): void
+    {
+        $task = $this->tasks[(string) $taskId] ?? null;
+        if ($task === null) return;
+        if ($actorIds === []) return;
+        $remove = array_map(strval(...), $actorIds);
+        $kept = array_values(array_filter(
+            $task->getActorIds(),
+            fn($aid) => !in_array((string) $aid, $remove, true)
+        ));
+        $task->setActorIds($kept);
+    }
+
     public function pageTodoTasks(PageQuery $query): PageResult
     {
         // Extract actor filter from conditions

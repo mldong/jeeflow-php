@@ -96,9 +96,22 @@ class ProcessTask
         $this->updateUser = $operator;
     }
 
-    public function withdraw(): void
+    /**
+     * 撤回（issues/114）：任务态置 WITHDRAW(30)。
+     *
+     * 契约要求「进行中任务的 update_user 同样回写为撤回人」，故 operator 非空时一并写
+     * updateUser/updateTime（operator 可为 null 兼容纯领域层调用）。
+     * **不得写 actorId/operator 列**——进行中任务该列恒无值是既有不变量，写进去会让
+     * 「我已办」列表（pageDoneTasks 按 state<>10 AND operator=? 过滤）凭空多出没办过的单。
+     */
+    public function withdraw(?string $operator = null): void
     {
         $this->taskState = ProcessTaskState::WITHDRAW;
+        if ($operator !== null && $operator !== '') {
+            $now = date('Y-m-d H:i:s');
+            $this->updateTime = $now;
+            $this->updateUser = $operator;
+        }
     }
 
     public function interrupt(string $operator): void

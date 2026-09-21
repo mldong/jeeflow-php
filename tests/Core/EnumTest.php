@@ -63,6 +63,8 @@ class EnumTest extends TestCase
         $this->assertSame(4, SubmitType::JUMP);
         $this->assertSame(5, SubmitType::RE_APPLY);
         $this->assertSame(6, SubmitType::ROLLBACK_TO_OPERATOR);
+        // issues/115：7 = TRANSFER 转办（规范 06 §2.8，仅 processTask/transfer 写留痕用）
+        $this->assertSame(7, SubmitType::TRANSFER);
         $this->assertSame(20, SubmitType::COUNTERSIGN_DISAGREE);
     }
 
@@ -75,6 +77,10 @@ class EnumTest extends TestCase
         $this->assertSame('跳转', SubmitType::label(SubmitType::JUMP));
         $this->assertSame('重新提交', SubmitType::label(SubmitType::RE_APPLY));
         $this->assertSame('退回发起人', SubmitType::label(SubmitType::ROLLBACK_TO_OPERATOR));
+        // 契约 07：7「转办」、20「会签拒绝」（20 与 2 是两个槽位，PHP 曾与 Java 同款把 20 误写「拒绝申请」）
+        $this->assertSame('转办', SubmitType::label(SubmitType::TRANSFER));
+        $this->assertSame('会签拒绝', SubmitType::label(SubmitType::COUNTERSIGN_DISAGREE));
+        $this->assertSame('拒绝申请', SubmitType::label(SubmitType::REJECT));
         $this->assertStringContainsString('未知', SubmitType::label(999));
     }
 

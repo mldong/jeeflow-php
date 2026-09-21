@@ -64,8 +64,20 @@ interface ProcessRepositoryInterface
     /** 查找已完成的任务 */
     public function findHistoryTasks(int|string $instanceId): array;
 
-    /** 为任务追加参与人 */
+    /** 为任务追加参与人（去重追加，不清空既有参与人） */
     public function addTaskActor(int|string $taskId, array $actorIds): void;
+
+    /**
+     * 按人摘除任务参与人（issues/115，SPI 必选方法，对齐 Java removeTaskActor /
+     * Go RemoveTaskActor / Python remove_task_actor / Node removeTaskActor）
+     *
+     * 语义：只删 {@code actorIds} 里这些人**在该任务下**的参与者行，其余参与人一行不动
+     * （会签节点转办摘的是"自己那一票"）。全量重置参与者请用 removeTaskActor + addTaskActor 组合，
+     * addTaskActor 本身永远是追加语义。
+     *
+     * @param string[] $actorIds
+     */
+    public function removeTaskActor(int|string $taskId, array $actorIds): void;
 
     /** 待办任务分页 */
     public function pageTodoTasks(PageQuery $query): PageResult;

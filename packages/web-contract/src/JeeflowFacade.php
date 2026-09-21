@@ -100,6 +100,7 @@ class JeeflowFacade
                 'processTask/jumpAbleTaskNameList' => $this->jumpAbleTaskNameList($args),
                 'processTask/surrogate' => $this->taskSurrogate($args),
                 'processTask/addCandidate' => $this->taskSurrogate($args),
+                'processTask/transfer' => $this->taskTransfer($args),
                 'processTask/latest' => $this->taskLatest($args),
                 'processTask/candidatePage' => $this->candidatePage($args),
                 // ── 视图端点 ──
@@ -310,15 +311,62 @@ class JeeflowFacade
         return $this->ok($data);
     }
 
+    /**
+     * 撤回（issues/113/114）：整单撤回 —— 实例与全部进行中任务置 WITHDRAW(30)。
+     *
+     * operator **硬必填**：缺失或空串直接 `operator 必填`，严禁缺省回落 user1 等固定账号
+     * （PHP 此前正是 `$args['operator'] ?? 'user1'` + 零鉴权，撤回人被静默记成 user1 且不报错）。
+     * 归属判据三条见 {@link canWithdraw}；语义细节见规范 06 §processInstance/withdraw。
+     */
     private function withdraw(array $args): array
     {
         $instanceId = $this->toStr($args['id'] ?? '');
-        $operator = $this->toStr($args['operator'] ?? 'user1');
+        $operator = trim($this->toStr($args['operator'] ?? ''));
+        if ($operator === '') return $this->error('operator 必填');
         $inst = $this->repository->findInstanceById($instanceId);
         if ($inst === null) return $this->error('流程实例不存在');
+        if (!$this->canWithdraw($inst, $operator)) return $this->error('无权限撤回该流程实例');
+        // 聚合根置态：仅进行中任务 → 30（已完成 20 / 已终止 40 / 已废弃 99 行不改写），
+        // 实例与被撤任务的 update_user 一并回写为真实撤回人
         $inst->withdraw($operator);
+        // updateInstance 级联落库（PDO 仓内部逐任务 updateTask；内存仓与聚合共享对象引用）
         $this->repository->updateInstance($inst);
         return $this->ok();
+    }
+
+    /**
+     * 撤回归属判据（issues/114，命中任一即放行，全不命中拒绝）：
+     *
+     * 1. operator = 实例发起人（{@code wf_process_instance.operator}）——
+     *    ⚠️ **不可复用 ProcessTask::isAllowed**：本栈 isAllowed 只判「operator 在不在该任务
+     *    actorIds」+ auto/admin 放行，从不查发起人，这一支必须显式补；
+     * 2. operator 是该实例任一**进行中**任务的参与者（{@code wf_process_task_actor.actor_id}，
+     *    以仓储读回的参与者为准，不用聚合副本）；
+     * 3. operator ∈ {flow.auto, flow.admin}（沿用 isAllowed 既有放行约定）。
+     */
+    private function canWithdraw(ProcessInstance $inst, string $operator): bool
+    {
+        if ($this->isPrivilegedOperator($operator)) return true;
+        if ($operator === $inst->getOperator()) return true;
+        foreach ($this->repository->findDoingTasks((string) $inst->getInstanceId()) as $task) {
+            if (in_array($operator, $this->actorIdsOf($task), true)) return true;
+        }
+        return false;
+    }
+
+    /** 系统代执行（flow.auto）/ 超级管理员（flow.admin）放行 —— 撤回与转办共用同一约定 */
+    private function isPrivilegedOperator(string $operator): bool
+    {
+        return strcasecmp($operator, FlowConst::AUTO_ID) === 0
+            || strcasecmp($operator, FlowConst::ADMIN_ID) === 0;
+    }
+
+    /** 任务参与者归一为字符串列表（PDO 行/JSON 反序列化都可能给 int） */
+    private function actorIdsOf(ProcessTask $task): array
+    {
+        return array_values(array_unique(array_map(
+            static fn($id): string => trim((string) $id), $task->getActorIds()
+        )));
     }
 
     // ═══ 流程任务 ═══
@@ -449,6 +497,92 @@ class JeeflowFacade
             $actorIds = array_filter(array_map('trim', explode(',', $actorIds)));
         }
         $this->repository->addTaskActor($taskId, $actorIds);
+        return $this->ok();
+    }
+
+    /**
+     * 转办（issues/115，规范 06 §processTask/transfer 七条语义）：摘原办理人 + 换新参与人。
+     *
+     * 与 {@link taskSurrogate} 加签是两回事——加签**只追加**（原人保留可办，本轮语义不动），
+     * 本 action 把待办从 A 的列表**挪到** B 的列表：
+     * 1. 摘原人只删 fromActor 那一行参与者（会签节点转的是"自己那一票"，其余成员不受影响）；
+     * 2. toActor 追加为参与人，办理规则不变；
+     * 3. 任务不新建（沿用同一 processTaskId，高亮图/节点进度不变）；
+     * 4. 留痕三件（缺一不可）：任务变量 submitType=7 槽位 + tf_transferHistory 追加式账本
+     *    （+ 单跳便捷键 tf_transferTo/tf_transferReason）+ 末跳可读文案 tf_approvalComment；
+     * 5. 变量合并序由 ProcessTask::finish 保证（任务既有变量 ← 本次提交参数，args 最高），
+     *    故 B 办结后账本仍在、submitType 槽位被 B 的 1/2/20 覆盖属预期；
+     * 6. toActor 已是参与者 / fromActor 不在参与者里 → 明确报错；
+     * 7. 任务非进行中 → 明确报错。
+     * 鉴权：只能转自己那一条待办（operator == fromActor），flow.auto/flow.admin 除外；
+     * operator 硬必填。失败码一律 99999999，msg 逐字对齐跨栈统一文案。
+     */
+    private function taskTransfer(array $args): array
+    {
+        $operator = trim($this->toStr($args['operator'] ?? ''));
+        if ($operator === '') return $this->error('operator 必填');
+        $fromActor = trim($this->toStr($args['fromActor'] ?? ''));
+        if ($fromActor === '') return $this->error('fromActor 必填');
+        $toActor = trim($this->toStr($args['toActor'] ?? ''));
+        if ($toActor === '') return $this->error('toActor 必填');
+        $taskId = $this->toStr($args[FlowConst::PROCESS_TASK_ID_KEY] ?? $args['id'] ?? '');
+        if ($taskId === '') return $this->error('processTaskId 缺失或非法');
+
+        $task = $this->repository->findTaskById($taskId);
+        if ($task === null) return $this->error('任务不存在');
+        if (!$this->isPrivilegedOperator($operator) && $operator !== $fromActor) {
+            return $this->error('无权限转办该任务');
+        }
+        if ($task->getTaskState() !== ProcessTaskState::DOING) {
+            return $this->error('任务非进行中，不可转办');
+        }
+        // 参与者以仓储读回的 wf_process_task_actor 为判据（内存仓/PDO 仓同源）
+        $actors = $this->actorIdsOf($task);
+        if (!in_array($fromActor, $actors, true)) return $this->error('原办理人不是该任务参与人');
+        if (in_array($toActor, $actors, true)) return $this->error('目标人已是该任务参与人');
+
+        // ①摘原人（仅 fromActor 那一行）+ ②加新人（同一 taskId，任务不新建）
+        $this->repository->removeTaskActor($taskId, [$fromActor]);
+        $this->repository->addTaskActor($taskId, [$toActor]);
+
+        // ④留痕三件 —— 时间一律 yyyy-MM-dd HH:mm:ss 字符串（§2.4 跨栈同形，严禁 ISO 方言/时刻对象）
+        $reason = trim($this->toStr($args['reason'] ?? ''));
+        $now = date('Y-m-d H:i:s');
+        $vars = $task->getVariables();
+        // 账本必须是追加式列表而非单跳键：审批记录槽位就是任务行本身，B 办结时 submitType 会被
+        // 他的办理参数覆盖——没有跨跳账本，多跳转办只剩末跳、办结后转办事实整体消失（审计断链）。
+        $ledger = [];
+        $existing = $vars->get(FlowConst::TRANSFER_HISTORY);
+        if (is_array($existing)) {
+            foreach ($existing as $hop) {
+                $ledger[] = $hop; // 只追加：既往各跳原样带过来，不重排不裁剪
+            }
+        }
+        // 六键固定 camelCase、顺序与契约同形；reason 无值写 ""（不写 null）
+        $ledger[] = [
+            'submitType' => SubmitType::TRANSFER,
+            'fromActor' => $fromActor,
+            'toActor' => $toActor,
+            'reason' => $reason,
+            'time' => $now,
+            'operator' => $operator,
+        ];
+        $vars->set(FlowConst::TRANSFER_HISTORY, $ledger);
+        $vars->set(FlowConst::SUBMIT_TYPE, SubmitType::TRANSFER);
+        $vars->set(FlowConst::TRANSFER_TO, $toActor);
+        $vars->set(FlowConst::TRANSFER_REASON, $reason);
+        // 末跳可读文案走前端既有读取位（approvalRecord 的 variable/ext）；多跳只留末跳
+        $vars->set(FlowConst::APPROVAL_COMMENT, $reason === ''
+            ? $fromActor . ' 转办给 ' . $toActor
+            : $fromActor . ' 转办给 ' . $toActor . '（' . $reason . '）');
+        $task->setVariables($vars);
+        // ⚠️ 契约条款 4：严禁覆写任务 actor_id/operator——进行中任务该列恒无值是既有不变量，
+        // 而 pageDoneTasks 按 state<>10 AND operator=? 过滤，写进去会让被摘走的人在单据撤回/终止后
+        // 「凭空」在我已办列表看到从没办过的单（Node 实测踩过）。"办理人记谁"由下面的 update_user
+        // + 账本 tf_transferHistory[].operator 承载，不占 actor_id。
+        $task->setUpdateTime($now);
+        $task->setUpdateUser($operator);
+        $this->repository->updateTask($task);
         return $this->ok();
     }
 

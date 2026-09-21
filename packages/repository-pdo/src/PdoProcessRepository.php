@@ -375,6 +375,22 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         }
     }
 
+    /**
+     * issues/115：按人摘行——WHERE 同时限定 process_task_id 与 actor_id，
+     * 只删传入这几人在**该任务**下的参与者行，同任务其余参与人（会签其他成员、加签来的人）一行不动。
+     * 传空列表直接返回，避免退化成"清空该任务全部参与者"。
+     */
+    public function removeTaskActor(int|string $taskId, array $actorIds): void
+    {
+        if ($actorIds === []) return;
+        $stmt = $this->pdo->prepare(
+            'DELETE FROM wf_process_task_actor WHERE process_task_id = ? AND actor_id = ?'
+        );
+        foreach ($actorIds as $actorId) {
+            $stmt->execute([(string) $taskId, (string) $actorId]);
+        }
+    }
+
     public function pageTodoTasks(PageQuery $query): PageResult
     {
         $baseSql = ' FROM wf_process_task t '

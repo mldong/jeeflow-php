@@ -39,12 +39,26 @@ class EnumDictRegistryTest extends TestCase
         $this->assertSame('已完成', $items[1]['label']);
     }
 
+    /**
+     * wf_process_submit_type 契约全量（规范 07 字典表）：
+     * 0/1/2/3/4/5/6/7/20，其中 7=转办（issues/115 新增）、20=会签拒绝
+     * （此前与 Java 同款误抄成「拒绝申请」，本轮对齐；2 保持「拒绝申请」不动）。
+     */
     public function testGetSubmitType(): void
     {
         $items = EnumDictRegistry::get('wf_process_submit_type');
-        $this->assertCount(8, $items);
+        $this->assertCount(9, $items);
         $this->assertSame('0', $items[0]['value']);
         $this->assertSame('发起申请', $items[0]['label']);
+        $byValue = [];
+        foreach ($items as $item) {
+            $byValue[$item['value']] = $item['label'];
+        }
+        $this->assertSame(
+            ['0' => '发起申请', '1' => '同意申请', '2' => '拒绝申请', '3' => '退回上一步', '4' => '跳转',
+             '5' => '重新提交', '6' => '退回发起人', '7' => '转办', '20' => '会签拒绝'],
+            $byValue
+        );
     }
 
     public function testGetTaskType(): void

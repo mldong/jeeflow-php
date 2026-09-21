@@ -35,7 +35,8 @@ final class EnumDictRegistry
             ['value' => '4', 'label' => '跳转'],
             ['value' => '5', 'label' => '重新提交'],
             ['value' => '6', 'label' => '退回发起人'],
-            ['value' => '20', 'label' => '拒绝申请'],
+            ['value' => '7', 'label' => '转办'],
+            ['value' => '20', 'label' => '会签拒绝'],
         ],
         'wf_process_task_state' => [
             ['value' => '10', 'label' => '进行中'],

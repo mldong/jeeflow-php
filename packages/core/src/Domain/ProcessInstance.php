@@ -109,11 +109,16 @@ class ProcessInstance
         $this->updateUser = $operator;
     }
 
+    /**
+     * 撤回整单（issues/113/114）：实例与**全部进行中任务**置 WITHDRAW(30)，
+     * 已完成(20)/已终止(40)/已废弃(99) 任务行不被改写；实例与被撤任务的
+     * update_user 都回写为真实撤回人（鉴权在门面，见 JeeflowFacade::withdraw）。
+     */
     public function withdraw(string $operator): void
     {
         foreach ($this->tasks as $task) {
             if ($task->isDoing()) {
-                $task->withdraw();
+                $task->withdraw($operator);
             }
         }
         $this->state = ProcessInstanceState::WITHDRAW;
