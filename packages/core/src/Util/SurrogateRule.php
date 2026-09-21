@@ -1,0 +1,117 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Jeeflow\Core\Util;
+
+/**
+ * 委托查询**四判据**共用谓词（issues/116 批次 D）
+ *
+ * 契约依据：`docs/spec/06-facade.md` §4.5 条款 5/6 + `docs/spec/05-spi.md`「扩展仓储」小节 +
+ * `docs/spec/08-compliance.md` 用例 27。条款 6 要求**内存仓与 SQL 仓两条路径都要满足条款 5**
+ * ——同栈两仓对同一份数据给出不同结论即缺陷。本类是 PHP 侧"两仓同答案"的唯一维护点：
+ * 内存仓 `InMemoryProcessExtRepository::getSurrogate` 全量用它，
+ * SQL 仓 `PdoProcessExtRepository::getSurrogate` 以 SQL 谓词为主、再用本类对返回行做**同判据复核**
+ * （防 MySQL 对 `enabled` 脏值的隐式转换与内存仓给出相反结论）。
+ *
+ * 四条判据：
+ * 1. 空 `processName` = 全部流程兜底（先按当前流程名精确查，未命中再查 `process_name` 为 NULL/''）；
+ * 2. 时间窗 `start_time <= now <= end_time`，**一侧为 NULL/空即该侧不限**；
+ * 3. 自委托过滤 `surrogate <> operator`（自己委托给自己不生效）；
+ * 4. `enabled` **只有 1 生效**，脏值（不可解析为整数）不得默认当启用
+ *    ——PHP 既有方向 `(int)'abc'` → 0 即停用，本类保持该方向；
+ * 5. （条款 1.4）多条同时命中取**主键 id 最大**的那条，内存仓不得"取遍历到的首条"。
+ */
+final class SurrogateRule
+{
+    /**
+     * 判据④：`enabled` 只有整数 1 生效，脏值不得当启用。
+     *
+     * - `null` / `0` / 其它整数（含 2、-1）→ 停用；
+     * - 不可解析为整数的脏值（`'abc'` / `''`）→ 停用（对齐 PHP `(int)'abc'`→0 的既有方向，
+     *   与 C# `ToInt` 回落 1 的相反默认明确区分）；
+     * - `'1'` / `'1.0'` / `1.0` / `true` → 启用（对齐 SQL 侧 `enabled = 1` 的隐式转换）。
+     */
+    public static function isEnabled(mixed $value): bool
+    {
+        if ($value === null) return false;
+        if (is_bool($value)) return $value;
+        if (is_int($value)) return $value === 1;
+        if (is_float($value)) return $value === 1.0;
+        $s = trim((string) $value);
+        if ($s === '' || !is_numeric($s)) return false;
+        return (int) $s === 1;
+    }
+
+    /**
+     * 判据③：自委托过滤——被委托人与授权人同一人时不生效。
+     *
+     * `$surrogate` 为 null/空串也按"不生效"处理（无意义的台账行不该把任务推给空 id）。
+     */
+    public static function isSelfDelegation(string $operator, mixed $surrogate): bool
+    {
+        $agent = is_string($surrogate) ? trim($surrogate) : (string) ($surrogate ?? '');
+        return $agent === '' || $agent === trim($operator);
+    }
+
+    /**
+     * 判据②：时间窗判定，`$startTime` / `$endTime` 为 null 或空串表示**该侧不限**。
+     *
+     * `$at` 与窗边界一律先归一为 `Y-m-d H:i:s` 文本再做字典序比较（该格式字典序即时序）；
+     * `DateTimeInterface` 入参也支持（内存仓不要求调用方先格式化）。
+     */
+    public static function inWindow(mixed $startTime, mixed $endTime, string $at): bool
+    {
+        $start = self::timeText($startTime);
+        $end = self::timeText($endTime);
+        if ($start !== null && $at < $start) return false;
+        if ($end !== null && $at > $end) return false;
+        return true;
+    }
+
+    /** 时间边界归一：null / 空串 / 不可读 → null（= 该侧不限）。 */
+    public static function timeText(mixed $value): ?string
+    {
+        if ($value === null) return null;
+        if ($value instanceof \DateTimeInterface) return $value->format('Y-m-d H:i:s');
+        if (is_int($value)) return date('Y-m-d H:i:s', $value);
+        $s = trim((string) $value);
+        return $s === '' ? null : $s;
+    }
+
+    /**
+     * 判据⑤（条款 1.4）：候选行里取**主键 id 最大**的一条 —— 与 SQL 侧 `ORDER BY id DESC` 同答案。
+     *
+     * 内存仓若"取遍历到的首条"就是插入序（最早一条），与 SQL 仓相反，属缺陷。
+     * 无候选返回 null。
+     *
+     * @param array<array-key, array> $rows 候选行
+     * @param string $idKey 主键键名（内存仓 camelCase `id`，PDO 行同为 `id`）
+     */
+    public static function pickLatest(array $rows, string $idKey = 'id'): ?array
+    {
+        $best = null;
+        $bestId = null;
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $id = (string) ($row[$idKey] ?? '');
+            if ($best === null || self::compareIds($id, (string) $bestId) > 0) {
+                $best = $row;
+                $bestId = $id;
+            }
+        }
+        return $best;
+    }
+
+    /**
+     * 主键序比较：纯数字串（自增/雪花 id）按**数值**序（先比长度再字典序，避免 float 精度丢失），
+     * 其余按字符串序。雪花 id 达 19 位，`(int)`/`(float)` 比较会撞精度，故不转数值。
+     */
+    public static function compareIds(string $a, string $b): int
+    {
+        if ($a !== '' && $b !== '' && ctype_digit($a) && ctype_digit($b)) {
+            return strlen($a) !== strlen($b) ? strlen($a) <=> strlen($b) : strcmp($a, $b);
+        }
+        return strcmp($a, $b);
+    }
+}

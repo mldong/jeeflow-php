@@ -9,6 +9,7 @@ use Jeeflow\Core\Spi\InMemoryIdGenerator;
 use Jeeflow\Core\Spi\PageQuery;
 use Jeeflow\Core\Spi\PageResult;
 use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
+use Jeeflow\Core\Util\SurrogateRule;
 
 /**
  * PDO 扩展仓储实现 —— 支持 MySQL / SQLite
@@ -294,27 +295,41 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
         return $row === false ? null : $row;
     }
 
-    /** 查生效中的委托（issues/82-12，对齐 Java/Go/Python/Node 参考实现）：
-     *  enabled=1 + 时间窗 start<=at<=end（NULL=不限）；processName 精确命中优先，
-     *  空 processName（全流程委托）兜底；$time 缺省取当前时间。返回原始行（snake_case）。 */
+    /** 查生效中的委托（issues/82-12 引入，issues/116 批次 D 补齐四判据，与内存仓同答案）：
+     *  SQL 侧 WHERE 落 ②时间窗（`start_time`/`end_time` IS NULL = **该侧不限**）+
+     *  ③自委托过滤 `surrogate <> operator`（此前缺失，issues/116 §5 实测记录）+ ④`enabled = 1`；
+     *  ①空 processName 全流程兜底、⑤多条同时命中取主键 id 最大（`ORDER BY id DESC`，条款 1.4）
+     *  在 PHP 侧分组挑取。
+     *
+     *  取回的行再过一遍 `SurrogateRule` 严格判据：MySQL 对 `enabled` 脏值有隐式转换
+     *  （`'abc'`→0、`'1abc'`→1），不复核就会与内存仓「脏值不得当启用」给出相反结论——
+     *  同栈两仓答案必须一致（06 §4.5 条款 6 / 08-compliance 用例 27）。返回原始行（snake_case）。 */
     public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array
     {
-        $at = $time !== null ? $time : date('Y-m-d H:i:s');
+        $at = SurrogateRule::timeText($time) ?? date('Y-m-d H:i:s');
         $sql = 'SELECT * FROM wf_process_surrogate
-                WHERE operator = ? AND enabled = 1 AND (start_time IS NULL OR start_time <= ?)
+                WHERE operator = ? AND enabled = 1 AND surrogate <> operator
+                  AND (start_time IS NULL OR start_time <= ?)
                   AND (end_time IS NULL OR end_time >= ?) ORDER BY id DESC';
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute([$operator, $at, $at]);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
-        // 精确匹配流程优先
+
+        $exact = [];
+        $fallback = [];
         foreach ($rows as $row) {
-            if ($processName !== '' && ($row['process_name'] ?? null) === $processName) return $row;
+            if (!SurrogateRule::isEnabled($row['enabled'] ?? null)) continue;
+            if (SurrogateRule::isSelfDelegation($operator, $row['surrogate'] ?? null)) continue;
+            if (!SurrogateRule::inWindow($row['start_time'] ?? null, $row['end_time'] ?? null, $at)) continue;
+            $pn = $row['process_name'] ?? null;
+            if ($processName !== '' && (string) ($pn ?? '') === $processName) {
+                $exact[] = $row;
+            } elseif ($pn === null || $pn === '') {
+                $fallback[] = $row;
+            }
         }
-        // 全流程委托兜底
-        foreach ($rows as $row) {
-            if (($row['process_name'] ?? null) === null || $row['process_name'] === '') return $row;
-        }
-        return null;
+        // 精确匹配流程优先，空 processName（全流程委托）兜底；同组内取 id 最大的一条
+        return SurrogateRule::pickLatest($exact) ?? SurrogateRule::pickLatest($fallback);
     }
 
     public function saveSurrogate(array $surrogate): string

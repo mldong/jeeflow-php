@@ -108,6 +108,7 @@ class MysqlSmokeTest extends TestCase
         $pdo->exec('DELETE FROM wf_process_instance');
         $pdo->exec('DELETE FROM wf_process_cc_instance');
         $pdo->exec('DELETE FROM wf_process_define');
+        $pdo->exec('DELETE FROM wf_process_surrogate');
         $pdo->exec('DELETE FROM biz_order');
 
         ServiceContext::clear();
@@ -331,10 +332,93 @@ class MysqlSmokeTest extends TestCase
         $this->assertSame(['lisi'], $this->actorsOf($taskId), '被拒转办不得改参与者表');
     }
 
+    /**
+     * M7 issues/116 批次 D：委托代理自动生效必须在**真机 MySQL** 上落进 `wf_process_task_actor` 真行。
+     *
+     * 断言全部读真表（不是返回码、不是内存集合）：
+     * - 正向：发起那一刻的任务（apply，委托 user1→m7lisi）与**办理推进**出的新单（task1，
+     *   空 processName 兜底委托 leader→m7wang）都要各多出一行代理人，且原授权人那行仍在；
+     * - 负向：窗外 / enabled=0 / 自委托 三种台账行不产生任何 actor 行
+     *   （enabled 脏值探针不在此列——本表 `enabled INT`，MySQL 存不进 'abc'，
+     *   该判据只在内存仓与 SQLite 弱类型路径上有分叉空间，见 PdoSqliteSurrogateTest）；
+     * - 回归：`surrogateAutoApply: false` 关闭后（扩展仓储仍在场）真表回到只有原参与者。
+     */
+    public function testM7SurrogateAutoApplyLandsOnRealActorRows(): void
+    {
+        $ext = new \Jeeflow\RepositoryPDO\PdoProcessExtRepository(self::$pdo);
+        $facade = new JeeflowFacade($this->engine, $this->repo, $ext);   // 门面构造把仓储桥进 ServiceContext
+
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
+        $this->assertNotFalse($json);
+        $deploy = $facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'user1']);
+        $this->assertSame(0, $deploy['code'], json_encode($deploy, JSON_UNESCAPED_UNICODE));
+        $defineId = (string) $deploy['data']['processDefineId'];
+        // 前置：deploy 的 name 不变量（06 §4.5 条款 1.1）——委托台账认的就是库里这一列
+        $this->assertSame('simple', (string) self::$pdo->query(
+            'SELECT name FROM wf_process_define WHERE id = ' . (int) $defineId)->fetchColumn());
+
+        $seed = function (string $id, string $operator, string $agent, string $pn,
+                          ?string $start, ?string $end, int $enabled) use ($ext): void {
+            $ext->saveSurrogate(['id' => $id, 'operator' => $operator, 'surrogate' => $agent,
+                'processName' => $pn, 'startTime' => $start, 'endTime' => $end, 'enabled' => $enabled]);
+        };
+        $seed('900060', 'user1', 'm7lisi', 'simple', '2020-01-01 00:00:00', '2099-12-31 23:59:59', 1);
+        $seed('900061', 'leader', 'm7wang', '', null, null, 1);                        // 判据①兜底 + ②双侧不限
+        $seed('900062', 'leader', 'm7off', 'simple', null, null, 0);                    // 判据④停用
+        $seed('900063', 'leader', 'm7late', 'simple', '2099-01-01 00:00:00', null, 1);  // 判据②未到窗
+        $seed('900064', 'manager', 'manager', 'simple', null, null, 1);                 // 判据③自委托
+
+        $start = $facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        $instanceId = (string) $start['data']['processInstanceId'];
+
+        $applyIds = $this->taskIdsByName($instanceId, 'apply');
+        $task1Ids = $this->taskIdsByName($instanceId, 'task1');
+        $this->assertCount(1, $applyIds);
+        $this->assertCount(1, $task1Ids, '前置：办理推进应落出 task1');
+        $this->assertSame(['user1', 'm7lisi'], $this->actorsOf($applyIds[0]),
+            '发起任务真表须多出一行代理人（原授权人保留）——Java 首版补写打在空 taskId 上就是没这一行');
+        $this->assertSame(['leader', 'm7wang'], $this->actorsOf($task1Ids[0]),
+            '推进出的新单真表同样要有代理人行（只挂发起一处会漏这条）');
+
+        foreach (['m7off', 'm7late', 'manager'] as $shouldNot) {
+            $cnt = (int) self::$pdo->query('SELECT COUNT(*) FROM wf_process_task_actor WHERE actor_id = '
+                . self::$pdo->quote($shouldNot))->fetchColumn();
+            $this->assertSame(0, $cnt, "{$shouldNot} 不该出现在参与者真表（停用/窗外/自委托）");
+        }
+
+        // 回归：关掉开关（扩展仓储仍在 ServiceContext）→ 真表回到仅原参与者
+        $offEngine = new JeeflowEngine($this->repo, surrogateAutoApply: false);
+        $offFacade = new JeeflowFacade($offEngine, $this->repo, $ext);
+        $start2 = $offFacade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start2['code'], json_encode($start2, JSON_UNESCAPED_UNICODE));
+        $inst2 = (string) $start2['data']['processInstanceId'];
+        $this->assertSame(['user1'], $this->actorsOf($this->taskIdsByName($inst2, 'apply')[0]));
+        $this->assertSame(['leader'], $this->actorsOf($this->taskIdsByName($inst2, 'task1')[0]),
+            '关闭后回到"仅台账"行为');
+        // 台账不关：processSurrogate/page 仍查得到
+        $page = $offFacade->flow('processSurrogate/page', ['m_EQ_operator' => 'leader']);
+        $this->assertSame(0, $page['code'], json_encode($page, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(3, $page['data']['recordCount'], 'leader 名下三条台账（含停用/窗外）');
+    }
+
     private function actorsOf(string $taskId): array
     {
         $stmt = self::$pdo->prepare('SELECT actor_id FROM wf_process_task_actor WHERE process_task_id = ? ORDER BY id');
         $stmt->execute([$taskId]);
+        return array_map(strval(...), $stmt->fetchAll(\PDO::FETCH_COLUMN));
+    }
+
+    /** @return string[] 同名单步（非会签）通常仅 1 行，按 id 升序 */
+    private function taskIdsByName(string $instanceId, string $taskName): array
+    {
+        $stmt = self::$pdo->prepare('SELECT id FROM wf_process_task WHERE process_instance_id = ?'
+            . ' AND task_name = ? ORDER BY id');
+        $stmt->execute([$instanceId, $taskName]);
         return array_map(strval(...), $stmt->fetchAll(\PDO::FETCH_COLUMN));
     }
 
@@ -451,6 +535,22 @@ CREATE TABLE wf_process_cc_instance (
   update_time DATETIME(3) NULL,
   update_user VARCHAR(64) NULL,
   PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE wf_process_surrogate (
+  id BIGINT NOT NULL,
+  process_name VARCHAR(100) NULL,
+  operator VARCHAR(64) NOT NULL,
+  surrogate VARCHAR(64) NOT NULL,
+  start_time DATETIME(3) NULL,
+  end_time DATETIME(3) NULL,
+  enabled INT NULL DEFAULT 1,
+  create_time DATETIME(3) NULL,
+  create_user VARCHAR(64) NULL,
+  update_time DATETIME(3) NULL,
+  update_user VARCHAR(64) NULL,
+  PRIMARY KEY (id),
+  KEY idx_process_surrogate_op (operator),
+  KEY idx_process_surrogate_sur (surrogate)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE biz_order (
   id BIGINT NOT NULL AUTO_INCREMENT,

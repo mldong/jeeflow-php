@@ -11,12 +11,14 @@ use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessEventTypeEnum;
 use Jeeflow\Core\Event\ProcessEvent;
 use Jeeflow\Core\Event\ProcessPublisher;
+use Jeeflow\Core\Interceptor\SurrogateInterceptor;
 use Jeeflow\Core\Model\EndModel;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\StartModel;
 use Jeeflow\Core\Model\TaskModel;
 use Jeeflow\Core\Model\TransitionModel;
 use Jeeflow\Core\Parser\ModelParser;
+use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
@@ -31,14 +33,54 @@ class JeeflowEngine implements JeeflowEngineInterface
 {
     private ProcessRepositoryInterface $repository;
 
-    public function __construct(ProcessRepositoryInterface $repository)
+    /**
+     * 委托代理自动生效开关（issues/116 批次 D，**默认开启**）。
+     * 关闭一行：`new JeeflowEngine($repo, surrogateAutoApply: false)`
+     * 或 `$engine->setSurrogateAutoApply(false)`；见 SurrogateInterceptor 类注释的三条关闭形。
+     */
+    private bool $surrogateAutoApply;
+
+    /** 扩展仓储显式注入（null → 从 ServiceContext 解析；两路都没有则静默跳过） */
+    private ?ProcessExtRepositoryInterface $extRepository;
+
+    /** 委托应用器覆盖点（null → 内置 SurrogateInterceptor，或集成方注册到 ServiceContext 的实例） */
+    private ?SurrogateInterceptor $surrogateApplier = null;
+
+    public function __construct(ProcessRepositoryInterface $repository, bool $surrogateAutoApply = true,
+                                ?ProcessExtRepositoryInterface $extRepository = null)
     {
         $this->repository = $repository;
+        $this->surrogateAutoApply = $surrogateAutoApply;
+        $this->extRepository = $extRepository;
     }
 
     public function getRepository(): ProcessRepositoryInterface
     {
         return $this->repository;
+    }
+
+    /** 委托代理自动生效是否开启（issues/116，默认 true） */
+    public function isSurrogateAutoApply(): bool
+    {
+        return $this->surrogateAutoApply;
+    }
+
+    /**
+     * 开/关委托代理自动生效（引擎内置行为，issues/116）。
+     * 关闭后 `processSurrogate/*` 回到"仅台账"语义：配了委托也不会追加到任务参与者。
+     */
+    public function setSurrogateAutoApply(bool $enabled): void
+    {
+        $this->surrogateAutoApply = $enabled;
+    }
+
+    /**
+     * 覆盖委托应用器：传 `null` 恢复内置默认；传 `NullSurrogateInterceptor` 即"注册空实现"式关闭；
+     * 传自定义子类可在应用委托前后叠加集成方自己的逻辑。
+     */
+    public function setSurrogateApplier(?SurrogateInterceptor $applier): void
+    {
+        $this->surrogateApplier = $applier;
     }
 
     // ═══ 启动流程 ═══
@@ -81,8 +123,7 @@ class JeeflowEngine implements JeeflowEngineInterface
             //    spec §4.4「任务落库后逐任务 fire，监听器可按 taskId 反查」与 Java
             //    JeeflowEngineImpl start 内循环（CreateTaskHandler 阶段 taskId 尚未生成，不 fire）。
             foreach ($exec->getProcessTaskList() as $task) {
-                $this->repository->saveTask($task);
-                $this->notifyTaskStart($task);
+                $this->saveNewTask($exec, $task);
             }
             $this->repository->updateInstance($instance);
             return $instance;
@@ -247,13 +288,51 @@ class JeeflowEngine implements JeeflowEngineInterface
         // executeAndJumpToFirstTaskNode 全部办理路径：saveTask 落库（分配 taskId）
         // 之后逐任务 fire TASK_START（对齐 Java JeeflowEngineImpl.persistTasks）。
         foreach ($exec->getProcessTaskList() as $task) {
-            $this->repository->saveTask($task);
-            $this->notifyTaskStart($task);
+            $this->saveNewTask($exec, $task);
         }
         if ($exec->getProcessTask() !== null && $exec->getProcessTask()->getTaskId() !== null) {
             $this->repository->updateTask($exec->getProcessTask());
         }
         $this->repository->updateInstance($exec->getProcessInstance());
+    }
+
+    /**
+     * 新任务落库**唯一收口**（发起 / 办理推进 / 串行会签每一步推进 / 跳转 四条路径都走这里）。
+     *
+     * 落库前先应用生效委托（issues/116 批次 D）：被委托人**并入参与者集合本身**，
+     * 再由 `saveTask` 随任务一起全量写入 `wf_process_task_actor`。
+     * 顺序不能反——此刻 taskId 尚未分配，走"事后 addTaskActor 补写"会打在空 id 上静默无效
+     * （Java 首版正是这个病根，见 06 §4.5 条款 2 的 ⚠️）。
+     * 开关 `$surrogateAutoApply`（默认开启）；未配置扩展仓储时静默跳过，不打断建单。
+     */
+    private function saveNewTask(Execution $exec, ProcessTask $task): void
+    {
+        $this->applySurrogate($exec, $task);
+        $this->repository->saveTask($task);
+        // TASK_START 在落库（分配 taskId）后 fire，见 start 内注释与 spec §4.4
+        $this->notifyTaskStart($task);
+    }
+
+    /** 应用生效委托（引擎内置、默认开启）；关闭或仓储缺席时零影响。 */
+    private function applySurrogate(Execution $exec, ProcessTask $task): void
+    {
+        if (!$this->surrogateAutoApply) return;
+        // processName 认流程定义 name（条款 1.1：deploy 有 def.setName(model.getName()) 不变量）
+        $processName = $exec->getProcessModel()?->getName() ?? '';
+        $this->surrogateApplier()->apply($task, $processName);
+    }
+
+    /**
+     * 解析委托应用器：显式注入 > ServiceContext 注册实例（集成方可放 NullSurrogateInterceptor
+     * 走"注册空实现"式关闭）> 内置默认。每次重新解析，不缓存容器实例，
+     * 以免集成方在首个任务之后才注册自己的实现。
+     */
+    private function surrogateApplier(): SurrogateInterceptor
+    {
+        if ($this->surrogateApplier !== null) return $this->surrogateApplier;
+        $ctx = ServiceContext::find(SurrogateInterceptor::CONTEXT_KEY);
+        if ($ctx instanceof SurrogateInterceptor) return $ctx;
+        return new SurrogateInterceptor($this->extRepository);
     }
 
     private function handleCcActors(?string $instanceId, string $operator, mixed $ccUserIds): void

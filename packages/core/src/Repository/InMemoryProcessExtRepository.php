@@ -9,6 +9,7 @@ use Jeeflow\Core\Spi\InMemoryIdGenerator;
 use Jeeflow\Core\Spi\PageQuery;
 use Jeeflow\Core\Spi\PageResult;
 use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
+use Jeeflow\Core\Util\SurrogateRule;
 
 /**
  * 内存扩展仓储 —— 用于单元测试
@@ -186,32 +187,33 @@ class InMemoryProcessExtRepository implements ProcessExtRepositoryInterface
         return $this->surrogates[(string) $id] ?? null;
     }
 
-    /** 查生效中的委托（issues/82-12，对齐 Java/Go/Python/Node 参考实现）：
-     *  enabled=1 + 时间窗 start<=at<=end（null=不限，'Y-m-d H:i:s' 字符串可直接字典序比较）；
-     *  processName 精确命中优先，空 processName（全流程委托）兜底；$time 缺省取当前时间。 */
+    /** 查生效中的委托（issues/82-12 引入，issues/116 批次 D 补齐四判据，与 PDO 仓同答案）：
+     *  ① 空 processName 全流程兜底（先精确、再 `process_name` 为 null/'' 兜底）；
+     *  ② 时间窗 start<=at<=end，**一侧为 null/空即该侧不限**（'Y-m-d H:i:s' 文本字典序即时序）；
+     *  ③ 自委托过滤 `surrogate <> operator`（此前缺失，issues/116 §5 实测记录）；
+     *  ④ enabled **只认 1**，脏值不得当启用（`SurrogateRule::isEnabled`，保持 PHP `(int)'abc'`→0 的方向）；
+     *  ⑤ 多条同时命中取**主键 id 最大**（对齐 SQL 侧 `ORDER BY id DESC`，条款 1.4——
+     *    原实现取"遍历到的首条"=插入序最早一条，与 SQL 仓给出相反答案，属缺陷）。
+     *  $time 缺省取当前时间。 */
     public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array
     {
-        $at = $time !== null ? $time : date('Y-m-d H:i:s');
-        $candidates = [];
+        $at = SurrogateRule::timeText($time) ?? date('Y-m-d H:i:s');
+        $exact = [];
+        $fallback = [];
         foreach ($this->surrogates as $s) {
-            if (($s['operator'] ?? null) !== $operator) continue;
-            if ((int) ($s['enabled'] ?? 0) !== 1) continue;
-            $start = $s['startTime'] ?? null;
-            $end = $s['endTime'] ?? null;
-            if ($start !== null && $start !== '' && $at < $start) continue;
-            if ($end !== null && $end !== '' && $at > $end) continue;
-            $candidates[] = $s;
-        }
-        // 精确匹配流程优先
-        foreach ($candidates as $s) {
-            if ($processName !== '' && ($s['processName'] ?? '') === $processName) return $s;
-        }
-        // 全流程委托兜底
-        foreach ($candidates as $s) {
+            if ((string) ($s['operator'] ?? '') !== $operator) continue;
+            if (!SurrogateRule::isEnabled($s['enabled'] ?? null)) continue;
+            if (SurrogateRule::isSelfDelegation($operator, $s['surrogate'] ?? null)) continue;
+            if (!SurrogateRule::inWindow($s['startTime'] ?? null, $s['endTime'] ?? null, $at)) continue;
             $pn = $s['processName'] ?? null;
-            if ($pn === null || $pn === '') return $s;
+            if ($processName !== '' && (string) ($pn ?? '') === $processName) {
+                $exact[] = $s;
+            } elseif ($pn === null || $pn === '') {
+                $fallback[] = $s;
+            }
         }
-        return null;
+        // 精确匹配流程优先，空 processName（全流程委托）兜底；同组内取 id 最大的一条
+        return SurrogateRule::pickLatest($exact) ?? SurrogateRule::pickLatest($fallback);
     }
 
     public function saveSurrogate(array $surrogate): string

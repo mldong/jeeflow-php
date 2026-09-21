@@ -58,6 +58,23 @@ class JeeflowFacade
         $this->repository = $repository;
         $this->extRepository = $extRepository;
         $this->queryParser = new JeeflowQueryParser();
+        $this->publishExtRepository($extRepository);
+    }
+
+    /**
+     * 把扩展仓储暴露给引擎（issues/116 批次 D）：委托代理自动生效由**引擎内置**实现，
+     * 它只认 `ServiceContext` 里的 `ProcessExtRepositoryInterface`。而集成方（laravel 壳、demo、
+     * 各语言单测）绝大多数是 `new JeeflowFacade($engine, $repo, new PdoProcessExtRepository($pdo))`
+     * 直接构造、并不往容器注册——不桥这一步，委托就永远查不到仓储（表现为"能力又消失了"）。
+     *
+     * 仅在尚未有该 SPI 时注册，**不覆盖**集成方自己的注册（集成方可以放 NullSurrogateInterceptor
+     * 或自建恒返回 null 的仓储来关闭）。缺扩展仓储属于正常部署形态：不注册即静默跳过，不打断建单。
+     */
+    private function publishExtRepository(?ProcessExtRepositoryInterface $extRepository): void
+    {
+        if ($extRepository === null) return;
+        if (ServiceContext::find(ProcessExtRepositoryInterface::class) !== null) return;
+        ServiceContext::put(ProcessExtRepositoryInterface::class, $extRepository);
     }
 
     public function setUserSearchProvider(?UserSearchProviderInterface $provider): void

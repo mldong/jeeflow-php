@@ -13,6 +13,7 @@
 | 事务 | `TransactionTemplateInterface` | 无（生产必接） | 事务模板，`ServiceContext` 注册 |
 | 用户 | `UserProviderInterface` | `NoOpUserProvider` | 用户信息查询 |
 | JSON | `JsonProviderInterface` | `BuiltinJsonProvider` | JSON 编解码 |
+| 委托应用 | `SurrogateInterceptor`（内置类） | 引擎默认开启，见下文「委托代理自动生效」 | 建单时把生效中的被委托人并入参与者 |
 
 ## 接入表达式求值（决策/会签必接）
 
@@ -113,3 +114,54 @@ class SnowflakeIdGenerator implements IdGeneratorInterface {
     }
 }
 ```
+
+## 委托代理自动生效（引擎内置、默认开启，issues/116）
+
+`processSurrogate/*` 五个 action 只是**台账 CRUD**。真正的能力是「建任务那一刻自动应用生效中的委托」——
+用户在「我的委托」里配好"休假期间张三替我批"，新单到达任务节点时**李四的待办也要出现该单，张三的保留**
+（委托不是转办，任一可办）。契约见 jeeflow-doc `spec/06-facade.md` §4.5「运行期语义」。
+
+PHP 侧落点是 `Jeeflow\Core\Interceptor\SurrogateInterceptor`，由 `JeeflowEngine::saveNewTask()` 在
+`saveTask` **之前**调用（新任务落库的唯一收口：发起 / 办理推进 / 串行会签每一步推进 / 跳转 四条路径都走它）。
+命中即把被委托人**并入参与者集合本身**，随任务一起全量写 `wf_process_task_actor`——
+**不是**"事后再调一次 `addTaskActor` 补写"：挂点处 taskId 尚未分配，补写打在空 id 上静默无效。
+
+集成方**零配置即生效**：`new JeeflowFacade($engine, $repo, $extRepo)` 时门面会把扩展仓储桥接进
+`ServiceContext`，引擎按 `ProcessExtRepositoryInterface` 解析。未配置扩展仓储（或仓储自身报错，如表未建）
+一律**静默跳过**，不打断建单——委托是增强能力，缺仓储属正常部署形态。
+
+### 关闭（三条路，回到"仅台账"行为）
+
+```php
+use Jeeflow\Core\Interceptor\NullSurrogateInterceptor;
+use Jeeflow\Core\Interceptor\SurrogateInterceptor;
+use Jeeflow\Core\ServiceContext;
+
+// ① 构造参数 / setter（主路径）
+$engine = new JeeflowEngine($repo, surrogateAutoApply: false);
+$engine->setSurrogateAutoApply(false);          // 等价写法
+
+// ② 注册空实现（不改引擎开关，按部署形态关）
+ServiceContext::put(SurrogateInterceptor::CONTEXT_KEY, new NullSurrogateInterceptor());
+
+// ③ 自建扩展仓储让 getSurrogate 恒返回 null（等价于"没有生效委托"）
+$engine->setSurrogateApplier(new NullSurrogateInterceptor());   // 也可整体换掉应用器
+```
+
+### 查询四判据（内存仓与 SQL 仓必须同答案）
+
+`getSurrogate($operator, $processName, $time)` 的生效判据集中在
+`Jeeflow\Core\Util\SurrogateRule`（`InMemoryProcessExtRepository` 与 `PdoProcessExtRepository` 共用）：
+
+| 判据 | 语义 |
+|------|------|
+| ① 空 processName 兜底 | 先按当前流程名精确查，未命中再查 `process_name` 为 NULL/`''` 的全流程委托 |
+| ② 时间窗 | `start_time <= now <= end_time`，**一侧为 NULL/空即该侧不限** |
+| ③ 自委托过滤 | `surrogate <> operator`（自己委托给自己不生效；代理人为空串同样不生效） |
+| ④ enabled | **只有 1 生效**，脏值（`'abc'` 等不可解析为整数的值）不得当启用 |
+| 附：多条命中 | 取**主键 id 最大**那条（SQL 侧 `ORDER BY id DESC`，内存侧同样按 id 数值序，不得取遍历首条） |
+
+`processName` 的取值口径是**流程定义 name**（`wf_process_define.name`）：`processDefine/deploy` 落库时
+执行的正是模型名，故与流程 JSON 的 `name` 同值，跨栈对拍认库内这一列。
+委托在待办列表的合并展示属集成方视图层职责（引擎只负责让代理人真的进 `wf_process_task_actor`）。
+
