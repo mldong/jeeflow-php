@@ -21,9 +21,11 @@ use PHPUnit\Framework\TestCase;
  * 两件事都在这里钉住：
  *
  * 1. **双仓四判据同答案**（08-compliance 用例 27 / 06 §4.5 条款 6）：同一份委托数据分别灌进
- *    内存仓与 SQL 仓，七条探针（多条命中取 id 最大 / 空 processName 兜底 / enabled=0 /
+ *    内存仓与 SQL 仓，探针（多条命中取 id 最大 / 空 processName 兜底 / enabled=0 /
  *    窗外 / 自委托过滤 / enabled 脏值 / 半开窗口）逐条断言两仓给出**同一个**代理人。
  *    这正是 issues/116 §5 记的 PHP 分叉点（自委托过滤两仓都没有、内存仓多条命中"取遍历首条"）。
+ *    **夹具的 id 插入序刻意打乱**（最大那条卡在中间）：插入序与 id 序重合时"取遍历末条"与
+ *    "取 id 最大"同答案，条款 1.4 就钉不住（Node 上轮实测发现的空转）。
  *
  * 2. **自动生效打在真表上**（06 §4.5 条款 2 的 ⚠️）：断言读的是 `wf_process_task_actor`
  *    的**真行**，不是返回码、不是内存集合——Java 首版走 `addTaskActor` 补写、挂在 taskId
@@ -73,8 +75,12 @@ class PdoSqliteSurrogateTest extends TestCase
         // 负向探针就失去意义了（首轮实测正是这样：flowB 停用却被兜底行接走）。兜底行单独挂 op3。
         $rows = [
             // [id,    授权人, 流程,    代理人, start,               end,                enabled]
+            // ⚠ flowA 组的**插入序刻意与 id 序错开**（3001 → 3003 → 3002，最大 id 卡在中间）：
+            // 插入序与 id 序重合时，"取遍历末条"与"取 id 最大"给同一个答案，条款 1.4 钉不住
+            // （Node 上轮实测发现的空转）。这样排后：取首条→sA1、取末条→sA2、取 id 最大→sA3。
             ['3001', 'op1', 'flowA', 'sA1', '2020-01-01 00:00:00', '2099-12-31 23:59:59', 1],
-            ['3002', 'op1', 'flowA', 'sA2', null,                   null,                  1], // 与 3001 同流程多条命中
+            ['3003', 'op1', 'flowA', 'sA3', null,                   null,                  1], // 多条命中：id 最大的一条
+            ['3002', 'op1', 'flowA', 'sA2', null,                   null,                  1], // 插入序末条（诱饵）
             ['3004', 'op1', 'flowB', 'sB',   null,                  null,                  0], // 停用
             ['3005', 'op1', 'flowC', 'sC',   '2099-01-01 00:00:00', null,                  1], // 未到窗
             ['3006', 'op1', 'flowD', 'op1',  null,                  null,                  1], // 自委托（自己委托给自己）
@@ -94,7 +100,7 @@ class PdoSqliteSurrogateTest extends TestCase
 
         $probes = [
             // [授权人, 流程名, 期望代理人（null = 不生效）, 判据说明]
-            ['op1', 'flowA', 'sA2', '条款 1.4 多条命中取 id 最大（内存仓不得取遍历首条）'],
+            ['op1', 'flowA', 'sA3', '条款 1.4 多条命中取 id 最大（既不取遍历首条也不取末条，插入序已打乱）'],
             ['op1', 'flowB', null, '判据④ enabled=0 不生效'],
             ['op1', 'flowC', null, '判据② startTime 未到窗不生效'],
             ['op1', 'flowI', null, '判据② endTime 已过窗不生效'],
@@ -234,6 +240,60 @@ class PdoSqliteSurrogateTest extends TestCase
         $page = $facade->flow('processSurrogate/page', ['m_EQ_operator' => 'leader']);
         $this->assertSame(0, $page['code'], json_encode($page, JSON_UNESCAPED_UNICODE));
         $this->assertSame(1, $page['data']['recordCount'], '关闭只关运行期应用，台账不关');
+    }
+
+    /**
+     * 写侧判据的 SQL 路 + 跨层对拍（06 §4.5 条款 5「写侧」/条款 6）。
+     *
+     * 三件事一条用例钉住：
+     * 1. `enabled` 传 `''` / `'abc'` / `'1abc'` 之类经门面 save 落 PDO **不得抛错**
+     *    （MySQL 严格模式对 `'abc'`→INT 直接 1366，非严格模式又会把 `'1abc'` 隐式转成 **1**=启用，
+     *    两种都跟契约相反）——落库前按契约归一为整数，绑参就不再触发隐式转换；
+     * 2. 落库值：缺键/`'1'`/`true` → 1，`''`/脏值/`false`/`0` → 0；
+     * 3. **读写同一套语义**：写侧落 0 的行，读侧（真表 `wf_process_task_actor` 的参与者行）
+     *    必须查不到生效委托；落 1 的必须查到。
+     */
+    public function testEnabledWriteSideIsNormalizedOnPdoAndAgreesWithReadSide(): void
+    {
+        $defineId = $this->deploy('01-simple.json');
+        // [入参, 期望落库, 期望读侧生效]
+        $cases = [
+            ['', 0, false], ['abc', 0, false], ['1abc', 0, false], ['1x', 0, false],
+            ['1', 1, true], [1, 1, true], [true, 1, true],
+            [false, 0, false], [0, 0, false], [2, 2, false],
+        ];
+        foreach ($cases as $i => [$input, $stored, $effective]) {
+            $this->pdo->exec('DELETE FROM wf_process_surrogate');   // 每轮一条台账，避免上一轮的生效行串味
+            $agent = 'pwAgent' . $i;
+            $label = var_export($input, true);
+
+            $save = $this->facade->flow('processSurrogate/save', [
+                'processName' => 'simple', 'surrogate' => $agent, 'operator' => 'leader',
+                'startTime' => '2020-01-01 00:00:00', 'endTime' => '2099-12-31 23:59:59',
+                'enabled' => $input,
+            ]);
+            $this->assertSame(0, $save['code'],
+                "PDO 写侧 enabled={$label} 不得抛错（门面须吞成失败信封之外正常落库）："
+                . json_encode($save, JSON_UNESCAPED_UNICODE));
+            $id = (string) $save['data']['id'];
+
+            $detail = $this->facade->flow('processSurrogate/detail', ['id' => $id]);
+            $this->assertSame($stored, (int) $detail['data']['enabled'], "门面回显 enabled={$label}");
+            $stmt = $this->pdo->prepare('SELECT enabled FROM wf_process_surrogate WHERE id = ?');
+            $stmt->execute([$id]);
+            $this->assertSame($stored, (int) $stmt->fetchColumn(),
+                "真表列值 enabled={$label} 须按契约归一（PDO 侧挡住 MySQL 隐式转换）");
+
+            $start = $this->facade->flow('processDefine/startAndExecute', [
+                'processDefineId' => $defineId, 'operator' => 'user1',
+            ]);
+            $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+            $instanceId = (string) $start['data']['processInstanceId'];
+            $task1 = $this->taskIdsByName($instanceId, 'task1');
+            $this->assertCount(1, $task1, '前置：task1 应落库 1 行');
+            $this->assertSame($effective ? ['leader', $agent] : ['leader'], $this->actorsOf($task1[0]),
+                "跨层对拍 enabled={$label}：写侧落 {$stored} → 读侧生效=" . var_export($effective, true));
+        }
     }
 
     // ── 辅助 ──

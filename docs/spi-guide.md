@@ -158,10 +158,13 @@ $engine->setSurrogateApplier(new NullSurrogateInterceptor());   // 也可整体�
 | ① 空 processName 兜底 | 先按当前流程名精确查，未命中再查 `process_name` 为 NULL/`''` 的全流程委托 |
 | ② 时间窗 | `start_time <= now <= end_time`，**一侧为 NULL/空即该侧不限** |
 | ③ 自委托过滤 | `surrogate <> operator`（自己委托给自己不生效；代理人为空串同样不生效） |
-| ④ enabled | **只有 1 生效**，脏值（`'abc'` 等不可解析为整数的值）不得当启用 |
+| ④ enabled（读侧判据） | **只有 1 生效**，脏值（`'abc'` 等不可解析为整数的值）不得当启用 |
+| ④ enabled（写侧入参） | 缺键→`1`；`''` / `'abc'` / `'1abc'` 等不可解析脏值→`0` 且**不抛错**；布尔 `true→1 / false→0`（`SurrogateRule::normalizeEnabledArg`，门面 save/update 与 PDO 落库前都过它） |
 | 附：多条命中 | 取**主键 id 最大**那条（SQL 侧 `ORDER BY id DESC`，内存侧同样按 id 数值序，不得取遍历首条） |
 
-`processName` 的取值口径是**流程定义 name**（`wf_process_define.name`）：`processDefine/deploy` 落库时
-执行的正是模型名，故与流程 JSON 的 `name` 同值，跨栈对拍认库内这一列。
+`processName` 的取值口径（06 §4.5 条款 1.1）是**流程模型 name 优先，模型未带 name 时才回落
+`wf_process_define.name`**（`SurrogateInterceptor::resolveProcessName`）：正常情况下
+`processDefine/deploy` 执行 `def.setName(model.getName())`，两者恒等；回落不能省——空串只会命中
+全流程兜底行，该流程自己配的委托一条都查不到。
 委托在待办列表的合并展示属集成方视图层职责（引擎只负责让代理人真的进 `wf_process_task_actor`）。
 

@@ -42,7 +42,17 @@ class SurrogateAutoApplyTest extends TestCase
 
     protected function setUp(): void
     {
+        $this->newHarness();
+    }
+
+    /**
+     * 建一套干净基建。setUp 只是它的别名——需要"每轮台账互不污染"的循环用例
+     * （如 enabled 写侧入参矩阵）每轮都重建一次，否则上一轮留下的委托会串到下一轮。
+     */
+    private function newHarness(): void
+    {
         ServiceContext::clear();
+        ModelParser::reset();
         ServiceContext::put(JsonProviderInterface::class, new BuiltinJsonProvider());
 
         $this->repo = new InMemoryProcessRepository();
@@ -132,11 +142,17 @@ class SurrogateAutoApplyTest extends TestCase
             'wangwu 待办里应能看到这张推进出的单');
     }
 
-    /** 条款 1「覆盖跳转/驳回」：ROLLBACK 退回上一步产生的新待办同样要应用委托。 */
+    /**
+     * 条款 1「覆盖回退」：**ROLLBACK** 退回上一步产生的新待办同样要应用委托。
+     *
+     * 独立性（3a 的标准）：委托只挂在 `manager` 一人身上，且**不断言中途 task2 的参与者**
+     * （那条属"办理推进"路径，另有自己的用例）——故只有 ROLLBACK 这条建单路径失能时，
+     * 本用例才红，其它路径失能都动不到它。
+     */
     public function testRollbackCreatedTaskAlsoJoinsAgent(): void
     {
         $defineId = $this->deploy('02-multi-task.json');
-        $this->surrogate('manager', 'mAgent', 'multi-task');
+        $this->surrogate('manager', 'rAgent', 'multi-task');
 
         $start = $this->facade->flow('processDefine/startAndExecute', [
             'processDefineId' => $defineId, 'operator' => 'user1',
@@ -149,26 +165,66 @@ class SurrogateAutoApplyTest extends TestCase
             'processTaskId' => $t1, 'operator' => 'leader', 'submitType' => SubmitType::AGREE,
         ]);
         $this->assertSame(0, $adv['code'], json_encode($adv, JSON_UNESCAPED_UNICODE));
-        $t2 = (string) $this->onlyDoing($instanceId)->getTaskId();
-        $this->assertSame(['manager', 'mAgent'], $this->actorsOf($t2),
-            '前置：办理推进出的 task2（参与者 manager）已并入代理人');
+        $t2 = $this->onlyDoing($instanceId);
+        $this->assertSame('task2', $t2->getTaskName(), '前置：应已推进到 task2');
 
         $back = $this->facade->flow('processTask/execute', [
-            'processTaskId' => $t2, 'operator' => 'manager', 'submitType' => SubmitType::ROLLBACK,
+            'processTaskId' => (string) $t2->getTaskId(), 'operator' => 'manager',
+            'submitType' => SubmitType::ROLLBACK,
         ]);
         $this->assertSame(0, $back['code'], json_encode($back, JSON_UNESCAPED_UNICODE));
         $rollbackTask = $this->onlyDoing($instanceId);
         $this->assertSame('task1', $rollbackTask->getTaskName(), '前置：ROLLBACK 应退回 task1 产生新待办');
-        $this->assertSame(['manager', 'mAgent'], $this->actorsOf((string) $rollbackTask->getTaskId()),
-            '跳转/驳回产出的新单也要并入代理人（参与者=退回操作人 manager 的委托）');
+        $this->assertSame(['manager', 'rAgent'], $this->actorsOf((string) $rollbackTask->getTaskId()),
+            '条款 1：回退（ROLLBACK）产出的新单也要并入代理人（参与者=退回操作人 manager 的委托）');
     }
 
-    /** 条款 1.4：同一参与者命中多条生效委托时取 id 最大那条（内存仓不得"取遍历首条"）。 */
+    /**
+     * 条款 1「覆盖跳转」：**JUMP**（submitType=4 跳指定节点）产出的新待办同样要应用委托。
+     *
+     * 与上两条（推进 / 回退）分家：委托只挂在跳转目标节点 task3 的参与者 `boss` 上，
+     * 中途节点一律不断言参与者——三条路径各自失能时恰好各自红。
+     */
+    public function testJumpToNamedNodeAlsoJoinsAgent(): void
+    {
+        $defineId = $this->deploy('02-multi-task.json');
+        $this->surrogate('boss', 'jAgent', 'multi-task');
+
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        $instanceId = (string) $start['data']['processInstanceId'];
+        $t1 = (string) $this->onlyDoing($instanceId)->getTaskId();
+
+        $jump = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $t1, 'operator' => 'leader',
+            'submitType' => SubmitType::JUMP, 'taskName' => 'task3',
+        ]);
+        $this->assertSame(0, $jump['code'], json_encode($jump, JSON_UNESCAPED_UNICODE));
+
+        $jumped = $this->onlyDoing($instanceId);
+        $this->assertSame('task3', $jumped->getTaskName(), '前置：JUMP 应直达 task3 产生新待办');
+        $this->assertSame(['boss', 'jAgent'], $this->actorsOf((string) $jumped->getTaskId()),
+            '条款 1：跳转（JUMP）产出的新单也要并入代理人');
+        $this->assertContains((string) $jumped->getTaskId(), $this->todoIds('jAgent'),
+            'jAgent 待办里应能看到这张跳转出的单');
+    }
+
+    /**
+     * 条款 1.4：同一参与者命中多条生效委托时取 id 最大那条。
+     *
+     * **夹具刻意打乱 id 插入序**（插入序 2001 → 2003 → 2002，最大 id 卡在中间）：
+     * 插入序与 id 序重合时，"取遍历末条"与"取 id 最大"给出同一个答案，用例钉不住
+     * （Node 上轮实测发现的空转）。这样排后三种错实现各红一头：
+     * 取首条 → sLow、取末条 → sMid、只有取 id 最大 → sHigh。
+     */
     public function testMultipleHitsPickMaxIdNotFirstInserted(): void
     {
         $defineId = $this->deploy('01-simple.json');
-        $this->surrogate('user1', 'sOld', 'simple', id: '2001');
-        $this->surrogate('user1', 'sNew', 'simple', id: '2002');
+        $this->surrogate('user1', 'sLow', 'simple', id: '2001');    // 插入序第 1（id 最小）
+        $this->surrogate('user1', 'sHigh', 'simple', id: '2003');   // 插入序第 2，但 id 最大 = 唯一正解
+        $this->surrogate('user1', 'sMid', 'simple', id: '2002');    // 插入序末条（"取末条"的诱饵）
 
         $start = $this->facade->flow('processDefine/startAndExecute', [
             'processDefineId' => $defineId, 'operator' => 'user1',
@@ -177,8 +233,9 @@ class SurrogateAutoApplyTest extends TestCase
         $apply = $this->taskOf($start['data']['processTaskId'] ?? null,
             (string) $start['data']['processInstanceId'], 'apply');
         $this->assertNotNull($apply);
-        $this->assertSame(['user1', 'sNew'], $this->actorsOf((string) $apply->getTaskId()),
-            '条款 1.4：多条命中取主键 id 最大（与 SQL 侧 ORDER BY id DESC 同答案）');
+        $this->assertSame(['user1', 'sHigh'], $this->actorsOf((string) $apply->getTaskId()),
+            '条款 1.4：多条命中取主键 id 最大（与 SQL 侧 ORDER BY id DESC 同答案），'
+            . '既不是插入序首条也不是末条');
     }
 
     // ═══ 负向：窗外 / enabled=0 / 自委托 都不生效 ═══
@@ -270,6 +327,195 @@ class SurrogateAutoApplyTest extends TestCase
             '第二步同样不得扩投票名册');
         $this->assertSame(['userA', 'agentA'], $this->actorsOf($firstId),
             '已完成任务的历史参与者不被追溯改动');
+    }
+
+    /**
+     * 条款 1「**串行会签的每一步推进**」：把"第二步推进"单独拎成一条用例。
+     *
+     * 与 {@link testSerialCountersignJoinsCurrentStepOnlyAndKeepsVoteRoster} 的分工——本条只管
+     * 一条路径：委托**只挂在第二步的参与者 userB 上**，第一步 userA 压根没配委托。
+     * 于是"串行会签推进建的那张新单"唯一可能红的就是它自己：
+     * 首步那条挂点失能 → 上条红、本条绿（userA 无委托，本条首步断言的是"不多出人"）；
+     * 本条红 → 只可能是会签推进这条路径漏挂。
+     */
+    public function testSerialCountersignSecondStepIsItsOwnCreationPath(): void
+    {
+        $defineId = $this->deploy('06-countersign-sequential.json');
+        $this->surrogate('userB', 'bAgent', 'countersign-sequential');   // 只给第二步配委托
+
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        $instanceId = (string) $start['data']['processInstanceId'];
+
+        $first = $this->onlyDoing($instanceId);
+        $this->assertSame('task1', $first->getTaskName());
+        $firstId = (string) $first->getTaskId();
+        $this->assertSame(['userA'], $this->actorsOf($firstId),
+            '前置：第一步参与者 userA 没配委托，不该多出任何人');
+
+        $next = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $firstId, 'operator' => 'userA',
+            FlowConst::SUBMIT_TYPE => SubmitType::AGREE,
+        ]);
+        $this->assertSame(0, $next['code'], json_encode($next, JSON_UNESCAPED_UNICODE));
+
+        $second = $this->onlyDoing($instanceId);
+        $this->assertNotSame($firstId, (string) $second->getTaskId(), '前置：第二步是新建的一张单');
+        $this->assertSame(['userB', 'bAgent'], $this->actorsOf((string) $second->getTaskId()),
+            '条款 1：串行会签第二步推进出的任务也要应用委托');
+        $this->assertSame(['userA', 'userB'], $second->getVariables()->get('operatorList_task1'),
+            '条款 1.3：代理人不得混进投票名册');
+    }
+
+    // ═══ 条款 1.1：processName = 模型 name 优先，缺失才回落 wf_process_define.name ═══
+
+    /**
+     * 回落那一支：模型未带 name（流程 JSON 顶层无 `name`）、定义行带 name。
+     *
+     * 缺陷形态是 `$exec->getProcessModel()?->getName() ?? ''` 直接给空串——空串按判据① 只命中
+     * 全流程兜底行，于是**该流程自己配的委托一条都查不到**（用户视角=委托静默失效）。
+     * 诱饵刻意**不放兜底行**：回落失效时这里必然红。
+     */
+    public function testBlankModelNameFallsBackToProcessDefineName(): void
+    {
+        $defineId = $this->addDecoyDefine('decoy-flow', null);
+        $this->surrogate('leader', 'dAgent', 'decoy-flow');   // 台账按定义行 name 配
+
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        $doing = $this->repo->findDoingTasks((string) $start['data']['processInstanceId']);
+        $this->assertCount(1, $doing, '前置：推进到 task1');
+        $this->assertSame(['leader', 'dAgent'], $this->actorsOf((string) $doing[0]->getTaskId()),
+            '条款 1.1：模型未带 name 时应回落 wf_process_define.name，命中该流程自己的委托');
+    }
+
+    /**
+     * 优先那一支：define.name 与 model.name **不一致**的诱饵行（06 §4.5 条款 1.1 建议各栈保留）。
+     *
+     * 钉住"到底取的是哪一个"：认模型 name（契约）→ user1 的委托命中；
+     * 若实现改成认定义行 name → 命中的会是 wrongAgent，两条断言同时翻红。
+     */
+    public function testModelNameWinsOverDefineNameWhenTheyDiffer(): void
+    {
+        $defineId = $this->addDecoyDefine('wrong-define-name', 'model-only-name');
+        $this->surrogate('user1', 'rightAgent', 'model-only-name');      // 认模型 name：应命中
+        $this->surrogate('leader', 'wrongAgent', 'wrong-define-name');   // 认定义行 name：不该命中
+
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        $instanceId = (string) $start['data']['processInstanceId'];
+
+        $apply = $this->taskOf($start['data']['processTaskId'] ?? null, $instanceId, 'apply');
+        $this->assertNotNull($apply);
+        $this->assertSame(['user1', 'rightAgent'], $this->actorsOf((string) $apply->getTaskId()),
+            '条款 1.1：processName 取的是模型 name，不是定义行 name');
+
+        $doing = $this->repo->findDoingTasks($instanceId);
+        $this->assertCount(1, $doing);
+        $this->assertSame(['leader'], $this->actorsOf((string) $doing[0]->getTaskId()),
+            '诱饵行（按定义行 name 配的委托）不该被命中');
+        $this->assertCount(0, $this->todoIds('wrongAgent'));
+    }
+
+    // ═══ 条款 5 写侧：enabled 入参落值 + 跨层对拍（门面 save → 台账 → 建任务读侧）═══
+
+    /** 写侧四种入参的落值矩阵：缺键→1、`''`/脏值→0 且不抛错、布尔按 true→1/false→0。 */
+    public function testEnabledWriteSideNormalizesWithoutThrowing(): void
+    {
+        // [入参, 是否省略键, 期望落库值, 说明]
+        $cases = [
+            [null, true, 1, '缺键 → 契约默认 1'],
+            [null, false, 1, '显式 null 同缺键'],
+            [1, false, 1, '整数 1'],
+            ['1', false, 1, '字符串 "1"'],
+            [0, false, 0, '显式 0 不得被默认值吞'],
+            ['', false, 0, '空串 → 0（不是缺键，不得落 1）'],
+            ['abc', false, 0, '不可解析脏值 → 0，且不得抛异常'],
+            ['1abc', false, 0, 'PHP 宽松前缀解析会给 1（=启用），契约要求 0 —— 本栈的坑'],
+            ['1x', false, 0, '契约点名的脏值'],
+            [true, false, 1, '布尔 true → 1'],
+            [false, false, 0, '布尔 false → 0'],
+            [2, false, 2, '可解析整数原样落库（读侧非 1 即不生效）'],
+        ];
+        foreach ($cases as [$input, $omit, $stored, $why]) {
+            $args = [
+                'processName' => 'simple', 'surrogate' => 'lisi', 'operator' => 'leader',
+                'startTime' => '2020-01-01 00:00:00', 'endTime' => '2999-12-31 23:59:59',
+            ];
+            if (!$omit) $args['enabled'] = $input;
+            $save = $this->facade->flow('processSurrogate/save', $args);
+            $this->assertSame(0, $save['code'], $why . '：门面不得报错，' . json_encode($save, JSON_UNESCAPED_UNICODE));
+            $detail = $this->facade->flow('processSurrogate/detail', ['id' => $save['data']['id']]);
+            $this->assertSame(0, $detail['code'], json_encode($detail, JSON_UNESCAPED_UNICODE));
+            $this->assertSame($stored, (int) $detail['data']['enabled'], $why . ' 的落库值');
+        }
+
+        // update 侧同一套（门面写侧两处入口共用 applySurrogateFields）
+        $save = $this->facade->flow('processSurrogate/save', [
+            'processName' => 'simple', 'surrogate' => 'lisi', 'operator' => 'leader',
+            'startTime' => '2020-01-01 00:00:00', 'endTime' => '2999-12-31 23:59:59', 'enabled' => 1,
+        ]);
+        $upd = $this->facade->flow('processSurrogate/update', [
+            'id' => $save['data']['id'], 'processName' => 'simple', 'surrogate' => 'lisi',
+            'startTime' => '2020-01-01 00:00:00', 'endTime' => '2999-12-31 23:59:59', 'enabled' => '1abc',
+        ]);
+        $this->assertSame(0, $upd['code'], json_encode($upd, JSON_UNESCAPED_UNICODE));
+        $detail = $this->facade->flow('processSurrogate/detail', ['id' => $save['data']['id']]);
+        $this->assertSame(0, $detail['data']['enabled'], 'update 传脏值同样落 0');
+    }
+
+    /**
+     * 跨层对拍（条款 5 尾句 / 条款 6）：**写侧落 0 的行，读侧必须查不到生效委托**；
+     * 落 1 的必须查到。门面 save → 内存台账 → 引擎建任务，三层同一条数据同一个结论。
+     */
+    public function testEnabledWriteSideAgreesWithReadSideAcrossLayers(): void
+    {
+        // [enabled 入参, 省略键?, 期望落库, 期望读侧是否生效]
+        $cases = [
+            [null, true, 1, true],
+            [1, false, 1, true],
+            ['1', false, 1, true],
+            [true, false, 1, true],
+            [0, false, 0, false],
+            ['', false, 0, false],
+            ['abc', false, 0, false],
+            ['1abc', false, 0, false],
+            [false, false, 0, false],
+            [2, false, 2, false],   // 写侧原样落 2，读侧"只有 1 生效"→ 不生效
+        ];
+        foreach ($cases as $i => [$input, $omit, $stored, $effective]) {
+            $this->newHarness();                       // 每轮一套干净台账，避免上一轮的生效行串味
+            $label = is_bool($input) ? var_export($input, true) : var_export($input, true);
+            $defineId = $this->deploy('01-simple.json');
+            $args = [
+                'processName' => 'simple', 'surrogate' => 'agent' . $i, 'operator' => 'leader',
+                'startTime' => '2020-01-01 00:00:00', 'endTime' => '2999-12-31 23:59:59',
+            ];
+            if (!$omit) $args['enabled'] = $input;
+            $save = $this->facade->flow('processSurrogate/save', $args);
+            $this->assertSame(0, $save['code'], json_encode($save, JSON_UNESCAPED_UNICODE));
+            $detail = $this->facade->flow('processSurrogate/detail', ['id' => $save['data']['id']]);
+            $this->assertSame($stored, (int) $detail['data']['enabled'], "写侧落值：enabled={$label}");
+
+            $start = $this->facade->flow('processDefine/startAndExecute', [
+                'processDefineId' => $defineId, 'operator' => 'user1',
+            ]);
+            $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+            $doing = $this->repo->findDoingTasks((string) $start['data']['processInstanceId']);
+            $this->assertCount(1, $doing, '前置：推进到 task1');
+            $actors = $this->actorsOf((string) $doing[0]->getTaskId());
+            $this->assertSame($effective ? ['leader', 'agent' . $i] : ['leader'], $actors,
+                "跨层对拍：写侧落 {$stored} 的行，读侧生效=" . var_export($effective, true)
+                . "（enabled={$label}）");
+            $this->assertCount($effective ? 1 : 0, $this->todoIds('agent' . $i),
+                "读侧待办数须与写侧落值一致（enabled={$label}）");
+        }
     }
 
     // ═══ 回归：缺席 / 报错 / 关闭 / 加签 / 幂等 ═══
@@ -465,6 +711,44 @@ class SurrogateAutoApplyTest extends TestCase
         $deploy = $facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'user1']);
         $this->assertSame(0, $deploy['code'], json_encode($deploy, JSON_UNESCAPED_UNICODE));
         return (string) $deploy['data']['processDefineId'];
+    }
+
+    /**
+     * 造条款 1.1 的诱饵定义行。
+     *
+     * 必须绕开 `processDefine/deploy`：deploy 执行的是 `def.setName(model.getName())`，
+     * 定义行 name 与模型 name 永远一致，也就永远测不出实现到底取的哪一个。
+     *
+     * @param string      $defineName  写进 `wf_process_define.name`
+     * @param string|null $contentName 写进 content 顶层 `name`；null = **删掉该键**（模型未带 name）
+     */
+    private function addDecoyDefine(string $defineName, ?string $contentName): string
+    {
+        $json = file_get_contents(jeeflow_flows_dir() . '/01-simple.json');
+        $this->assertNotFalse($json);
+        $data = json_decode($json, true);
+        $this->assertIsArray($data);
+        if ($contentName === null) {
+            unset($data['name']);
+        } else {
+            $data['name'] = $contentName;
+        }
+        $content = json_encode($data, JSON_UNESCAPED_UNICODE);
+
+        // 诱饵自检：模型 name 须真的等于预期（诱饵不成立 = 用例空转，先证自己下的套）
+        $this->assertSame($contentName ?? '', ModelParser::parse($content)->getName(),
+            '诱饵前置：解析出的模型 name 与预期不符，本用例等于没测');
+
+        $id = (string) $this->repo->getIdGenerator()->nextId();
+        $this->repo->addDefine([
+            'id' => $id, 'name' => $defineName, 'displayName' => '诱饵定义', 'type' => 'approval',
+            'state' => 1, 'version' => 0, 'content' => $content,
+            'createUser' => 'user1', 'updateUser' => 'user1',
+        ]);
+        $define = $this->repo->findDefineById($id);
+        $this->assertNotNull($define, '诱饵前置：定义行须真的落库');
+        $this->assertSame($defineName, $define['name'], '诱饵前置：定义行 name 须与模型 name 可区分');
+        return $id;
     }
 
     /** 直接写台账（可控 id / 脏值 / null 窗口），绕开门面默认值 */

@@ -317,8 +317,11 @@ class JeeflowEngine implements JeeflowEngineInterface
     private function applySurrogate(Execution $exec, ProcessTask $task): void
     {
         if (!$this->surrogateAutoApply) return;
-        // processName 认流程定义 name（条款 1.1：deploy 有 def.setName(model.getName()) 不变量）
-        $processName = $exec->getProcessModel()?->getName() ?? '';
+        // 条款 1.1：**模型 name 优先，模型未带 name 才回落 wf_process_define.name**
+        // （deploy 的 def.setName(model.getName()) 让两者正常恒等；回落不能省，
+        //  空串=只命中全流程兜底，该流程自己配的委托会一条都查不到）。
+        // 取值逻辑与 FlowInterceptor 挂点共用 SurrogateInterceptor::resolveProcessName，一处维护。
+        $processName = SurrogateInterceptor::resolveProcessName($exec);
         $this->surrogateApplier()->apply($task, $processName);
     }
 

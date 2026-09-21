@@ -348,7 +348,9 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
             $surrogate['surrogate'] ?? '',
             $surrogate['startTime'] ?? null,
             $surrogate['endTime'] ?? null,
-            $surrogate['enabled'] ?? 1,
+            // 落库前归一（写侧判据）：MySQL 非严格模式会把 'abc'→0、'1abc'→**1** 做隐式转换，
+            // 严格模式更是直接 1366 报错；先按契约转成整数再绑参，两仓（内存/PDO）才同答案。
+            SurrogateRule::normalizeEnabledArg($surrogate['enabled'] ?? null),
             $surrogate['createTime'] ?? $now,
             $surrogate['createUser'] ?? null,
             $surrogate['updateTime'] ?? $now,
@@ -370,7 +372,10 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
             if (array_key_exists($key, $surrogate)) {
                 $col = $this->camelToSnake($key);
                 $fields[] = "$col = ?";
-                $params[] = $surrogate[$key];
+                // enabled 与 INSERT 同理：挡掉 MySQL 对脏值的隐式转换（'1abc'→1），见 saveSurrogate
+                $params[] = $key === 'enabled'
+                    ? SurrogateRule::normalizeEnabledArg($surrogate[$key])
+                    : $surrogate[$key];
             }
         }
 

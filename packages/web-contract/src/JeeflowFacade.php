@@ -25,6 +25,7 @@ use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
 use Jeeflow\Core\Spi\UserSearchProviderInterface;
 use Jeeflow\Core\Util\JeeflowQueryParser;
+use Jeeflow\Core\Util\SurrogateRule;
 
 /**
  * 统一门面 —— 对齐 Java JeeflowFacade
@@ -1884,7 +1885,10 @@ class JeeflowFacade
         $s['surrogate'] = $this->toStr($args['surrogate'] ?? '');
         $s['startTime'] = $this->parseSurrogateTime($args['startTime'] ?? null);
         $s['endTime'] = $this->parseSurrogateTime($args['endTime'] ?? null);
-        $s['enabled'] = ($args['enabled'] ?? null) !== null ? (int) $args['enabled'] : 1; // 显式 0 不得被吞
+        // 写侧判据（06 §4.5 条款 5「写侧」）：缺键→1、`''`/`'abc'`/`'1abc'` 等不可解析脏值→0 且不抛错、
+        // 布尔 true→1/false→0、显式 0 不得被吞。不能写 `(int) $args['enabled']`——
+        // PHP 的宽松前缀解析会让 `(int)'1abc'` 落 **1**（=启用），与契约方向相反。
+        $s['enabled'] = SurrogateRule::normalizeEnabledArg($args['enabled'] ?? null);
         $s['updateUser'] = $operator;
         return $s;
     }

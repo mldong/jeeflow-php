@@ -21,6 +21,9 @@ namespace Jeeflow\Core\Util;
  * 4. `enabled` **只有 1 生效**，脏值（不可解析为整数）不得默认当启用
  *    ——PHP 既有方向 `(int)'abc'` → 0 即停用，本类保持该方向；
  * 5. （条款 1.4）多条同时命中取**主键 id 最大**的那条，内存仓不得"取遍历到的首条"。
+ *
+ * 另有**写侧**判据 {@link normalizeEnabledArg()}（条款 5「写侧」：缺键→1、`''`/脏值→0 且不抛错），
+ * 门面 `processSurrogate/save|update` 与 PDO 仓储落库前都过它，读写两侧同一套语义。
  */
 final class SurrogateRule
 {
@@ -41,6 +44,31 @@ final class SurrogateRule
         $s = trim((string) $value);
         if ($s === '' || !is_numeric($s)) return false;
         return (int) $s === 1;
+    }
+
+    /**
+     * **写侧**判据（06 §4.5 条款 5「写侧」）：`processSurrogate/save|update` 的 `enabled` 入参归一。
+     *
+     * 与上面 {@link isEnabled} 是两件事——那条管"库里这行生效吗"，这条管"门面把入参落成什么值"：
+     * - 键缺失 / 显式 `null` → **1**（save/update 参数表「enabled 默认 1」）；
+     * - 布尔按 `true→1 / false→0`；
+     * - 可解析为整数的（`1` / `'1'` / `0` / `'2'`）按该整数原样落库；
+     * - 空串 `''` 与**不可解析为整数的脏值**（`'abc'` / `'1x'` / `'1abc'`）→ **0**，且**不得抛错**。
+     *
+     * ⚠️ 这里不能直接用 PHP 的 `(int)` 强转：`(int)'1abc'` → **1**（宽松前缀解析），
+     * 与契约「不可解析为整数的脏值落 0」方向相反（Node 首版则是 `toInt` 直接抛错打成 500）。
+     * 故先做 `is_numeric` 判定再转。落 0 的行读侧（{@link isEnabled}）必然查不到生效委托——
+     * 两侧同一套语义，跨层对拍用例即钉这一点。
+     */
+    public static function normalizeEnabledArg(mixed $raw): int
+    {
+        if ($raw === null) return 1;                                  // 缺键 / 显式 null → 契约默认「启用」
+        if (is_bool($raw)) return $raw ? 1 : 0;                        // 布尔 true→1 / false→0
+        if (is_int($raw) || is_float($raw)) return (int) $raw;
+        if (is_array($raw) || is_object($raw)) return 0;               // 结构体入参：不可解析 → 停用，不抛错
+        $s = trim((string) $raw);
+        if ($s === '' || !is_numeric($s)) return 0;                    // '' / 'abc' / '1x' / '1abc' → 停用
+        return (int) $s;
     }
 
     /**

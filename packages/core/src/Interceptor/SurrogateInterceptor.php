@@ -59,14 +59,14 @@ class SurrogateInterceptor implements FlowInterceptor
     /**
      * 拦截器入口：对 execution 本次产生的**全部**新任务应用生效委托。
      *
-     * `processName` 取 `ProcessModel::getName()`——deploy 时引擎执行 `def.setName(model.getName())`，
-     * 故它与 `wf_process_define.name` 同值（06 §4.5 条款 1.1 的口径，跨栈对拍认库内这一列）。
+     * `processName` 走 {@link resolveProcessName}——**流程模型 name 优先，缺失才回落
+     * `wf_process_define.name`**（06 §4.5 条款 1.1）。
      */
     public function intercept(Execution $execution): void
     {
         $tasks = $execution->getProcessTaskList();
         if ($tasks === []) return;
-        $processName = $execution->getProcessModel()?->getName() ?? '';
+        $processName = self::resolveProcessName($execution);
         $at = date('Y-m-d H:i:s');
         foreach ($tasks as $task) {
             $this->apply($task, $processName, $at);
@@ -74,10 +74,42 @@ class SurrogateInterceptor implements FlowInterceptor
     }
 
     /**
+     * 解析当前流程名（06 §4.5 条款 1.1 的取值口径，跨栈对拍的唯一维护点）。
+     *
+     * **模型 name 优先**（`ProcessModel::getName()`，即流程 JSON 顶层 `name`）——迁移基线是内置版
+     * mldong-wf 的 `SurrogateInterceptor`，它用的正是 `execution.getProcessModel().getName()`，
+     * 用户在内置版配的委托迁到 jeeflow 后必须命中同一条。
+     * **模型未带 name 时才回落 `wf_process_define.name`**：deploy 的 `def.setName(model.getName())`
+     * 让两者正常情况下恒等，所以回落只在"模型缺 name"这种异常形态下才触发。
+     *
+     * ⚠️ 回落不是可选项：直接给空串等于把 `processName` 当"未指定"，按判据① 只能命中
+     * 全流程兜底行，**该流程自己配的委托一条都查不到**（用户视角=委托静默失效）。
+     */
+    public static function resolveProcessName(Execution $exec): string
+    {
+        $name = trim((string) $exec->getProcessModel()?->getName());
+        if ($name !== '') return $name;
+
+        $defineId = $exec->getProcessInstance()?->getDefineId();
+        $engine = $exec->getEngine();
+        if ($defineId === null || $defineId === '' || $engine === null) return '';
+        try {
+            $define = $engine->getRepository()->findDefineById($defineId);
+        } catch (\Throwable $e) {
+            // 回落查询本身报错不该把建单打断（条款 4 同口径）：退回空串=只命中兜底行
+            error_log('[jeeflow] surrogate processName fallback failed, define=' . $defineId
+                . ': ' . $e->getMessage());
+            return '';
+        }
+        return trim((string) ($define['name'] ?? ''));
+    }
+
+    /**
      * 对单个任务应用生效委托：逐个 actor 查一次，命中的被委托人**并入参与者集合**。
      *
      * @param ProcessTask $task        任务（参与者集合就地更新，供随后的 saveTask 全量落库）
-     * @param string      $processName 当前流程名（= 流程定义 name；空串时只命中全流程委托）
+     * @param string      $processName 当前流程名（{@link resolveProcessName}：模型 name 优先、
+     *                                 缺失才回落 wf_process_define.name；仍为空时只命中全流程兜底）
      * @param string|null $at          判定时间（`Y-m-d H:i:s`；null 取当前时间）
      */
     public function apply(ProcessTask $task, string $processName, ?string $at = null): void
