@@ -21,7 +21,7 @@ $engine = new JeeflowEngine($repo);          // 构造只收仓储，无其他�
 | `startProcessInstanceById(defineId, operator, flowArgs)` | 启动流程实例（flowArgs 为流程变量） |
 | `executeProcessTask(taskId, operator, flowArgs)` | 执行任务（同意/发起/会签等） |
 | `executeAndJumpToEnd(taskId, operator, flowArgs)` | 拒绝（REJECT）→ 跳结束，实例→45 |
-| `executeAndJumpTask(taskId, operator, flowArgs, targetTaskName)` | 跳转（JUMP）/ 退回上一步（ROLLBACK） |
+| `executeAndJumpTask(taskId, operator, flowArgs, targetTaskName)` | 跳转（JUMP）/ 退回上一步（ROLLBACK，血缘版：复活血缘前驱行，见规范 04） |
 | `executeAndJumpToFirstTaskNode(taskId, operator, flowArgs)` | 退回发起人 → 第一个任务节点重执行 |
 
 ```php
