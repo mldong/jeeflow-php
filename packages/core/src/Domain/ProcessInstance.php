@@ -8,6 +8,8 @@ use Jeeflow\Core\Enum\CountersignType;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
+use Jeeflow\Core\JeeflowException;
+use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
 
@@ -193,49 +195,77 @@ class ProcessInstance
     }
 
     /**
-     * 驳回任务（退回上一步）—— 对齐 Java ProcessInstance.rejectTask
+     * 驳回任务（退回上一步）——血缘版（规范 04 · 退回上一步）：上一步来源＝当前行的
+     * task_parent_id，复活调用方取出的那条历史行；不按模型入边拓扑推。
      *
-     * 找到上一个任务节点并为其创建新待办任务：
-     * 参与者 = 当前任务完成人（退回操作人，finish 后 actorId 即为操作人），
-     * createUser 沿用当前任务的 createUser。无上一任务节点时返回 null（不流转）。
-     *
-     * @return ProcessTask|null 新建的上一步任务
+     * @param ProcessTask|null $history 血缘前驱行（由引擎按 parentTaskId 从仓储取；取不到传 null）
+     * @throws JeeflowException 20010007 无血缘；20010008 canRejected 守卫不过
      */
-    public function rejectTask(ProcessModel $model, ProcessTask $currentTask): ?ProcessTask
+    public function rejectTask(ProcessModel $model, ProcessTask $currentTask, ?ProcessTask $history): ProcessTask
     {
-        $previousTaskName = $this->getPreviousTaskName($model, $currentTask->getTaskName());
-        if ($previousTaskName !== null) {
-            $prevNode = $model->getNode($previousTaskName);
-            if ($prevNode instanceof TaskModel) {
-                $newTask = $this->createTask(
-                    $prevNode->getName(),
-                    $prevNode->getDisplayName(),
-                    $prevNode->getTaskType(),
-                    $prevNode->getPerformType(),
-                    $prevNode->getForm() ?: null,
-                    $currentTask->getActorId() !== null ? [$currentTask->getActorId()] : [],
-                    $currentTask->getCreateUser() ?? '',
-                    // 仍是拓扑版落点（P2 换血缘版）：parent＝被回退的那条任务
-                    $currentTask->getTaskId(),
-                    \Jeeflow\Core\Util\FlowUtil::isFirstTaskName($model, $prevNode->getName())
-                );
-                return $newTask;
-            }
+        if ($history === null) {
+            throw new JeeflowException('20010007: 上一步任务ID为空，无法驳回至上一步处理');
         }
-        return null;
+        $current = $model->getNode($currentTask->getTaskName());
+        $parent = $model->getNode($history->getTaskName());
+        if ($current === null || $parent === null || !NodeModel::canRejected($current, $parent)) {
+            throw new JeeflowException('20010008: 无法驳回至上一步处理，请确认上一步骤并非fork、join、suprocess以及会签任务');
+        }
+
+        $hisVars = $history->getVariables()->toArray();
+        // 首任务节点那条由发起人提交 ⇒ 参与者取该行 u_userId；其余取该行办结人。
+        // 老行没这个键 ⇒ 按 false 处理（宁可派给该行 actorId，也不用带"仅进行中"判定的现算值）。
+        $isFirstRow = !empty($hisVars[FlowConst::IS_FIRST_TASK_NODE]);
+        if ($isFirstRow) {
+            $operator = isset($hisVars[FlowConst::USER_USER_ID]) ? (string) $hisVars[FlowConst::USER_USER_ID] : '';
+            if ($operator === '') {
+                $operator = (string) $this->getOperator();
+            }
+        } else {
+            $operator = (string) ($history->getActorId() ?? '');
+        }
+        if ($operator === '') {
+            throw new JeeflowException('20010007: 上一步任务ID为空，无法驳回至上一步处理');
+        }
+        $newTask = $this->createTask(
+            $history->getTaskName(),
+            $history->getDisplayName(),
+            $history->getTaskType(),
+            $history->getPerformType(),
+            $history->getFormKey(),
+            [$operator],
+            $history->getCreateUser() ?? '',
+            // parent 随行拷贝＝"上一步的上一步"，与 mldong-boot2 一致
+            $history->getParentTaskId(),
+            $isFirstRow
+        );
+        $newTask->setVariables(self::lineageVars($hisVars, $isFirstRow));
+        return $newTask;
     }
 
     /**
-     * 上一个任务节点名（简单实现：找当前节点首条输入边的 source 节点）—— 对齐 Java getPreviousTaskName
+     * 复活行的变量：只带数据类键。剔掉控制类残留是刻意为之——非必填字段第一次填了、第二次不填时，
+     * 整包克隆会把上次提交值带进新待办（用户视角是"我没提交这个怎么显示了"）；会签计数簿记
+     * （loopCounter / nrOfInstances / operatorList）同理，留着会让复活的会签节点从错位的序号继续推进。
+     * 保留 f_*、u_*、autoGenTitle、isFirstTaskNode。
      */
-    private function getPreviousTaskName(ProcessModel $model, string $currentTaskName): ?string
+    private static function lineageVars(array $src, bool $isFirstRow): FlowData
     {
-        $node = $model->getNode($currentTaskName);
-        if ($node !== null && !empty($node->getInputs())) {
-            $source = $node->getInputs()[0]->getSource();
-            return $source?->getName();
+        $out = FlowData::create();
+        foreach ($src as $k => $v) {
+            $k = (string) $k;
+            if ($k === FlowConst::SUBMIT_TYPE || $k === 'taskName'
+                || str_starts_with($k, FlowConst::TASK_FORM_DATA_PREFIX)
+                || str_starts_with($k, FlowConst::COUNTERSIGN_VARIABLE_PREFIX)
+                || str_starts_with($k, FlowConst::LOOP_COUNTER)
+                || str_starts_with($k, FlowConst::NR_OF_INSTANCES)
+                || str_starts_with($k, FlowConst::COUNTERSIGN_OPERATOR_LIST)) {
+                continue;
+            }
+            $out->set($k, $v);
         }
-        return null;
+        $out->set(FlowConst::IS_FIRST_TASK_NODE, $isFirstRow);
+        return $out;
     }
 
     // ═══ 查询方法 ═══

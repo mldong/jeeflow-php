@@ -152,7 +152,8 @@ class SurrogateAutoApplyTest extends TestCase
     public function testRollbackCreatedTaskAlsoJoinsAgent(): void
     {
         $defineId = $this->deploy('02-multi-task.json');
-        $this->surrogate('manager', 'rAgent', 'multi-task');
+        // 台账延后到 task1 办结之后再配（见下）：委托挂在 task1 的原办结人 leader 身上——
+        // issues/121 P2 血缘版回退复活的正是那一行，参与者＝该行办结人，不是执行回退的 manager。
 
         $start = $this->facade->flow('processDefine/startAndExecute', [
             'processDefineId' => $defineId, 'operator' => 'user1',
@@ -167,6 +168,7 @@ class SurrogateAutoApplyTest extends TestCase
         $this->assertSame(0, $adv['code'], json_encode($adv, JSON_UNESCAPED_UNICODE));
         $t2 = $this->onlyDoing($instanceId);
         $this->assertSame('task2', $t2->getTaskName(), '前置：应已推进到 task2');
+        $this->surrogate('leader', 'rAgent', 'multi-task');
 
         $back = $this->facade->flow('processTask/execute', [
             'processTaskId' => (string) $t2->getTaskId(), 'operator' => 'manager',
@@ -175,8 +177,8 @@ class SurrogateAutoApplyTest extends TestCase
         $this->assertSame(0, $back['code'], json_encode($back, JSON_UNESCAPED_UNICODE));
         $rollbackTask = $this->onlyDoing($instanceId);
         $this->assertSame('task1', $rollbackTask->getTaskName(), '前置：ROLLBACK 应退回 task1 产生新待办');
-        $this->assertSame(['manager', 'rAgent'], $this->actorsOf((string) $rollbackTask->getTaskId()),
-            '条款 1：回退（ROLLBACK）产出的新单也要并入代理人（参与者=退回操作人 manager 的委托）');
+        $this->assertSame(['leader', 'rAgent'], $this->actorsOf((string) $rollbackTask->getTaskId()),
+            '条款 1：回退（ROLLBACK）复活的行参与者＝该行办结人 leader，并入的是它的代理人（血缘版 issues/121 P2）');
     }
 
     /**

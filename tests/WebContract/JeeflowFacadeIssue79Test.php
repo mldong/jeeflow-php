@@ -130,7 +130,8 @@ class JeeflowFacadeIssue79Test extends TestCase
 
     public function testExecuteSubmitTypeBehavior(): void
     {
-        // ── submitType=3 ROLLBACK：task2 退回上一步 → task1 新待办（actor=退回操作人），实例保持 DOING(10)
+        // ── submitType=3 ROLLBACK（血缘版 issues/121 P2）：task2 退回 → 复活 task1 那条历史行，
+        //    参与者＝task1 的原办结人 leader（不是执行回退的 manager），实例保持 DOING(10)
         $rb = $this->startMultiTaskAt('task2');
         $t2 = $this->doingTaskId($rb, 'task2');
         $this->repo->addTaskActor($t2, ['manager']);
@@ -140,7 +141,9 @@ class JeeflowFacadeIssue79Test extends TestCase
         $this->assertSame(0, $r['code'], 'ROLLBACK 失败: ' . json_encode($r, JSON_UNESCAPED_UNICODE));
         $rbTask1 = $this->doingTaskId($rb, 'task1');
         $this->assertNotSame('', $rbTask1, 'ROLLBACK 应在 task1 产生新待办');
-        $this->assertContains('manager', $this->actorsOf($rbTask1), '退回任务 actor 应为退回操作人 manager');
+        $rb1Actors = $this->actorsOf($rbTask1);
+        $this->assertContains('leader', $rb1Actors, '血缘版：复活行 actor 应为 task1 原办结人 leader');
+        $this->assertNotContains('manager', $rb1Actors, '血缘版：执行回退的人不该被派到自己退出来的待办上');
         $this->assertSame(ProcessInstanceState::DOING, $this->stateOf($rb), 'ROLLBACK 后实例应保持 DOING(10)');
 
         // ── submitType=4 JUMP：task3 跳转 apply（首任务节点 = start 直接后继，assignee 强制发起人）

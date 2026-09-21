@@ -157,10 +157,14 @@ class JeeflowEngine implements JeeflowEngineInterface
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
             if ($nodeName === null || $nodeName === '') {
-                // 驳回：回到上一步（issues/79 对齐 Java rejectTask：上一步任务节点新建待办，
-                // 参与者 = 退回操作人，实例保持 DOING）
-                $newTask = $exec->getProcessInstance()->rejectTask($model, $exec->getProcessTask());
-                if ($newTask !== null) $exec->addTask($newTask);
+                // issues/121 P2：驳回走血缘版——上一步来源＝当前行的 task_parent_id，
+                // 由仓储把那条历史行取出来交给聚合根复活（取不到传 null，聚合根报 20010007）。
+                $current = $exec->getProcessTask();
+                $parentId = $current === null ? null : $current->getParentTaskId();
+                $history = ($parentId !== null && $parentId !== '' && $parentId !== '0')
+                    ? $this->repository->findTaskById($parentId)
+                    : null;
+                $exec->addTask($exec->getProcessInstance()->rejectTask($model, $current, $history));
             } else {
                 $targetNode = $model->getNode($nodeName);
                 if ($targetNode === null) {
