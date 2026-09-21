@@ -301,7 +301,11 @@ class JeeflowFacade
             $vo = $this->taskVo($t);
             $ext = $t->getVariables()->toArray();
             $doing = $t->getTaskState() === ProcessTaskState::DOING;
-            $ext['isFirstTaskNode'] = $doing && $t->getTaskName() === $firstTaskNodeId;
+            // issues/121 P1：行上值优先（引擎建单时写入，历史行同样有效），缺键（存量行）才回退现算
+            $rowFirst = $ext['isFirstTaskNode'] ?? null;
+            $ext['isFirstTaskNode'] = $rowFirst !== null
+                ? (bool) $rowFirst
+                : ($doing && $t->getTaskName() === $firstTaskNodeId);
             $vo['ext'] = $ext;
             $tasks[] = $vo;
             if ($doing) $activeTaskList[] = $vo;
@@ -455,13 +459,18 @@ class JeeflowFacade
         // 首个任务节点且 DOING → true，与 instance detail 的 activeTaskList 行语义一致
         $tExt = $task->getVariables()->toArray();
         $doing = $task->getTaskState() === ProcessTaskState::DOING;
-        $tExt['isFirstTaskNode'] = false;
+        // 先留住行上值再覆写出口，否则丢掉「缺键」这个事实就没法回退现算
+        $tRowFirst = $tExt['isFirstTaskNode'] ?? null;
+        $tExt['isFirstTaskNode'] = $tRowFirst !== null ? (bool) $tRowFirst : false;
         $vo = $this->taskVo($task);
         $vo['ext'] = $tExt;
         $vo['executable'] = $task->isAllowed($operator);
         $vo['jsonObject'] = $def !== null ? $this->parseGraph($def['content'] ?? '') : null;
         if ($def !== null) {
-            $tExt['isFirstTaskNode'] = $doing && $task->getTaskName() === $this->firstTaskNodeId($vo['jsonObject']);
+            if ($tRowFirst === null) {
+                // 存量行没有落库标记 ⇒ 回退现算（仅进行中口径）
+                $tExt['isFirstTaskNode'] = $doing && $task->getTaskName() === $this->firstTaskNodeId($vo['jsonObject']);
+            }
             $vo['ext'] = $tExt;
         }
         // taskModel

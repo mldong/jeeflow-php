@@ -34,6 +34,8 @@ class CreateTaskHandler implements HandlerInterface
 
         $execution->setNodeModel($this->taskModel);
         $actors = $this->resolveActors($execution);
+        $isFirstTaskNode = \Jeeflow\Core\Util\FlowUtil::isFirstTaskName(
+            $model, $this->taskModel->getName());
 
         if ($this->taskModel->getPerformType() === PerformType::COUNTERSIGN) {
             $tasks = $instance->createCountersignTasks(
@@ -44,7 +46,9 @@ class CreateTaskHandler implements HandlerInterface
                 $this->taskModel->getForm() ?: null,
                 $actors,
                 $operator,
-                $this->taskModel->getCountersignType()
+                $this->taskModel->getCountersignType(),
+                // 建单不变量：parent＝本 execution 刚办结的任务；发起时为 null ⇒ 工厂落 '0'
+                $execution->getProcessTaskId(), $isFirstTaskNode
             );
         } else {
             $task = $instance->createTask(
@@ -54,7 +58,8 @@ class CreateTaskHandler implements HandlerInterface
                 $this->taskModel->getPerformType(),
                 $this->taskModel->getForm() ?: null,
                 $actors,
-                $operator
+                $operator,
+                $execution->getProcessTaskId(), $isFirstTaskNode
             );
             $tasks = [$task];
         }

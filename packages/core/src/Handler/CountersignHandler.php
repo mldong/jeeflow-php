@@ -144,7 +144,10 @@ class CountersignHandler implements HandlerInterface
         $next = ProcessTask::create(
             $instance->getInstanceId(), $node, $tm->getDisplayName(),
             $tm->getTaskType(), $tm->getPerformType(), $tm->getForm() ?: null,
-            [$nextActor], $execution->getOperator()
+            [$nextActor], $execution->getOperator(),
+            // 建单不变量：串行会签下一位成员的 parent＝刚办结的那一位
+            $execution->getProcessTaskId(),
+            \Jeeflow\Core\Util\FlowUtil::isFirstTaskName($execution->getProcessModel(), $node)
         );
         $completed = $execution->getProcessTask();
         $operatorList = $completed !== null

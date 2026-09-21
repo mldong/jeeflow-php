@@ -11,6 +11,9 @@ use Jeeflow\Core\Enum\ProcessTaskState;
  * 流程任务 —— 聚合根 ProcessInstance 的子实体（充血模型）
  *
  * 对齐 Java ProcessTask。任务自己知道如何完成、废弃、判断权限。
+ *
+ * create() 是本类唯一工厂，两条建单不变量（parentTaskId / isFirstTaskNode）在此强制写入，
+ * 参数无默认值 ⇒ 任何建单路径漏传即报错，不留静默漏写。
  */
 class ProcessTask
 {
@@ -46,6 +49,7 @@ class ProcessTask
         ?string $formKey,
         array $actorIds,
         string $operator,
+        ?string $parentTaskId, bool $isFirstTaskNode
     ): self {
         $task = new self();
         $task->processInstanceId = $instanceId;
@@ -56,7 +60,11 @@ class ProcessTask
         $task->taskState = ProcessTaskState::DOING;
         $task->formKey = $formKey;
         $task->actorIds = $actorIds;
+        $task->parentTaskId = $parentTaskId ?? '0';
         $task->variables = FlowData::create();
+        // 建单不变量（issues/121 P1）：行级首任务节点标记必须落库——门面出口现算版带
+        // 「仅进行中」判定，已办结的历史行上恒 false，而血缘版回退要读那条历史行决定参与者。
+        $task->variables->set(FlowConst::IS_FIRST_TASK_NODE, $isFirstTaskNode);
         $now = date('Y-m-d H:i:s');
         $task->createTime = $now;
         $task->createUser = $operator;

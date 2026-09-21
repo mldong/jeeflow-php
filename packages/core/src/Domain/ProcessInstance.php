@@ -137,11 +137,13 @@ class ProcessInstance
      * @param string[] $actorIds
      */
     public function createTask(string $taskName, string $displayName, ?int $taskType,
-                                ?int $performType, ?string $formKey, array $actorIds, string $operator): ProcessTask
+                                ?int $performType, ?string $formKey, array $actorIds, string $operator,
+                                ?string $parentTaskId = null, bool $isFirstTaskNode = false): ProcessTask
     {
         $task = ProcessTask::create(
             $this->instanceId, $taskName, $displayName,
-            $taskType, $performType, $formKey, $actorIds, $operator
+            $taskType, $performType, $formKey, $actorIds, $operator,
+            $parentTaskId, $isFirstTaskNode
         );
         $this->tasks[] = $task;
         return $task;
@@ -161,13 +163,15 @@ class ProcessInstance
      */
     public function createCountersignTasks(string $taskName, string $displayName, ?int $taskType,
                                             ?int $performType, ?string $formKey, array $actorIds,
-                                            string $operator, ?int $countersignType = null): array
+                                            string $operator, ?int $countersignType = null,
+                                            ?string $parentTaskId = null, bool $isFirstTaskNode = false): array
     {
         // 串行会签逐个创建（issues/93）：仅建首位 + 记录任务变量
         if ($countersignType === CountersignType::SERIAL) {
             $first = ProcessTask::create(
                 $this->instanceId, $taskName, $displayName,
-                $taskType, $performType, $formKey, [$actorIds[0]], $operator
+                $taskType, $performType, $formKey, [$actorIds[0]], $operator,
+                $parentTaskId, $isFirstTaskNode
             );
             $first->getVariables()->set(FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $taskName, $actorIds);
             $first->getVariables()->set(FlowConst::LOOP_COUNTER . '_' . $taskName, 0);
@@ -179,7 +183,8 @@ class ProcessInstance
         foreach ($actorIds as $actorId) {
             $task = ProcessTask::create(
                 $this->instanceId, $taskName, $displayName,
-                $taskType, $performType, $formKey, [$actorId], $operator
+                $taskType, $performType, $formKey, [$actorId], $operator,
+                $parentTaskId, $isFirstTaskNode
             );
             $this->tasks[] = $task;
             $list[] = $task;
@@ -209,7 +214,10 @@ class ProcessInstance
                     $prevNode->getPerformType(),
                     $prevNode->getForm() ?: null,
                     $currentTask->getActorId() !== null ? [$currentTask->getActorId()] : [],
-                    $currentTask->getCreateUser() ?? ''
+                    $currentTask->getCreateUser() ?? '',
+                    // 仍是拓扑版落点（P2 换血缘版）：parent＝被回退的那条任务
+                    $currentTask->getTaskId(),
+                    \Jeeflow\Core\Util\FlowUtil::isFirstTaskName($model, $prevNode->getName())
                 );
                 return $newTask;
             }

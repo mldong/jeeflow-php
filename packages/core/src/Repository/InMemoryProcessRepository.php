@@ -367,7 +367,9 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         $inst = $this->instances[(string) ($task->getProcessInstanceId() ?? '')] ?? null;
         $instanceExt = $inst !== null ? ($inst->getVariables()->toArray() ?: []) : [];
         $ext = $task->getVariables()->toArray();
-        if (empty($ext)) $ext = $instanceExt;
+        // issues/121 P1：引擎建单必写的控制键不算「任务变量非空」，否则新建任务的 ext
+        // 永远不再回退实例变量（issues/82-3 既有契约）。
+        if (array_diff_key($ext, ['isFirstTaskNode' => 1]) === []) $ext = $instanceExt;
         $row = [
             'id' => $task->getTaskId(),
             'processInstanceId' => $task->getProcessInstanceId(),
