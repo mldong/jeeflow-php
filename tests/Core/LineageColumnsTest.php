@@ -119,7 +119,8 @@ class LineageColumnsTest extends TestCase
                 FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::ROLLBACK]), null);
         } catch (\Throwable $e) { $e1 = $e; }
         $this->assertNotNull($e1, '无血缘必须报错，不得静默不建单');
-        $this->assertStringContainsString('20010007', $e1->getMessage(), '实得: ' . $e1->getMessage());
+        $this->assertStringContainsString('上一步任务ID为空，无法驳回至上一步处理', $e1->getMessage(), '实得: ' . $e1->getMessage());
+        $this->assertStringNotContainsString('2001000', $e1->getMessage(), 'msg 不得带引擎内部码');
 
         // ── 负向 2：血缘前驱跨不过 fork（boot2 语义：遇 fork/join/start 跳过该入边不再深入）──
         $this->repo->addDefine([
@@ -142,7 +143,8 @@ class LineageColumnsTest extends TestCase
                 FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::ROLLBACK]), null);
         } catch (\Throwable $e) { $e2 = $e; }
         $this->assertNotNull($e2, 'apply→fork→taskA 之间隔着 fork，boot2 语义下不可回退');
-        $this->assertStringContainsString('20010008', $e2->getMessage(), '实得: ' . $e2->getMessage());
+        $this->assertStringContainsString('无法驳回至上一步处理，请确认上一步骤并非fork、join、suprocess以及会签任务', $e2->getMessage(), '实得: ' . $e2->getMessage());
+        $this->assertStringNotContainsString('2001000', $e2->getMessage(), 'msg 不得带引擎内部码');
     }
 
     private function agree(): FlowData

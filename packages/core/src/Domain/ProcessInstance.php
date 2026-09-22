@@ -199,17 +199,17 @@ class ProcessInstance
      * task_parent_id，复活调用方取出的那条历史行；不按模型入边拓扑推。
      *
      * @param ProcessTask|null $history 血缘前驱行（由引擎按 parentTaskId 从仓储取；取不到传 null）
-     * @throws JeeflowException 20010007 无血缘；20010008 canRejected 守卫不过
+     * @throws JeeflowException 无血缘 / 守卫不过各一条固定文案（引擎内部码 20010007、20010008 不进 msg）
      */
     public function rejectTask(ProcessModel $model, ProcessTask $currentTask, ?ProcessTask $history): ProcessTask
     {
         if ($history === null) {
-            throw new JeeflowException('20010007: 上一步任务ID为空，无法驳回至上一步处理');
+            throw new JeeflowException('上一步任务ID为空，无法驳回至上一步处理');
         }
         $current = $model->getNode($currentTask->getTaskName());
         $parent = $model->getNode($history->getTaskName());
         if ($current === null || $parent === null || !NodeModel::canRejected($current, $parent)) {
-            throw new JeeflowException('20010008: 无法驳回至上一步处理，请确认上一步骤并非fork、join、suprocess以及会签任务');
+            throw new JeeflowException('无法驳回至上一步处理，请确认上一步骤并非fork、join、suprocess以及会签任务');
         }
 
         $hisVars = $history->getVariables()->toArray();
@@ -225,7 +225,7 @@ class ProcessInstance
             $operator = (string) ($history->getActorId() ?? '');
         }
         if ($operator === '') {
-            throw new JeeflowException('20010007: 上一步任务ID为空，无法驳回至上一步处理');
+            throw new JeeflowException('上一步任务ID为空，无法驳回至上一步处理');
         }
         $newTask = $this->createTask(
             $history->getTaskName(),
