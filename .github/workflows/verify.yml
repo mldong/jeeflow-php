@@ -1,0 +1,65 @@
+name: Verify Release
+# PHP 发版＝打 tag 后由 Packagist 抓仓库，仓内**没有**上传步骤，所以"CI 绿"从来不等价于
+# "composer 装得到"。本 workflow 把核验补成真的：轮询 repo.packagist.org 的版本列表，
+# 再在干净 composer 项目里真装一次；装不到就判红。
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "要核验的版本号（形如 v1.3.12）"
+        required: true
+        default: ""
+
+jobs:
+  verify:
+    name: Packagist 可安装核验
+    runs-on: ubuntu-latest
+    steps:
+      - name: 定版本
+        id: v
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "ver=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ver=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: 先触发 Packagist 重新抓取（有 token 才做，缺则只轮询）
+        env:
+          PKG_TOKEN: ${{ secrets.PACKAGIST_TOKEN }}
+        run: |
+          if [ -n "$PKG_TOKEN" ]; then
+            curl -s -X POST "https://packagist.org/api/github/hooks?username=mldong" -d "token=$PKG_TOKEN" >/dev/null || true
+            echo "已请求 Packagist 同步"
+          else
+            echo "未配 PACKAGIST_TOKEN：跳过主动同步，只轮询（索引通常几分钟内到位）"
+          fi
+      - name: 轮询版本列表
+        env:
+          VER: ${{ steps.v.outputs.ver }}
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 2700 ))   # 45 min：Packagist 爬虫本身有排队
+          while :; do
+            body=$(curl -s "https://repo.packagist.org/p2/mldong/jeeflow-php.json" || true)
+            if printf '%s' "$body" | grep -q "\"$VER\""; then
+              echo "✅ Packagist 已收录 $VER"; break
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::超时 45min Packagist 仍查不到 mldong/jeeflow-php $VER —— 别当已发版"; exit 1
+            fi
+            echo "等待 Packagist 索引（剩余 $(( (deadline - $(date +%s)) / 60 ))min）"; sleep 30
+          done
+      - name: 干净 composer 真装一次
+        env:
+          VER: ${{ steps.v.outputs.ver }}
+        run: |
+          set -euo pipefail
+          d=$(mktemp -d); cd "$d"
+          composer require mldong/jeeflow-php:"$VER" --no-interaction --no-scripts --quiet
+          got=$(composer show mldong/jeeflow-php --no-interaction 2>/dev/null | awk '/^versions/{print $2}' | head -1)
+          case "$got" in
+            *"$VER"*) echo "✅ composer 装到 $got" ;;
+            *) echo "::error::装到的是 $got，期望 $VER"; exit 1 ;;
+          esac
