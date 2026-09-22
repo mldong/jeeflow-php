@@ -58,8 +58,9 @@ jobs:
           set -euo pipefail
           d=$(mktemp -d); cd "$d"
           composer require mldong/jeeflow-php:"$VER" --no-interaction --no-scripts --quiet
-          got=$(composer show mldong/jeeflow-php --no-interaction 2>/dev/null | awk '/^versions/{print $2}' | head -1)
-          case "$got" in
-            *"$VER"*) echo "✅ composer 装到 $got" ;;
-            *) echo "::error::装到的是 $got，期望 $VER"; exit 1 ;;
-          esac
+          # 解析安装事实只认 composer.lock（composer show 的列格式随版本变，awk 曾读出个冒号）
+          got=$(php -r '$l=json_decode(file_get_contents("composer.lock"),true); foreach(($l["packages"]??[]) as $x){ if($x["name"]==="mldong/jeeflow-php"){ echo $x["version"]; break; } }')
+          echo "composer.lock 里装到的版本：${got:-（空）}"
+          norm="${VER#v}"
+          [ "${got#v}" = "$norm" ] || { echo "::error::装到的是 ${got:-空}，期望 $norm"; exit 1; }
+          echo "✅ composer 干净环境装到 mldong/jeeflow-php $got"
