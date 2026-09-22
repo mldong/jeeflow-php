@@ -192,7 +192,7 @@ class PdoRepositoryEdgeCaseTest extends TestCase
 
     public function testTaskWithMultipleActors(): void
     {
-        $task = ProcessTask::create('i1', 'task1', '审批', 0, 0, 'form1', ['a', 'b', 'c', 'd', 'e'], 'op');
+        $task = ProcessTask::create('i1', 'task1', '审批', 0, 0, 'form1', ['a', 'b', 'c', 'd', 'e'], 'op', null, false);
         $task->setTaskId('t-multi-actor');
         $this->repo->saveTask($task);
 
@@ -202,7 +202,7 @@ class PdoRepositoryEdgeCaseTest extends TestCase
 
     public function testTaskWithNoActors(): void
     {
-        $task = ProcessTask::create('i1', 'task1', '无人任务', 0, 0, null, [], 'op');
+        $task = ProcessTask::create('i1', 'task1', '无人任务', 0, 0, null, [], 'op', null, false);
         $task->setTaskId('t-no-actor');
         $this->repo->saveTask($task);
 
@@ -221,7 +221,7 @@ class PdoRepositoryEdgeCaseTest extends TestCase
             ProcessTaskState::ABANDON,
         ];
         foreach ($states as $i => $state) {
-            $task = ProcessTask::create('i1', "task{$i}", "任务{$i}", 0, 0, null, ['user1'], 'op');
+            $task = ProcessTask::create('i1', "task{$i}", "任务{$i}", 0, 0, null, ['user1'], 'op', null, false);
             $task->setTaskId("t-state-{$i}");
             $task->setTaskState($state);
             $this->repo->saveTask($task);
@@ -233,7 +233,7 @@ class PdoRepositoryEdgeCaseTest extends TestCase
 
     public function testTaskWithVariables(): void
     {
-        $task = ProcessTask::create('i1', 'task1', '有变量任务', 0, 0, null, ['user1'], 'op');
+        $task = ProcessTask::create('i1', 'task1', '有变量任务', 0, 0, null, ['user1'], 'op', null, false);
         $task->setTaskId('t-vars');
         $task->setVariables(FlowData::of(['key1' => 'val1', 'key2' => 42]));
         $this->repo->saveTask($task);
@@ -245,7 +245,7 @@ class PdoRepositoryEdgeCaseTest extends TestCase
 
     public function testTaskUpdateState(): void
     {
-        $task = ProcessTask::create('i1', 'task1', '状态变更', 0, 0, null, ['user1'], 'op');
+        $task = ProcessTask::create('i1', 'task1', '状态变更', 0, 0, null, ['user1'], 'op', null, false);
         $task->setTaskId('t-update');
         $this->repo->saveTask($task);
 
@@ -321,7 +321,7 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     public function testBulkTaskInsert(): void
     {
         for ($i = 0; $i < 30; $i++) {
-            $task = ProcessTask::create('i1', "task{$i}", "任务{$i}", 0, 0, null, ["user{$i}"], 'op');
+            $task = ProcessTask::create('i1', "task{$i}", "任务{$i}", 0, 0, null, ["user{$i}"], 'op', null, false);
             $task->setTaskId("bulk-t-{$i}");
             $this->repo->saveTask($task);
         }
@@ -345,7 +345,7 @@ class PdoRepositoryEdgeCaseTest extends TestCase
 
         // 添加 5 个任务
         for ($i = 0; $i < 5; $i++) {
-            $task = ProcessTask::create('i-with-tasks', "task{$i}", "任务{$i}", 0, 0, null, ["user{$i}"], 'op');
+            $task = ProcessTask::create('i-with-tasks', "task{$i}", "任务{$i}", 0, 0, null, ["user{$i}"], 'op', null, false);
             $task->setTaskId("t-linked-{$i}");
             $this->repo->saveTask($task);
         }

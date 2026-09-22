@@ -138,7 +138,7 @@ class PdoProcessRepositoryTest extends TestCase
         $this->repo->saveInstance($instance);
 
         // 创建任务
-        $task = ProcessTask::create('inst-2', 'task1', '审批任务', 0, 0, 'form1', ['userA', 'userB'], 'user1');
+        $task = ProcessTask::create('inst-2', 'task1', '审批任务', 0, 0, 'form1', ['userA', 'userB'], 'user1', null, false);
         $task->setTaskId('task-1');
         $this->repo->saveTask($task);
 
