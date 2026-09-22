@@ -24,20 +24,26 @@ use PHPUnit\Framework\TestCase;
 class PdoFlowAdvancedTest extends TestCase
 {
     private static ?\PDO $pdo = null;
+    private static string $skipReason = '';
     private PdoProcessRepository $repo;
     private JeeflowEngine $engine;
     private int $defineSeq = 1000;
 
     public static function setUpBeforeClass(): void
     {
-        self::$pdo = new \PDO('mysql:host=127.0.0.1;dbname=jeeflow_test', 'root', '');
-        self::$pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        [self::$pdo, self::$skipReason] = PdoTestDb::connectOrSkip();
+        if (self::$skipReason !== '') {
+            return;
+        }
         $schema = file_get_contents(__DIR__ . '/../../packages/repository-pdo/sql/schema-mysql.sql');
         self::$pdo->exec($schema);
     }
 
     protected function setUp(): void
     {
+        if (self::$skipReason !== '') {
+            $this->markTestSkipped(self::$skipReason);
+        }
         $pdo = self::$pdo;
         $pdo->exec('DELETE FROM wf_process_task_actor');
         $pdo->exec('DELETE FROM wf_process_task');

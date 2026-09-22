@@ -27,13 +27,16 @@ use PHPUnit\Framework\TestCase;
 class PdoProcessRepositoryTest extends TestCase
 {
     private static ?\PDO $pdo = null;
+    private static string $skipReason = '';
     private PdoProcessRepository $repo;
     private JeeflowEngine $engine;
 
     public static function setUpBeforeClass(): void
     {
-        self::$pdo = new \PDO('mysql:host=127.0.0.1;dbname=jeeflow_test', 'root', '');
-        self::$pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        [self::$pdo, self::$skipReason] = PdoTestDb::connectOrSkip();
+        if (self::$skipReason !== '') {
+            return;
+        }
 
         // 建表
         $schema = file_get_contents(__DIR__ . '/../../packages/repository-pdo/sql/schema-mysql.sql');
@@ -42,6 +45,9 @@ class PdoProcessRepositoryTest extends TestCase
 
     protected function setUp(): void
     {
+        if (self::$skipReason !== '') {
+            $this->markTestSkipped(self::$skipReason);
+        }
         // 清空所有表
         $pdo = self::$pdo;
         $pdo->exec('DELETE FROM wf_process_task_actor');

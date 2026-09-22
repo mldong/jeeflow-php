@@ -19,18 +19,24 @@ use PHPUnit\Framework\TestCase;
 class PdoRepositoryEdgeCaseTest extends TestCase
 {
     private static ?\PDO $pdo = null;
+    private static string $skipReason = '';
     private PdoProcessRepository $repo;
 
     public static function setUpBeforeClass(): void
     {
-        self::$pdo = new \PDO('mysql:host=127.0.0.1;dbname=jeeflow_test', 'root', '');
-        self::$pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
+        [self::$pdo, self::$skipReason] = PdoTestDb::connectOrSkip();
+        if (self::$skipReason !== '') {
+            return;
+        }
         $schema = file_get_contents(__DIR__ . '/../../packages/repository-pdo/sql/schema-mysql.sql');
         self::$pdo->exec($schema);
     }
 
     protected function setUp(): void
     {
+        if (self::$skipReason !== '') {
+            $this->markTestSkipped(self::$skipReason);
+        }
         self::$pdo->exec('DELETE FROM wf_process_task_actor');
         self::$pdo->exec('DELETE FROM wf_process_task');
         self::$pdo->exec('DELETE FROM wf_process_instance');
