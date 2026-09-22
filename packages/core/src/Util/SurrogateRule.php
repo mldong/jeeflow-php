@@ -10,17 +10,24 @@ namespace Jeeflow\Core\Util;
  * 契约依据：`docs/spec/06-facade.md` §4.5 条款 5/6 + `docs/spec/05-spi.md`「扩展仓储」小节 +
  * `docs/spec/08-compliance.md` 用例 27。条款 6 要求**内存仓与 SQL 仓两条路径都要满足条款 5**
  * ——同栈两仓对同一份数据给出不同结论即缺陷。本类是 PHP 侧"两仓同答案"的唯一维护点：
- * 内存仓 `InMemoryProcessExtRepository::getSurrogate` 全量用它，
- * SQL 仓 `PdoProcessExtRepository::getSurrogate` 以 SQL 谓词为主、再用本类对返回行做**同判据复核**
- * （防 MySQL 对 `enabled` 脏值的隐式转换与内存仓给出相反结论）。
+ * 内存仓 `InMemoryProcessExtRepository::getSurrogate` 与 SQL 仓
+ * `PdoProcessExtRepository::getSurrogate` **都只走 {@link isEffective} 这一份单条裁决**。
+ *
+ * 取行 + 裁决的顺序（条款 1.4 + issues/123，两仓同形）：
+ * **先**在流程作用域内按主键 id 取**最新一条**（{@link pickLatest}，不带生效判据过滤），
+ * **再**由四判据裁决这一条（{@link isEffective}）；不生效即"未命中"，
+ * **不回落到更旧那条**；但精确作用域判否（含池空）后**仍要看**全流程作用域的最新一条
+ * ——条款 1.4 后半句，Java 既有测试 JdbcProcessExtRepositoryTest#testSurrogateCrudAndGet 钉住。
+ * ⚠️ 顺序反过来（先按判据过滤、剩下的才取最新）就是 issues/123 的病灶。
  *
  * 四条判据：
- * 1. 空 `processName` = 全部流程兜底（先按当前流程名精确查，未命中再查 `process_name` 为 NULL/''）；
+ * 1. 空 `processName` = 全部流程兜底（先按当前流程名精确查，该作用域**一条记录都没有**
+ *    才查 `process_name` 为 NULL/''；精确作用域里有记录就由它裁决）；
  * 2. 时间窗 `start_time <= now <= end_time`，**一侧为 NULL/空即该侧不限**；
  * 3. 自委托过滤 `surrogate <> operator`（自己委托给自己不生效）；
  * 4. `enabled` **只有 1 生效**，脏值（不可解析为整数）不得默认当启用
  *    ——PHP 既有方向 `(int)'abc'` → 0 即停用，本类保持该方向；
- * 5. （条款 1.4）多条同时命中取**主键 id 最大**的那条，内存仓不得"取遍历到的首条"。
+ * 5. （条款 1.4）多条并存时取**主键 id 最大**的那条来裁决，内存仓不得"取遍历到的首条"。
  *
  * 另有**写侧**判据 {@link normalizeEnabledArg()}（条款 5「写侧」：缺键→1、`''`/脏值→0 且不抛错），
  * 门面 `processSurrogate/save|update` 与 PDO 仓储落库前都过它，读写两侧同一套语义。
@@ -108,10 +115,38 @@ final class SurrogateRule
     }
 
     /**
+     * 单条裁决（规范 06 §4.5 条款 5 的四判据 + issues/123）：这一行委托此刻对该授权人生效吗。
+     *
+     * ⚠️ **调用方必须先按主键 id 选出「该作用域内最新一条」再问本方法**（条款 1.4）——
+     * 本方法只裁决单条，不做多条择优，也**不回落**：最新一条不生效就是"未命中"。
+     * 反过来写（先用判据把记录滤掉、剩下的才取最新）等价于"历史上留过一条窗内委托就永久生效"，
+     * 用户随后改停用/挪窗口/自委托都不算数——issues/123 里 13 栈 L2-17/L2-18 全红的成因。
+     *
+     * 内存仓与 PDO 仓**共用本方法**（08-compliance 用例 27 要求双仓同答案）：行键两仓不同形
+     * （内存 camelCase、PDO snake_case），故时间窗边界两个键名都认。
+     *
+     * @param array|null $row       委托行（null = 该作用域内没有记录）
+     * @param string     $operator  授权人（判自委托）
+     * @param string|null $at       判定时刻（`Y-m-d H:i:s`；null = 不做窗口比较）
+     */
+    public static function isEffective(?array $row, string $operator, ?string $at): bool
+    {
+        if ($row === null) return false;
+        if (!self::isEnabled($row['enabled'] ?? null)) return false;      // 只认 1；0/2/脏值/null 均不生效
+        if (self::isSelfDelegation($operator, $row['surrogate'] ?? null)) return false; // 含代理人为空
+        if ($at === null) return true;
+        return self::inWindow($row['start_time'] ?? $row['startTime'] ?? null,
+            $row['end_time'] ?? $row['endTime'] ?? null, $at);
+    }
+
+    /**
      * 判据⑤（条款 1.4）：候选行里取**主键 id 最大**的一条 —— 与 SQL 侧 `ORDER BY id DESC` 同答案。
      *
      * 内存仓若"取遍历到的首条"就是插入序（最早一条），与 SQL 仓相反，属缺陷。
      * 无候选返回 null。
+     *
+     * ⚠️ 条款 1.4 + issues/123 的取行顺序是「**先**在本作用域内取 id 最大的一条，**再**交
+     * {@link isEffective} 裁决」；本方法因此**不带**任何生效判据过滤。
      *
      * @param array<array-key, array> $rows 候选行
      * @param string $idKey 主键键名（内存仓 camelCase `id`，PDO 行同为 `id`）

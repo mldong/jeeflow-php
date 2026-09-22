@@ -187,39 +187,59 @@ class InMemoryProcessExtRepository implements ProcessExtRepositoryInterface
         return $this->surrogates[(string) $id] ?? null;
     }
 
-    /** 查生效中的委托（issues/82-12 引入，issues/116 批次 D 补齐四判据，与 PDO 仓同答案）：
-     *  ① 空 processName 全流程兜底（先精确、再 `process_name` 为 null/'' 兜底）；
-     *  ② 时间窗 start<=at<=end，**一侧为 null/空即该侧不限**（'Y-m-d H:i:s' 文本字典序即时序）；
-     *  ③ 自委托过滤 `surrogate <> operator`（此前缺失，issues/116 §5 实测记录）；
-     *  ④ enabled **只认 1**，脏值不得当启用（`SurrogateRule::isEnabled`，保持 PHP `(int)'abc'`→0 的方向）；
-     *  ⑤ 多条同时命中取**主键 id 最大**（对齐 SQL 侧 `ORDER BY id DESC`，条款 1.4——
-     *    原实现取"遍历到的首条"=插入序最早一条，与 SQL 仓给出相反答案，属缺陷）。
-     *  $time 缺省取当前时间。 */
+    /** 查生效中的委托（issues/82-12 引入，issues/116 批次 D 补齐四判据，issues/123 定顺序）：
+     *  **先**在流程作用域内按主键 id 取**最新一条**（{@link SurrogateRule::pickLatest}，
+     *  不带任何生效判据过滤），**再**由 {@link SurrogateRule::isEffective} 裁决这一条
+     *  ——06 §4.5 条款 1.4。顺序反了（先滤 enabled/窗口/自委托、剩下的才取最新）就等于
+     *  "历史上留过一条窗内委托就永久生效"，用户后来改停用/挪窗外/自委托都不算数，
+     *  正是 issues/123 里 13 栈 L2-17/L2-18 全红的成因。
+     *  作用域规则：processName 精确作用域里**只要存在记录**就由它裁决（不回落全局）；
+     *  一条都没有才看 `processName` 为 null/'' 的全流程委托作用域。
+     *  $time 缺省取当前时间。与 PDO 仓 `PdoProcessExtRepository::getSurrogate` 同形、同答案。 */
     public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array
     {
         $at = SurrogateRule::timeText($time) ?? date('Y-m-d H:i:s');
-        $exact = [];
-        $fallback = [];
+        $newest = $this->newestSurrogateInScope($operator, $processName);
+        if (SurrogateRule::isEffective($newest, $operator, $at)) {
+            return $newest;
+        }
+        if ($processName === '') {
+            return null;
+        }
+        // 精确作用域判否（含池空）⇒ 仍要看全流程作用域的最新一条（条款 1.4 后半句）。
+        // "本流程这条废了"不等于"我没委托"：Java 既有测试
+        // JdbcProcessExtRepositoryTest#testSurrogateCrudAndGet 钉的是「精确已过期 → 兜底全流程」。
+        $global = $this->newestSurrogateInScope($operator, '');
+        return SurrogateRule::isEffective($global, $operator, $at) ? $global : null;
+    }
+
+    /** 该授权人在指定流程作用域内 id 最大（最新）的一条委托；作用域内无记录返回 null。
+     *  $processName 为 '' 表示"全流程委托"作用域（process_name 为 null/''）。 */
+    private function newestSurrogateInScope(string $operator, string $processName): ?array
+    {
+        $scope = [];
         foreach ($this->surrogates as $s) {
             if ((string) ($s['operator'] ?? '') !== $operator) continue;
-            if (!SurrogateRule::isEnabled($s['enabled'] ?? null)) continue;
-            if (SurrogateRule::isSelfDelegation($operator, $s['surrogate'] ?? null)) continue;
-            if (!SurrogateRule::inWindow($s['startTime'] ?? null, $s['endTime'] ?? null, $at)) continue;
-            $pn = $s['processName'] ?? null;
-            if ($processName !== '' && (string) ($pn ?? '') === $processName) {
-                $exact[] = $s;
-            } elseif ($pn === null || $pn === '') {
-                $fallback[] = $s;
+            $pn = (string) ($s['processName'] ?? '');
+            if ($processName === '') {
+                if ($pn !== '') continue;
+            } elseif ($pn !== $processName) {
+                continue;
             }
+            $scope[] = $s;
         }
-        // 精确匹配流程优先，空 processName（全流程委托）兜底；同组内取 id 最大的一条
-        return SurrogateRule::pickLatest($exact) ?? SurrogateRule::pickLatest($fallback);
+        return $scope === [] ? null : SurrogateRule::pickLatest($scope);
     }
 
     public function saveSurrogate(array $surrogate): string
     {
         $id = (string) ($surrogate['id'] ?? $this->idGenerator->nextId());
         $surrogate['id'] = $id;
+        // 写侧判据归一（06 §4.5 条款 5「写侧」，与 PDO 仓 saveSurrogate 同一套）：
+        // 缺键/null→1、布尔 true→1 false→0、'' 与不可解析脏值→0 且不抛错。
+        // 不归一的话内存仓会把 'abc' / '1abc' 原样存进去，PDO 仓则落 0/1——
+        // 台账回显与"脏值不生效"这条判据在两仓就对不上（条款 6 双仓同答案）。
+        $surrogate['enabled'] = SurrogateRule::normalizeEnabledArg($surrogate['enabled'] ?? null);
         $surrogate['createTime'] = $surrogate['createTime'] ?? date('Y-m-d H:i:s');
         $surrogate['updateTime'] = date('Y-m-d H:i:s');
         $this->surrogates[$id] = $surrogate;

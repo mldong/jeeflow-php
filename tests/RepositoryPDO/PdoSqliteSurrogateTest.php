@@ -142,6 +142,99 @@ class PdoSqliteSurrogateTest extends TestCase
         $this->assertSame('sExact', $this->pdoExt->getSurrogate('op2', 'flowP', self::AT)['surrogate'] ?? null);
     }
 
+    /**
+     * issues/123 任务 A/B（双仓同答案）：**先**按主键 id 取该作用域内**最新一条**，
+     * **再**由四判据裁决这一条；同层内不生效即"未命中"（不回落更旧那条），
+     * 但精确作用域判否后仍要看全流程作用域的最新一条（条款 1.4 后半句）。
+     *
+     * 旧形状（SQL/内存都先按 enabled + 时间窗 + 自委托过滤，剩下的才取最新）在下面每个
+     * 负向探针上都会答成"更旧那条生效行"——同一授权人历史上只要留过一条窗内 enabled=1 的记录，
+     * 用户之后新建的窗外/停用/脏值/自委托记录就全都判不动它（13 栈 L2-17/L2-18 全红的病灶）。
+     *
+     * ⚠️ 插入序刻意排成「生效行 → 裁决行(id 最大) → 生效行」：id 序与插入序重合时
+     * "取遍历末条"的实现会因末条恰好是裁决行而跟着夹具一起绿（条款 1.4 那条老注释记的空转）。
+     */
+    public function testNewestRowDecidesAndNeverFallsBackInBothRepos(): void
+    {
+        $on  = ['2020-01-01 00:00:00', '2099-12-31 23:59:59'];   // 窗内（覆盖 AT）
+        $rows = [
+            // [id, 授权人, 流程, 代理人, start, end, enabled]
+            // ── A 组：同作用域内"最新一条不生效"⇒ 不得回落到更旧的生效行 ──
+            ['3201', 'opW', 'flowW', 'wOlder1', $on[0], $on[1], 1],
+            ['3203', 'opW', 'flowW', 'wNewest', '2099-01-01 00:00:00', null, 1], // 最新：窗外（未到）
+            ['3202', 'opW', 'flowW', 'wOlder2', $on[0], $on[1], 1],
+
+            ['3211', 'opD', 'flowD', 'dOlder1', $on[0], $on[1], 1],
+            ['3213', 'opD', 'flowD', 'dNewest', $on[0], $on[1], 0],              // 最新：enabled=0
+            ['3212', 'opD', 'flowD', 'dOlder2', $on[0], $on[1], 1],
+
+            ['3221', 'opX', 'flowX', 'xOlder1', $on[0], $on[1], 1],
+            ['3223', 'opX', 'flowX', 'xNewest', $on[0], $on[1], 2],              // 最新：脏值 2
+            ['3222', 'opX', 'flowX', 'xOlder2', $on[0], $on[1], 1],
+
+            ['3231', 'opS', 'flowS', 'sOlder1', $on[0], $on[1], 1],
+            ['3233', 'opS', 'flowS', 'opS', $on[0], $on[1], 1],                  // 最新：自委托
+            ['3232', 'opS', 'flowS', 'sOlder2', $on[0], $on[1], 1],
+
+            ['3241', 'opE', 'flowE', 'eOlder1', $on[0], $on[1], 1],
+            ['3243', 'opE', 'flowE', '', $on[0], $on[1], 1],                     // 最新：代理人为空
+            ['3242', 'opE', 'flowE', 'eOlder2', $on[0], $on[1], 1],
+
+            // ── G：跨作用域不回落（精确作用域有记录就由它裁决，哪怕兜底行 id 更大且生效）──
+            ['3251', 'opG', 'flowG', 'gOlder1', $on[0], $on[1], 1],
+            ['3253', 'opG', 'flowG', 'gNewestOff', $on[0], $on[1], 0],
+            ['3252', 'opG', 'flowG', 'gOlder2', $on[0], $on[1], 1],
+            ['3254', 'opG', '', 'gGlobal', $on[0], $on[1], 1],                   // 生效的兜底行，id 最大
+
+            // ── H：兜底作用域内同样"最新一条裁决、不回落更旧" ──
+            ['3261', 'opH', '', 'hOlder1', $on[0], $on[1], 1],
+            ['3263', 'opH', '', 'hNewestOff', $on[0], $on[1], 0],
+            ['3262', 'opH', '', 'hOlder2', $on[0], $on[1], 1],
+
+            // ── B：正向对照（判据写反成"恒不命中"时这组立刻红）──
+            ['3271', 'opP', 'flowP', 'pAgent', $on[0], $on[1], 1],               // 只有一条窗内 enabled=1
+            ['3281', 'opN', 'flowN', 'nDisabled', $on[0], $on[1], 0],            // 更旧两条不生效
+            ['3283', 'opN', 'flowN', 'nNewest', $on[0], $on[1], 1],              // 最新一条生效 ⇒ 命中它
+            ['3282', 'opN', 'flowN', 'nExpired', '2000-01-01 00:00:00', '2000-01-02 00:00:00', 1],
+        ];
+        foreach ($rows as [$id, $operator, $pn, $agent, $start, $end, $enabled]) {
+            $row = ['id' => $id, 'processName' => $pn, 'operator' => $operator, 'surrogate' => $agent,
+                    'startTime' => $start, 'endTime' => $end, 'enabled' => $enabled];
+            $this->memExt->saveSurrogate($row);
+            $this->pdoExt->saveSurrogate($row);
+        }
+        // 种子自证：20 条全落两仓（"未命中"类期望不能因数据没进去而空转）
+        foreach ($rows as [$id]) {
+            $this->assertNotNull($this->memExt->findSurrogateById($id), "内存仓种子未落库 id={$id}");
+            $this->assertNotNull($this->pdoExt->findSurrogateById($id), "SQL 仓种子未落库 id={$id}");
+        }
+
+        $probes = [
+            // [授权人, 流程名, 判定时刻, 期望代理人（null=不命中）, 判据说明]
+            ['opW', 'flowW', self::AT, null, 'A1 最新一条窗外 ⇒ 不命中、不回落到更旧生效行'],
+            ['opD', 'flowD', self::AT, null, 'A2 最新一条 enabled=0 ⇒ 不命中、不回落'],
+            ['opX', 'flowX', self::AT, null, 'A3 最新一条 enabled=2 脏值 ⇒ 不命中、不回落'],
+            ['opS', 'flowS', self::AT, null, 'A4 最新一条自委托 ⇒ 不命中、不回落'],
+            ['opE', 'flowE', self::AT, null, 'A5 最新一条代理人为空 ⇒ 不命中、不回落'],
+            ['opG', 'flowG', self::AT, 'gGlobal', 'G 精确作用域最新一条停用 ⇒ 由生效的兜底行接管（条款 1.4 后半句）'],
+            ['opH', 'flowAny', self::AT, null, 'H 兜底作用域最新一条停用 ⇒ 不命中、不回落更旧兜底行'],
+            ['opP', 'flowP', self::AT, 'pAgent', 'B 正向：作用域内只有一条窗内 enabled=1 ⇒ 命中'],
+            ['opN', 'flowN', self::AT, 'nNewest', 'J 正向：最新一条生效、更旧两条不生效 ⇒ 命中最新那条'],
+            ['opW', 'flowW', '2099-06-01 00:00:00', 'wNewest', '同数据按未来时刻查询 ⇒ 那条未来窗口记录生效（证明"窗外"是真判据而非恒不命中）'],
+        ];
+        foreach ($probes as [$operator, $pn, $at, $expect, $why]) {
+            $mem = $this->memExt->getSurrogate($operator, $pn, $at);
+            $sql = $this->pdoExt->getSurrogate($operator, $pn, $at);
+            $memAgent = $mem === null ? null : (string) ($mem['surrogate'] ?? '');
+            $sqlAgent = $sql === null ? null : (string) ($sql['surrogate'] ?? '');
+            $memAgent = $memAgent === '' ? null : $memAgent;
+            $sqlAgent = $sqlAgent === '' ? null : $sqlAgent;
+            $this->assertSame($expect, $memAgent, "内存仓（{$why}）：{$operator}/{$pn}@{$at}");
+            $this->assertSame($expect, $sqlAgent, "SQL 仓（{$why}）：{$operator}/{$pn}@{$at}");
+            $this->assertSame($memAgent, $sqlAgent, "双仓必须同答案（{$why}）：{$operator}/{$pn}@{$at}");
+        }
+    }
+
     // ═══ 2. 自动生效打在 wf_process_task_actor 真行上（条款 2 铁证）═══
 
     /**

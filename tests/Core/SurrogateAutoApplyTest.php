@@ -242,6 +242,95 @@ class SurrogateAutoApplyTest extends TestCase
 
     // ═══ 负向：窗外 / enabled=0 / 自委托 都不生效 ═══
 
+    /**
+     * issues/123 任务 A/B（内存仓 + 建单落库断言）：`testMultipleHitsPickMaxIdNotFirstInserted`
+     * 的延长线——多条并存时**先取 id 最新一条、再由四判据裁决这一条**，所以"最新一条不生效"
+     * 就是未命中，**不得**回落到更旧那条生效行（旧形状"先滤生效再取最新"在这里必然答成并入）。
+     *
+     * 每轮的台账都是「更旧一条窗内 enabled=1」+「更新一条按某判据不生效」，
+     * 并配一轮正向对照（最新一条生效 ⇒ 必须并入），防判据写反后负向断言空转。
+     */
+    public function testNewestRowDecidesAndNeverFallsBackToOlder(): void
+    {
+        $cases = [
+            // [标签, 最新一条的覆盖字段, 最新一条的代理人, 期望是否并入]
+            ['A1 最新一条窗外（未到窗）', ['startTime' => '2099-01-01 00:00:00', 'endTime' => null], 'aLate', false],
+            ['A2 最新一条窗外（已过期）', ['startTime' => '2000-01-01 00:00:00', 'endTime' => '2000-01-02 00:00:00'], 'aGone', false],
+            ['A3 最新一条 enabled=0', ['enabled' => 0], 'aOff', false],
+            ['A4 最新一条 enabled=2 脏值', ['enabled' => 2], 'aDirty', false],
+            ['A5 最新一条自委托', [], 'user1', false],
+            ['B 正向对照：最新一条窗内 enabled=1', [], 'aOn', true],
+        ];
+        foreach ($cases as $i => [$label, $override, $agent, $merged]) {
+            $this->newHarness();          // 每轮重建台账，上一轮的生效行不许串味
+            $base = (string) (5100 + $i * 10);
+            $newestId = (string) ((int) $base + 2);
+            $defineId = $this->deploy('01-simple.json');
+            // 更旧的一条：窗内 + enabled=1 —— 旧形状会把它当成"最新命中行"永远并入
+            $this->surrogate('user1', 'aOlder', 'simple', id: $base);
+            // 更新的一条：按某判据不生效（正向对照组则是生效的）
+            $this->surrogate('user1', $agent, 'simple', $override, $newestId);
+            // 种子自证：两条都真落库，且新那条 id 更大（否则"不并入"只是数据没进去）
+            $this->assertNotNull($this->extRepo->findSurrogateById($base), "{$label}：更旧那条未落库");
+            $newest = $this->extRepo->findSurrogateById($newestId);
+            $this->assertNotNull($newest, "{$label}：最新那条未落库");
+            $this->assertSame($agent, (string) $newest['surrogate'], "{$label}：最新那条落库值不符");
+
+            $start = $this->facade->flow('processDefine/startAndExecute', [
+                'processDefineId' => $defineId, 'operator' => 'user1',
+            ]);
+            $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+            $apply = $this->taskOf($start['data']['processTaskId'] ?? null,
+                (string) $start['data']['processInstanceId'], 'apply');
+            $this->assertNotNull($apply);
+            $actors = $this->actorsOf((string) $apply->getTaskId());
+            if ($merged) {
+                $this->assertSame(['user1', 'aOn'], $actors,
+                    "{$label}：最新一条生效 ⇒ 代理人并入、原授权人保留");
+                continue;
+            }
+            $this->assertSame(['user1'], $actors,
+                "{$label}：最新一条不生效 ⇒ 不得并入它，也不得回落到更旧那条 aOlder");
+            $this->assertNotContains('aOlder', $actors, "{$label}：回落到了更旧的生效行（issues/123 病灶）");
+        }
+    }
+
+    /**
+     * issues/123 判据 4（内存仓）：精确作用域最新一条停用 ⇒ 同层内不复活更旧那条，
+     * 但仍须由那条生效的全流程兜底行接管（条款 1.4 后半句，对齐 Java 既有测试）。
+     * 末尾删净精确作用域两条后再发起一次，证明兜底路径本身是活的（上面的"不并入"不是空转）。
+     */
+    public function testNewestInExactScopeFallsBackToGlobalRow(): void
+    {
+        $defineId = $this->deploy('01-simple.json');
+        $this->surrogate('user1', 'aAll', '', id: '5201');                        // 生效的全流程兜底行
+        $this->surrogate('user1', 'aOk', 'simple', id: '5202');                   // 本流程窗内生效（更旧）
+        $this->surrogate('user1', 'aOff', 'simple', ['enabled' => 0], '5203');    // 本流程最新一条：停用
+
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        $apply = $this->taskOf($start['data']['processTaskId'] ?? null,
+            (string) $start['data']['processInstanceId'], 'apply');
+        $this->assertNotNull($apply);
+        $this->assertSame(['user1', 'aAll'], $this->actorsOf((string) $apply->getTaskId()),
+            '精确作用域最新一条停用 ⇒ 同层不复活 aOk/aOff，但由全流程兜底行 aAll 接管（条款 1.4）');
+
+        // 正向对照：删净精确作用域两条后，兜底路径必须照常接管
+        $this->extRepo->removeSurrogate('5203');
+        $this->extRepo->removeSurrogate('5202');
+        $start2 = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start2['code'], json_encode($start2, JSON_UNESCAPED_UNICODE));
+        $apply2 = $this->taskOf($start2['data']['processTaskId'] ?? null,
+            (string) $start2['data']['processInstanceId'], 'apply');
+        $this->assertNotNull($apply2);
+        $this->assertSame(['user1', 'aAll'], $this->actorsOf((string) $apply2->getTaskId()),
+            '精确作用域清空后，空 processName 的兜底委托应并入代理人');
+    }
+
     /** 条款 5 判据②③④ 的负向面：一条都不许把任务推出去。 */
     public function testOutOfWindowDisabledAndSelfDelegationNotApplied(): void
     {

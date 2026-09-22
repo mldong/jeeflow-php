@@ -336,8 +336,10 @@ class MysqlSmokeTest extends TestCase
      * M7 issues/116 批次 D：委托代理自动生效必须在**真机 MySQL** 上落进 `wf_process_task_actor` 真行。
      *
      * 断言全部读真表（不是返回码、不是内存集合）：
-     * - 正向：发起那一刻的任务（apply，委托 user1→m7lisi）与**办理推进**出的新单（task1，
-     *   空 processName 兜底委托 leader→m7wang）都要各多出一行代理人，且原授权人那行仍在；
+     * - 正向：发起那一刻的任务（apply，委托 user1→m7lisi）多出一行代理人、原授权人那行仍在；
+     *   **办理推进**出的新单（task1）在 leader 名下"本流程作用域"有记录时按 issues/123 由
+     *   最新一条裁决（那里是未到窗 ⇒ 不并入、也不跨作用域回落），删净那两条后
+     *   空 processName 的兜底委托 leader→m7wang 才照样并进真表（用例末尾的正向对照）；
      * - 负向：窗外 / enabled=0 / 自委托 三种台账行不产生任何 actor 行
      *   （enabled 脏值探针不在此列——本表 `enabled INT`，MySQL 存不进 'abc'，
      *   该判据只在内存仓与 SQLite 弱类型路径上有分叉空间，见 PdoSqliteSurrogateTest）；
@@ -380,8 +382,14 @@ class MysqlSmokeTest extends TestCase
         $this->assertCount(1, $task1Ids, '前置：办理推进应落出 task1');
         $this->assertSame(['user1', 'm7lisi'], $this->actorsOf($applyIds[0]),
             '发起任务真表须多出一行代理人（原授权人保留）——Java 首版补写打在空 taskId 上就是没这一行');
+        // issues/123（条款 1.4）：leader 名下**本流程精确作用域里存在记录**（900062 停用 /
+        // 900063 未到窗，其中 id 最大的 900063 是最新一条），就由这最新一条裁决 ⇒ 不命中，
+        // 但同层不复活之后，仍须由 900061 那条生效的全流程委托接管（条款 1.4 后半句）。
+        // 旧形状（SQL 先按 enabled/窗口滤掉再取最新）会把 900062/900063 滤没、
+        // 让更旧的兜底行 900061 接走 ⇒ m7wang 被永久并入，正是 issues/123 的病灶。
+        // 兜底路径本身仍生效，见本用例末尾"删掉精确作用域两条后再发起一次"。
         $this->assertSame(['leader', 'm7wang'], $this->actorsOf($task1Ids[0]),
-            '推进出的新单真表同样要有代理人行（只挂发起一处会漏这条）');
+            '最新一条（900063 未到窗）不生效 ⇒ 同层不复活，但兜底行 900061 接管（条款 1.4 后半句）');
 
         foreach (['m7off', 'm7late', 'manager'] as $shouldNot) {
             $cnt = (int) self::$pdo->query('SELECT COUNT(*) FROM wf_process_task_actor WHERE actor_id = '
@@ -404,6 +412,18 @@ class MysqlSmokeTest extends TestCase
         $page = $offFacade->flow('processSurrogate/page', ['m_EQ_operator' => 'leader']);
         $this->assertSame(0, $page['code'], json_encode($page, JSON_UNESCAPED_UNICODE));
         $this->assertSame(3, $page['data']['recordCount'], 'leader 名下三条台账（含停用/窗外）');
+
+        // 正向对照（issues/123 任务 B）：把 leader 名下"本流程作用域"的两条删干净，
+        // 剩下的那条**全流程兜底**委托（900061，窗两侧不限 + enabled=1）必须照常并入——
+        // 证明上面 task1 读 ['leader'] 不是因为兜底行没落库而空转。
+        self::$pdo->exec("DELETE FROM wf_process_surrogate WHERE operator = 'leader' AND process_name = 'simple'");
+        $start3 = $facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start3['code'], json_encode($start3, JSON_UNESCAPED_UNICODE));
+        $inst3 = (string) $start3['data']['processInstanceId'];
+        $this->assertSame(['leader', 'm7wang'], $this->actorsOf($this->taskIdsByName($inst3, 'task1')[0]),
+            '精确作用域清空后，空 processName 的兜底委托应并入代理人（推进出的新单同样落真表）');
     }
 
     private function actorsOf(string $taskId): array

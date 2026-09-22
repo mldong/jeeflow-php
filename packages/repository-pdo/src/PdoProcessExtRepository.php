@@ -295,41 +295,57 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
         return $row === false ? null : $row;
     }
 
-    /** 查生效中的委托（issues/82-12 引入，issues/116 批次 D 补齐四判据，与内存仓同答案）：
-     *  SQL 侧 WHERE 落 ②时间窗（`start_time`/`end_time` IS NULL = **该侧不限**）+
-     *  ③自委托过滤 `surrogate <> operator`（此前缺失，issues/116 §5 实测记录）+ ④`enabled = 1`；
-     *  ①空 processName 全流程兜底、⑤多条同时命中取主键 id 最大（`ORDER BY id DESC`，条款 1.4）
-     *  在 PHP 侧分组挑取。
+    /** 查生效中的委托（issues/82-12 引入，issues/116 批次 D 补齐四判据，issues/123 定顺序）：
+     *  **先**在流程作用域内按主键 id 取**最新一条**（SQL 只做 `ORDER BY id DESC`，
+     *  WHERE 里**不带**任何生效判据），**再**由 `SurrogateRule::isEffective` 裁决这一条
+     *  ——06 §4.5 条款 1.4。
      *
-     *  取回的行再过一遍 `SurrogateRule` 严格判据：MySQL 对 `enabled` 脏值有隐式转换
-     *  （`'abc'`→0、`'1abc'`→1），不复核就会与内存仓「脏值不得当启用」给出相反结论——
-     *  同栈两仓答案必须一致（06 §4.5 条款 6 / 08-compliance 用例 27）。返回原始行（snake_case）。 */
+     *  ⚠️ 旧形状是 `WHERE operator = ? AND enabled = 1 AND surrogate <> operator AND 窗口…`
+     *  再取最新，等价于"历史上留过一条窗内且 enabled=1 的记录就永久生效"——用户随后新建的
+     *  窗外 / enabled=0 / 脏值 / 自委托记录全都判不动它，代理人被永久并入（issues/123，
+     *  13 栈 L2-17/L2-18 全红的成因）。
+     *
+     *  作用域规则与内存仓同形：processName 精确作用域里只要存在记录就由它裁决（不回落全局）；
+     *  一条都没有才看 `process_name IS NULL OR = ''` 的全流程委托作用域。
+     *  裁决走 `SurrogateRule`（`enabled` 严格 1 认 PDO 回读的字符串 `'1'`；MySQL 对脏值的
+     *  隐式转换也不参与 WHERE，一律由 PHP 侧判），与内存仓同答案（条款 6 / 用例 27）。
+     *  返回原始行（snake_case）。 */
     public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array
     {
         $at = SurrogateRule::timeText($time) ?? date('Y-m-d H:i:s');
-        $sql = 'SELECT * FROM wf_process_surrogate
-                WHERE operator = ? AND enabled = 1 AND surrogate <> operator
-                  AND (start_time IS NULL OR start_time <= ?)
-                  AND (end_time IS NULL OR end_time >= ?) ORDER BY id DESC';
-        $stmt = $this->pdo->prepare($sql);
-        $stmt->execute([$operator, $at, $at]);
-        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
-
-        $exact = [];
-        $fallback = [];
-        foreach ($rows as $row) {
-            if (!SurrogateRule::isEnabled($row['enabled'] ?? null)) continue;
-            if (SurrogateRule::isSelfDelegation($operator, $row['surrogate'] ?? null)) continue;
-            if (!SurrogateRule::inWindow($row['start_time'] ?? null, $row['end_time'] ?? null, $at)) continue;
-            $pn = $row['process_name'] ?? null;
-            if ($processName !== '' && (string) ($pn ?? '') === $processName) {
-                $exact[] = $row;
-            } elseif ($pn === null || $pn === '') {
-                $fallback[] = $row;
-            }
+        $newest = $this->newestSurrogateInScope($operator, $processName);
+        if (SurrogateRule::isEffective($newest, $operator, $at)) {
+            return $newest;
         }
-        // 精确匹配流程优先，空 processName（全流程委托）兜底；同组内取 id 最大的一条
-        return SurrogateRule::pickLatest($exact) ?? SurrogateRule::pickLatest($fallback);
+        if ($processName === '') {
+            return null;
+        }
+        // 精确作用域判否（含池空）⇒ 仍要看全流程作用域的最新一条（条款 1.4 后半句）。
+        // "本流程这条废了"不等于"我没委托"：Java 既有测试
+        // JdbcProcessExtRepositoryTest#testSurrogateCrudAndGet 钉的是「精确已过期 → 兜底全流程」。
+        $global = $this->newestSurrogateInScope($operator, '');
+        return SurrogateRule::isEffective($global, $operator, $at) ? $global : null;
+    }
+
+    /** 该授权人在指定流程作用域内 id 最大（最新）的一条委托；作用域内无记录返回 null。
+     *  $processName 为 '' 表示"全流程委托"作用域（process_name 为 NULL/''）。
+     *  SQL 已按 id 倒序，仍过一遍 `pickLatest` 用数值序比较器兜底（id 列为 TEXT 时
+     *  `ORDER BY id DESC` 是字典序，长度不同的雪花 id 会排错）。 */
+    private function newestSurrogateInScope(string $operator, string $processName): ?array
+    {
+        $sql = 'SELECT * FROM wf_process_surrogate WHERE operator = ?';
+        $params = [$operator];
+        if ($processName !== '') {
+            $sql .= ' AND process_name = ?';
+            $params[] = $processName;
+        } else {
+            $sql .= " AND (process_name IS NULL OR process_name = '')";
+        }
+        $sql .= ' ORDER BY id DESC';
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
+        return $rows === [] ? null : SurrogateRule::pickLatest($rows);
     }
 
     public function saveSurrogate(array $surrogate): string
