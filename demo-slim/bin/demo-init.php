@@ -22,6 +22,7 @@ require __DIR__ . '/seed-business.php'; // T003：业务数据种子 driver
 use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
+use Jeeflow\Core\Spi\UserProviderInterface;
 use Jeeflow\Demo\RepositoryFactory;
 use Jeeflow\WebContract\JeeflowFacade;
 
@@ -62,6 +63,9 @@ $repo = RepositoryFactory::createProcessRepository();
 $extRepo = RepositoryFactory::createProcessExtRepository();
 $engine = new JeeflowEngine($repo);
 $facade = new JeeflowFacade($engine, $repo, $extRepo);
+
+// issues/124：种子路径同样注册用户 SPI——种子的实例标题/变量也要带真名
+ServiceContext::put(UserProviderInterface::class, new \Jeeflow\Demo\DemoUserProvider());
 
 // 注入事务模板
 if ($mode === RepositoryFactory::MODE_MEMORY) {
