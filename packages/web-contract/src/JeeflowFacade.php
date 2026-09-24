@@ -319,7 +319,8 @@ class JeeflowFacade
             'parentNodeName' => $inst->getParentNodeName(),
             'businessNo' => $inst->getBusinessNo(),
             'operator' => $inst->getOperator(),
-            'variables' => $inst->getVariables()->toArray() ?: (object)[],
+            // issues/124：变量唯一对外出口是 ext，variables 全集不进契约；空变量出 {} 而非 null
+            'ext' => $inst->getVariables()->toArray() ?: (object)[],
             'formData' => $this->formDataOf($inst->getVariables()->toArray(), FlowConst::FORM_DATA_PREFIX),
             'createTime' => $inst->getCreateTime(),
             'createUser' => $inst->getCreateUser(),
@@ -823,8 +824,7 @@ class JeeflowFacade
                 'taskState' => $t->getTaskState(),
                 'operator' => $t->getActorId(),
                 'finishTime' => $t->getFinishTime(),
-                'variable' => $t->getVariables()->toArray() ?: (object)[],
-                'ext' => $t->getVariables()->toArray() ?: (object)[],
+                'ext' => $t->getVariables()->toArray() ?: (object)[], // issues/124：variable 原串出口下线
             ];
         }
         return $this->ok($rows);

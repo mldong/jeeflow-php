@@ -235,8 +235,7 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'parentNodeName' => $row['parent_node_name'],
                 'businessNo' => $row['business_no'],
                 'operator' => $row['operator'] ?? '',
-                'variable' => json_decode((string)($row['variable'] ?? '{}'), true) ?: (object)[],
-                'ext' => json_decode((string)($row['variable'] ?? '{}'), true) ?: (object)[],
+                'ext' => json_decode((string)($row['variable'] ?? '{}'), true) ?: (object)[], // issues/124：variable 原串出口下线
                 'createTime' => $row['create_time'],
                 'createUser' => PdoValue::strId($row['create_user']),
                 'updateTime' => $row['update_time'],

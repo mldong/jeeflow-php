@@ -8,7 +8,7 @@ declare(strict_types=1);
  * 矩阵 = 八语言共用 canonical（day-shift 已在 Rust demo 实测全绿，照 rust seed_business.rs 移植）：
  * 16 进行中(state=10) + 9 已完成(advance 推到 state=20) + 8 委托。
  * 8 用户 × 5 菜单（待办/已办/发起/抄送/委托）全覆盖。
- * 注：PHP demo 无 UserProvider/OrgUserProvider——矩阵只用 applicant/字面量/变量注入，不触发 org 查询。
+ * 注：PHP demo 注册 DemoUserProvider（issues/124：u_* 变量族与标题真名的来源）；矩阵只用 applicant/字面量/变量注入，不触发 org 查询。
  */
 
 use Jeeflow\WebContract\JeeflowFacade;

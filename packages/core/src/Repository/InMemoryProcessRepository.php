@@ -350,8 +350,7 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
             'parentNodeName' => $inst->getParentNodeName(),
             'businessNo' => $inst->getBusinessNo(),
             'operator' => $inst->getOperator(),
-            'variable' => $inst->getVariables()->toArray() ?: (object)[],
-            'ext' => $inst->getVariables()->toArray() ?: (object)[],
+            'ext' => $inst->getVariables()->toArray() ?: (object)[], // issues/124：variable 原串出口下线
             'createTime' => $inst->getCreateTime(),
             'createUser' => $inst->getCreateUser(),
             'updateTime' => $inst->getUpdateTime(),
@@ -382,8 +381,7 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
             'formKey' => $task->getFormKey(),
             'taskParentId' => $task->getParentTaskId(),
             'taskActorIdList' => $task->getActorIds(),
-            'variable' => $task->getVariables()->toArray() ?: (object)[],
-            'ext' => $ext ?: (object)[],
+            'ext' => $ext ?: (object)[], // issues/124：variable 原串出口下线
             'instanceExt' => $instanceExt ?: (object)[],
             'taskFormData' => (object)[],
             'finishTime' => $task->getFinishTime(),

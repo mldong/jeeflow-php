@@ -56,6 +56,9 @@ if ($mode === RepositoryFactory::MODE_MEMORY) {
     });
 }
 
+// issues/124：注册用户 SPI——发起时注入 u_* 变量族与 autoGenTitle 真名
+ServiceContext::put(\Jeeflow\Core\Spi\UserProviderInterface::class, new \Jeeflow\Demo\DemoUserProvider());
+
 // ── Slim App ──
 
 $app = AppFactory::create();

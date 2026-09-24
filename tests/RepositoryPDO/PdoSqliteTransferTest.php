@@ -202,7 +202,7 @@ SQL);
         $this->assertCount(0, $this->facade->flow('processTask/todoList', ['operator' => 'leader'])['data']['rows'],
             'PDO 路：A 的待办应消失');
 
-        // 审批记录（PDO 路 ext 取实例变量，账本仍可在 variable 出口读到）
+        // 审批记录（issues/124：variable 原串出口下线，账本走 ext）
         $rec = $this->facade->flow('processInstance/approvalRecord', ['id' => $instanceId]);
         $this->assertSame(0, $rec['code'], json_encode($rec, JSON_UNESCAPED_UNICODE));
         $line = null;
@@ -210,9 +210,9 @@ SQL);
             if (($l['taskName'] ?? '') === 'task1') $line = $l;
         }
         $this->assertNotNull($line);
-        $this->assertSame(7, $line['variable']['submitType'] ?? null,
-            'PDO 路 approvalRecord.variable 应读作 submitType=7');
-        $this->assertCount(1, $line['variable']['tf_transferHistory'] ?? []);
+        $this->assertSame(7, $line['ext']['submitType'] ?? null,
+            'PDO 路 approvalRecord.ext 应读作 submitType=7');
+        $this->assertCount(1, $line['ext']['tf_transferHistory'] ?? []);
     }
 
     /** 转办 → 撤回：PDO 路任务态落 30、update_user 回写，且 leader 的 doneList 不凭空多单 */
