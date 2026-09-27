@@ -484,8 +484,8 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'processDefineName' => $row['process_define_name'] ?? null,
                 'version' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
                 'operator' => PdoValue::strId($row['instance_operator'] ?? null),
-                'ext' => $instanceExt ?? (object)[],
-                'instanceExt' => $instanceExt ?? (object)[],
+                'ext' => ($instanceExt ?? []) ?: (object)[],
+                'instanceExt' => ($instanceExt ?? []) ?: (object)[],
             ];
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
@@ -650,6 +650,15 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 $decoded = json_decode($instanceVarJson, true);
                 $instanceExt = is_array($decoded) ? $decoded : null;
             }
+            // issues/124：列表行的变量出口只有 ext（任务变量）与 instanceExt（实例变量）。
+            // 此处曾是 php 最后一处漏网：门面侧 988b7ee 摘掉了 detail 族的 variable/variables，
+            // 但 todoList/doneList 这类行由仓储直接投影，不经门面，故仍带原串
+            // （线上 php 栈 doneList 每行 variable + instanceVariable，八栈同 action 只有它有）。
+            // 判据基准取 Java JeeflowFacade.taskRowToMap 与本仓内存仓 taskToRow，两处同形。
+            $ext = $task->getVariables()->toArray();
+            // issues/121 P1：引擎建单必写的控制键不算「任务变量非空」，否则新建任务的 ext
+            // 永远不再回退实例变量（issues/82-3 既有契约）——与内存仓同一判据。
+            if (array_diff_key($ext, ['isFirstTaskNode' => 1]) === []) $ext = $instanceExt ?? [];
             $rows[] = [
                 'id' => $task->getTaskId(),
                 'processInstanceId' => $task->getProcessInstanceId(),
@@ -662,9 +671,8 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'formKey' => $task->getFormKey(),
                 'taskParentId' => $task->getParentTaskId(),
                 'taskActorIdList' => $task->getActorIds(),
-                'variable' => $task->getVariables()->toArray() ?: (object)[],
-                'ext' => $instanceExt ?? (object)[],
-                'instanceExt' => $instanceExt ?? (object)[],
+                'ext' => $ext ?: (object)[],
+                'instanceExt' => ($instanceExt ?? []) ?: (object)[],
                 'taskFormData' => (object)[],
                 'finishTime' => $task->getFinishTime(),
                 'expireTime' => $task->getExpireTime(),
@@ -676,7 +684,6 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'processDefineName' => $row['process_define_name'] ?? null,
                 'processDefineDisplayName' => $row['process_define_display_name'] ?? null,
                 'version' => $row['process_define_version'] ?? null,
-                'instanceVariable' => $instanceVarJson,
                 'instanceCreateTime' => $row['instance_create_time'] ?? null,
             ];
         }
