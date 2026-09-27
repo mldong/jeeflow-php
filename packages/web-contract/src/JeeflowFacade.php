@@ -188,7 +188,8 @@ class JeeflowFacade
     private function startAndExecute(array $args): array
     {
         $defineId = $this->toStr($args[FlowConst::PROCESS_DEFINE_ID_KEY] ?? '');
-        $operator = $this->toStr($args['operator'] ?? 'user1');
+        // issues/129：空串与缺键同档，一律走 operatorOf 归一（旧 `?? 'user1'` 只兜 unset/null）
+        $operator = $this->operatorOf($args);
 
         $flowArgs = FlowData::create();
         foreach ($args as $k => $v) {
@@ -279,7 +280,8 @@ class JeeflowFacade
     private function instancePage(array $args): array
     {
         $query = $this->queryParser->parse($args);
-        $userId = $this->toStr($args['operator'] ?? 'user1');
+        // issues/129：归属谓词「我发起的」——`{"operator":""}` 视同未传，回落缺省 user1
+        $userId = $this->operatorOf($args);
         $query->add('t.operator', 'EQ', $userId);
         $page = $this->repository->pageInstances($query);
         return $this->pageResult($page);
@@ -397,7 +399,8 @@ class JeeflowFacade
     private function todoList(array $args): array
     {
         $query = $this->queryParser->parse($args);
-        $userId = $this->toStr($args['operator'] ?? 'user1');
+        // issues/129：归属谓词「我参与（未办结）」——空串视同未传，回落缺省 user1
+        $userId = $this->operatorOf($args);
         $query->add('pta.actor_id', 'EQ', $userId);
         $page = $this->repository->pageTodoTasks($query);
         return $this->pageResult($page);
@@ -406,7 +409,8 @@ class JeeflowFacade
     private function doneList(array $args): array
     {
         $query = $this->queryParser->parse($args);
-        $userId = $this->toStr($args['operator'] ?? 'user1');
+        // issues/129：归属谓词「我已办」——空串视同未传，回落缺省 user1
+        $userId = $this->operatorOf($args);
         $query->add('t.operator', 'EQ', $userId);
         $page = $this->repository->pageDoneTasks($query);
         return $this->pageResult($page);
@@ -415,7 +419,8 @@ class JeeflowFacade
     private function execute(array $args): array
     {
         $taskId = $this->toStr($args[FlowConst::PROCESS_TASK_ID_KEY] ?? '');
-        $operator = $this->toStr($args['operator'] ?? 'user1');
+        // issues/129：办理人同样按「空串与缺键同档」归一，避免空串被当成真实办理人写进任务
+        $operator = $this->operatorOf($args);
         $submitType = (int) ($args[FlowConst::SUBMIT_TYPE] ?? SubmitType::AGREE);
 
         $flowArgs = FlowData::create();
@@ -874,7 +879,8 @@ class JeeflowFacade
     private function ccList(array $args): array
     {
         $query = $this->queryParser->parse($args);
-        $userId = $this->toStr($args['operator'] ?? 'user1');
+        // issues/129：归属谓词「抄送我的」——空串视同未传，回落缺省 user1
+        $userId = $this->operatorOf($args);
         $query->add('t.actor_id', 'EQ', $userId);
         $page = $this->repository->pageCcInstances($query);
         return $this->pageResult($page);
@@ -1876,12 +1882,28 @@ class JeeflowFacade
         return [$single];
     }
 
-    // 操作人兜底（对齐 Java toStr(args.get("operator"), "user1")）
+    /**
+     * 操作人归一 —— 空串与缺键同档（issues/129 · spec 06-facade.md §2.5）
+     *
+     * 逐字对齐 Java `JeeflowFacade.operatorArg`：`{"operator":""}`（含全空白串）视同未传，
+     * 与 unset/null 一并回落到 demo 缺省 `user1`。
+     *
+     * 修前的形状：本方法曾是 `array_key_exists && !== null ? toStr(...) : 'user1'`，
+     * 内联点又用 `$args['operator'] ?? 'user1'`——`??` 只在 unset/null 时兜底，
+     * **显式空串原样穿过**。而本栈仓储没有"空值 ⇒ 这条条件不加"的通用放行
+     * （{@see PdoProcessRepository::buildConditions()} 逐条拼 `AND col = ?`，
+     * {@see InMemoryProcessRepository::matchCondition()} 直接按值比对），
+     * 于是空串被当成**真实归属值**去比对 ⇒ 症状不是 java/go/node/python/csharp 那五栈的
+     * "读全库"，而是"我的列表悄悄变 0 行"（160 同库同时刻三档并排探针：
+     * operator=user1 ⇒ 4 行 / operator="" ⇒ 0 行 / operator=__nobody__ ⇒ 0 行）。
+     *
+     * ⚠️ 本方法**不**用于 issues/114 的「operator 硬必填」出口（withdraw 族、transfer 族，
+     * 见 {@see self::withdraw()}）——那里空串必须报错，严禁缺省回落，是另一条契约。
+     */
     private function operatorOf(array $args): string
     {
-        return array_key_exists('operator', $args) && $args['operator'] !== null
-            ? $this->toStr($args['operator'])
-            : 'user1';
+        $operator = trim($this->toStr($args['operator'] ?? null));
+        return $operator !== '' ? $operator : 'user1';
     }
 
     /** 委托写入公共字段。授权人（operator）仅在显式传入时覆盖，避免 update 时清空原授权人 */
