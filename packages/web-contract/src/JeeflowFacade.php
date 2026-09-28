@@ -352,7 +352,10 @@ class JeeflowFacade
         if ($inst === null) return $this->error('流程实例不存在');
         if (!$this->canWithdraw($inst, $operator)) return $this->error('无权限撤回该流程实例');
         // 聚合根置态：仅进行中任务 → 30（已完成 20 / 已终止 40 / 已废弃 99 行不改写），
-        // 实例与被撤任务的 update_user 一并回写为真实撤回人
+        // 实例与被撤任务的 update_user 一并回写为真实撤回人。
+        // issues/134 案 A：实例状态守卫就在聚合根 withdraw 里（state≠10 ⇒ 抛 20010009 固定文案），
+        // 这一句排在下面 updateInstance **之前**且中间无任何改写 ⇒ 被拒时实例与任务行一行都不动、
+        // 也不落库；出口由 flow() 的 catch 统一成 code=99999999 + msg 逐字（码值不进 msg，121 口径）。
         $inst->withdraw($operator);
         // updateInstance 级联落库（PDO 仓内部逐任务 updateTask；内存仓与聚合共享对象引用）
         $this->repository->updateInstance($inst);

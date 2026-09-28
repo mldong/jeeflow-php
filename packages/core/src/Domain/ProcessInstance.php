@@ -116,9 +116,23 @@ class ProcessInstance
      * 撤回整单（issues/113/114）：实例与**全部进行中任务**置 WITHDRAW(30)，
      * 已完成(20)/已终止(40)/已废弃(99) 任务行不被改写；实例与被撤任务的
      * update_user 都回写为真实撤回人（鉴权在门面，见 JeeflowFacade::withdraw）。
+     *
+     * issues/134 案 A（owner 2026-09-28 拍板 A，八栈同判据）：撤回只允许作用于**进行中(10)** 的实例。
+     * 实例不是 10（已完成 20 / 已撤回 30 / 强行终止 40 / 已拒绝 45 / 挂起 50 / 已废弃 99）⇒ 抛内部码
+     * 20010009，**一行都不改、不落库**——守卫排在下面的任务行循环**之前**，否则已办结实例会被静默
+     * 改写成 30（已办列表 / 按状态聚合的统计凭空改历史，且用户看不到任何报错，本案病灶）。
+     * 任务行层面那句「已完成(20)/已终止(40) 行不改写」的既有保护保持原样，实例级守卫排在它之前。
+     * 出口按 issues/121 口径：门面 flow() 吞内部码 ⇒ code=99999999 ＋ msg 逐字固定文案，码值不进 msg。
+     *
+     * @throws JeeflowException 20010009 实例非进行中——本栈沿用 20010007/20010008 的形状
+     *                          （码进注释、msg 只出固定中文文案，见 {@see self::rejectTask()}）；
+     *                          对齐 Java WfErrEnum.WITHDRAW_INSTANCE_NOT_DOING
      */
     public function withdraw(string $operator): void
     {
+        if ($this->state !== ProcessInstanceState::DOING) {
+            throw new JeeflowException('流程实例非进行中，无法撤回');
+        }
         foreach ($this->tasks as $task) {
             if ($task->isDoing()) {
                 $task->withdraw($operator);
