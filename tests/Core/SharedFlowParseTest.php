@@ -15,6 +15,13 @@ use PHPUnit\Framework\TestCase;
  */
 class SharedFlowParseTest extends TestCase
 {
+    /** 必须存在的共享流程（新增夹具时往这里点名，不维护总数） */
+    public static array $requiredFlows = [
+        '06-countersign-sequential.json',
+        '13-countersign-one-vote-veto.json',
+        '06-countersign-sequential-expire.json',
+    ];
+
     private static string $flowsDir;
 
     public static function setUpBeforeClass(): void
@@ -64,13 +71,15 @@ class SharedFlowParseTest extends TestCase
         return $cases;
     }
 
-    public function testAllFlowsCountIs16(): void
+    /**
+     * 必备夹具点名核对——**故意不数总份数**：总数会随每次新增共享流程漂移，改忘一次就是一条
+     * 与契约无关的红（owner 2026-09-28：测试用例别写具体数字）。点名要什么，就只判什么在不在。
+     */
+    public function testRequiredSharedFlowsArePresent(): void
     {
-        $files = glob(self::$flowsDir . '/*.json');
-        $this->assertNotFalse($files);
-        // issues/91：新增 13-countersign-one-vote-veto.json → 共享流程 15 个
-        // issues/126：新增 06-countersign-sequential-expire.json（只给 task1 配 expireTime=2h 的
-        // 串行会签夹具，供各栈"推进出的第二成员也要带到期时间"那一格用）→ 共享流程 16 个
-        $this->assertCount(16, $files, '应有 16 个共享流程定义');
+        $present = array_map('basename', glob(self::$flowsDir . '/*.json') ?: []);
+        foreach (self::$requiredFlows as $need) {
+            $this->assertContains($need, $present, "共享流程夹具缺失：{$need}（flows 副本落后于 java 编辑源）");
+        }
     }
 }
