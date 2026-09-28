@@ -64,11 +64,13 @@ class SharedFlowParseTest extends TestCase
         return $cases;
     }
 
-    public function testAllFlowsCountIs15(): void
+    public function testAllFlowsCountIs16(): void
     {
         $files = glob(self::$flowsDir . '/*.json');
         $this->assertNotFalse($files);
         // issues/91：新增 13-countersign-one-vote-veto.json → 共享流程 15 个
-        $this->assertCount(15, $files, '应有 15 个共享流程定义');
+        // issues/126：新增 06-countersign-sequential-expire.json（只给 task1 配 expireTime=2h 的
+        // 串行会签夹具，供各栈"推进出的第二成员也要带到期时间"那一格用）→ 共享流程 16 个
+        $this->assertCount(16, $files, '应有 16 个共享流程定义');
     }
 }

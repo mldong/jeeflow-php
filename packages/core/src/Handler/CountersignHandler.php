@@ -156,6 +156,11 @@ class CountersignHandler implements HandlerInterface
         $next->getVariables()->set(FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $node, $operatorList);
         $next->getVariables()->set(FlowConst::LOOP_COUNTER . '_' . $node, $nextLoopCounter);
         $next->getVariables()->set(FlowConst::NR_OF_INSTANCES . '_' . $node, $total);
+        // issues/126 案 A · 第五处写点：本支绕过 ProcessInstance::createTask 直建任务行，
+        // 必须显式上同一把尺子——基准侧 boot2 的串行推进是回调 createCountersignTask
+        // （ProcessTaskServiceImpl:485，内含 :524 那处到期写），不补就是"首成员有到期、推进出的
+        // 第二三位没有"。
+        $instance->applyNodeExpireTime($next, $tm);
         $tasks = $instance->getTasks();
         $tasks[] = $next;
         $instance->setTasks($tasks);

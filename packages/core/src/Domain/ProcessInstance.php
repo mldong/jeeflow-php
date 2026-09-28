@@ -12,6 +12,7 @@ use Jeeflow\Core\JeeflowException;
 use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
+use Jeeflow\Core\Util\FlowUtil;
 
 /**
  * 流程实例 —— DDD 聚合根（充血模型）
@@ -135,18 +136,59 @@ class ProcessInstance
     }
 
     /**
+     * issues/126 案 A（基准＝boot2 内置版 `ProcessTaskServiceImpl` 的三处写：:213 普通建单 /
+     * :386 回退新建 / :524 会签建单）：任务行的到期时间在**建单那一刻**按节点表达式真算，
+     * 求值语义逐字取 {@link FlowUtil::processTime()}。
+     *
+     * 本栈原形状只在 {@code JeeflowEngine::startProcessInstanceById} 把**定义级** expireTime 原串
+     * 搬到实例列（注释自承"简化：不处理变量替换"），任务行那一列从来没人工过 ⇒ 配了到期表达式的
+     * 节点建单即"无到期"，逾期类统计（overdueTaskCount / onTimeRate）在常规流上恒失真。
+     *
+     * 赋值规则（owner 2026-09-28 明确：**节点没配就保持 NULL，不造默认值**）：
+     * expr 为 null 或去空白后为空 ⇒ 不动这一列（不写 now()、不写 ''、不写 0）；否则按表达式算。
+     *
+     * @param string|null   $expr 节点上配的到期表达式（本栈模型未配＝''，与 Java 的 null 同档）
+     * @param FlowData|null $args 变量源：建单三处＝实例变量（boot2 的 execution.getArgs()）；
+     *                            回退新建＝随行拷贝那份变量（boot2 的 hisVariable）
+     */
+    private static function applyExpireTime(?ProcessTask $task, ?string $expr, ?FlowData $args): void
+    {
+        if ($task === null || $expr === null || trim($expr) === '') {
+            return;
+        }
+        $task->setExpireTime(FlowUtil::processTime($expr, $args ?? FlowData::create()));
+    }
+
+    /**
+     * 供处理器在"绕过 {@see self::createTask()} 直建任务行"的路径上补同一把尺子——issues/126 §1.8
+     * 点名的**第五处写点**：串行会签推进出的下一位成员（`CountersignHandler::createNextCountersignTask`）。
+     * 基准侧 boot2 的串行推进是回调 `createCountersignTask`（`ProcessTaskServiceImpl:485`，
+     * 内含 :524 那处到期写）⇒ 基准形状里"推进新建的那一位"同样带到期时间；不补就是"首成员有、后续没有"。
+     * 变量源＝实例变量（与本栈建单三处同档，对齐 Java `applyNodeExpireTime`）。
+     */
+    public function applyNodeExpireTime(ProcessTask $task, TaskModel $taskModel): void
+    {
+        self::applyExpireTime($task, $taskModel->getExpireTime(), $this->variables);
+    }
+
+    /**
      * 创建普通任务
      * @param string[] $actorIds
+     * @param string|null $expireExpr 节点到期表达式（issues/126 案 A · 第一处写点）；
+     *                                未配/不关心时留空 ⇒ 这一列保持 NULL
      */
     public function createTask(string $taskName, string $displayName, ?int $taskType,
                                 ?int $performType, ?string $formKey, array $actorIds, string $operator,
-                                ?string $parentTaskId = null, bool $isFirstTaskNode = false): ProcessTask
+                                ?string $parentTaskId = null, bool $isFirstTaskNode = false,
+                                ?string $expireExpr = null): ProcessTask
     {
         $task = ProcessTask::create(
             $this->instanceId, $taskName, $displayName,
             $taskType, $performType, $formKey, $actorIds, $operator,
             $parentTaskId, $isFirstTaskNode
         );
+        // issues/126 案 A 第一处写点：普通建单，变量源＝实例变量
+        self::applyExpireTime($task, $expireExpr, $this->variables);
         $this->tasks[] = $task;
         return $task;
     }
@@ -161,12 +203,15 @@ class ProcessInstance
      * PARALLEL / 未配置类型保持全员预创建。
      *
      * @param string[] $actorIds
+     * @param string|null $expireExpr 节点到期表达式（issues/126 案 A · 第二/三处写点：
+     *                                串行首位与并行全员各自都要算，变量源＝实例变量）
      * @return ProcessTask[]
      */
     public function createCountersignTasks(string $taskName, string $displayName, ?int $taskType,
                                             ?int $performType, ?string $formKey, array $actorIds,
                                             string $operator, ?int $countersignType = null,
-                                            ?string $parentTaskId = null, bool $isFirstTaskNode = false): array
+                                            ?string $parentTaskId = null, bool $isFirstTaskNode = false,
+                                            ?string $expireExpr = null): array
     {
         // 串行会签逐个创建（issues/93）：仅建首位 + 记录任务变量
         if ($countersignType === CountersignType::SERIAL) {
@@ -178,6 +223,8 @@ class ProcessInstance
             $first->getVariables()->set(FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $taskName, $actorIds);
             $first->getVariables()->set(FlowConst::LOOP_COUNTER . '_' . $taskName, 0);
             $first->getVariables()->set(FlowConst::NR_OF_INSTANCES . '_' . $taskName, count($actorIds));
+            // issues/126 案 A 第二处写点：串行会签首位成员
+            self::applyExpireTime($first, $expireExpr, $this->variables);
             $this->tasks[] = $first;
             return [$first];
         }
@@ -188,6 +235,8 @@ class ProcessInstance
                 $taskType, $performType, $formKey, [$actorId], $operator,
                 $parentTaskId, $isFirstTaskNode
             );
+            // issues/126 案 A 第三处写点：并行会签全员（每人一行，各自按同一表达式算）
+            self::applyExpireTime($task, $expireExpr, $this->variables);
             $this->tasks[] = $task;
             $list[] = $task;
         }
@@ -238,8 +287,17 @@ class ProcessInstance
             // parent 随行拷贝＝"上一步的上一步"，与 mldong-boot2 一致
             $history->getParentTaskId(),
             $isFirstRow
+            // 注意：**不**在这里传 expireExpr —— 回退新建的变量源是随行拷贝那份（boot2 的
+            // hisVariable），与建单三处的实例变量是两档；混用会让"表达式是个变量名"这一档跨栈得到
+            // 不同答案。到期时间在下面 setVariables 之后按 $vars 单独算（issues/126 第四处写点）。
         );
-        $newTask->setVariables(self::lineageVars($hisVars, $isFirstRow));
+        $vars = self::lineageVars($hisVars, $isFirstRow);
+        $newTask->setVariables($vars);
+        // issues/126 案 A 第四处写点：到期时间按"被回退掉的那个"节点（＝当前节点）的表达式**重算**，
+        // 同 mldong-boot2:386；不是继承被回退行的 expire_time
+        if ($current instanceof TaskModel) {
+            self::applyExpireTime($newTask, $current->getExpireTime(), $vars);
+        }
         return $newTask;
     }
 

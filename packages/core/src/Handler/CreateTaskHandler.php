@@ -48,7 +48,9 @@ class CreateTaskHandler implements HandlerInterface
                 $operator,
                 $this->taskModel->getCountersignType(),
                 // 建单不变量：parent＝本 execution 刚办结的任务；发起时为 null ⇒ 工厂落 '0'
-                $execution->getProcessTaskId(), $isFirstTaskNode
+                $execution->getProcessTaskId(), $isFirstTaskNode,
+                // issues/126 案 A：节点到期表达式随建单一起交给聚合根（串行首位 / 并行全员两档）
+                $this->taskModel->getExpireTime()
             );
         } else {
             $task = $instance->createTask(
@@ -59,7 +61,9 @@ class CreateTaskHandler implements HandlerInterface
                 $this->taskModel->getForm() ?: null,
                 $actors,
                 $operator,
-                $execution->getProcessTaskId(), $isFirstTaskNode
+                $execution->getProcessTaskId(), $isFirstTaskNode,
+                // issues/126 案 A：普通建单按节点表达式算任务行 expire_time
+                $this->taskModel->getExpireTime()
             );
             $tasks = [$task];
         }

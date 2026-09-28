@@ -19,6 +19,131 @@ final class FlowUtil
     public const PERMISSION_PREFIX = 'PERMISSION_';
     public const PERM_EDIT = 2;
 
+    /** 本栈日期时间落库格式（与 ProcessTask::create 写 create_time 的 `date()` 同档） */
+    private const DATETIME_FORMAT = 'Y-m-d H:i:s';
+
+    /**
+     * 解析期待完成时间（issues/126 案 A，逐字对齐 Java `FlowUtil.processTime` /
+     * C# `FlowUtil.ProcessTime`）——三档，**顺序不能变**：
+     *
+     *  1. **变量档**：`args` 里存在**键名等于 expr 原串**的项 ⇒ 用该项的值
+     *     （DateTimeInterface / 毫秒整数时间戳 / "Y-m-d H:i:s" 字符串；字符串解析失败 ⇒ null）。
+     *     值为其它类型（bool / float / array / object）⇒ **落穿**继续走第 2、3 档。
+     *  2. **相对档**：expr 以 `s|m|h|d` 结尾且前缀是整数 ⇒ now + N 秒/分/时/天
+     *     （`d` 走日历加天，不乘 86400 秒）。
+     *  3. **绝对档**：把 expr 本身按 "Y-m-d H:i:s" 解析 ⇒ 时刻；失败 ⇒ null。
+     *
+     * 三条**故意的**实现取舍（都不是随手写的）：
+     *  - 相对档前缀不是整数（节点误配成 `xh`）时**落穿**到绝对档、最终多为 null，
+     *    而不是像 Java 那样 `Integer.parseInt` 抛异常打断建单——本轮八栈统一按 C# 的
+     *    `int.TryParse` 落穿口径（配置写错不该让流程卡死）；要改成"跟 Java 一样抛"必须八栈同批改。
+     *  - 解析失败一律返回 **null**（这一列留空），**绝不退回 now()**——那正是 issues/126 病灶的形状。
+     *  - 变量档命中但值类型不认识时是"落穿"，不是"提前 return null"（与 Java/C# 同）。
+     *
+     * 取时来源与本栈写 `create_time` 同一来源（PHP 默认时区，秒级精度）；本栈 `date.timezone`
+     * 未设是**另一条已知遗留（120-C）**，不在本轮范围，别在这里顺手改。
+     *
+     * @param string|null   $expr 节点配的到期表达式；null/去空白后为空 ⇒ 返回 null（列留空）
+     * @param FlowData|null $args 变量源（建单＝实例变量；回退新建＝随行拷贝那份）
+     * @return string|null "Y-m-d H:i:s"；null ⇒ 这一列保持 NULL
+     */
+    public static function processTime(?string $expr, ?FlowData $args = null): ?string
+    {
+        if ($expr === null) {
+            return null;
+        }
+        $args ??= FlowData::create();
+
+        // ── 第 1 档：变量档（优先于相对档——args 里真有个键叫 "2h" 时取变量值） ──
+        if ($args->has($expr)) {
+            $v = $args->get($expr);
+            if ($v instanceof \DateTimeInterface) {
+                return $v->format(self::DATETIME_FORMAT);
+            }
+            // 毫秒时间戳：只认 int（PHP 无 Java 的 Long/Integer 之分，JSON 大整数解出 float 时按"类型不认识"落穿）
+            // 秒级 floor：本栈 datetime 列是秒精度，与 Java 落库时的精度一致
+            if (is_int($v)) {
+                return self::fromEpochSeconds(intdiv($v, 1000));
+            }
+            if (is_string($v)) {
+                // 解析失败 ⇒ null（**返回**，不落穿；对齐 Java/C# 的字符串分支）
+                return self::parseAbsolute($v);
+            }
+            // 其它类型 ⇒ 落穿
+        }
+
+        if (trim($expr) === '') {
+            return null;
+        }
+
+        // ── 第 2 档：相对档（后缀大小写敏感，与 Java endsWith("s") 逐字一致） ──
+        $unit = substr($expr, -1);
+        $offset = ['s' => 1, 'm' => 60, 'h' => 3600][$unit] ?? null;
+        if ($offset !== null) {
+            $n = self::tryInt(substr($expr, 0, -1));
+            if ($n !== null) {
+                return self::fromEpochSeconds(time() + $n * $offset);
+            }
+            // 前缀非整数 ⇒ 落穿到绝对档（见方法注释的"故意的"取舍）
+        } elseif ($unit === 'd') {
+            $n = self::tryInt(substr($expr, 0, -1));
+            if ($n !== null) {
+                // 日历加天（对齐 Java Calendar.add(DAY_OF_MONTH)，不乘 86400 秒）
+                return self::now()->modify(sprintf('%+d days', $n))->format(self::DATETIME_FORMAT);
+            }
+        }
+
+        // ── 第 3 档：绝对档 ──
+        return self::parseAbsolute($expr);
+    }
+
+    /** 本栈取时来源（与 ProcessTask::create 的 `date('Y-m-d H:i:s')` 同一时钟/同一时区） */
+    private static function now(): \DateTimeImmutable
+    {
+        return self::fromEpoch(time());
+    }
+
+    private static function fromEpochSeconds(int $epochSeconds): string
+    {
+        return self::fromEpoch($epochSeconds)->format(self::DATETIME_FORMAT);
+    }
+
+    /** Unix 秒 → 本地时区墙钟（对齐 Java `toLocalDateTime(new Date(ms))` 的转本地时区一档） */
+    private static function fromEpoch(int $epochSeconds): \DateTimeImmutable
+    {
+        return (new \DateTimeImmutable('@' . $epochSeconds))
+            ->setTimezone(new \DateTimeZone(date_default_timezone_get()));
+    }
+
+    /**
+     * 相对档前缀整数判定（落穿式，不抛）。位宽超 int 视同"解析不出"，
+     * 与 C# `int.TryParse` 对溢出返回 false 同档。
+     */
+    private static function tryInt(string $s): ?int
+    {
+        return preg_match('/^[+-]?\d{1,18}$/', $s) === 1 ? (int) $s : null;
+    }
+
+    /**
+     * 严格 "Y-m-d H:i:s" 解析（对齐 C# `DateTime.TryParseExact`）：
+     * 字段缺失/多余尾串/越界（如 13 月）一律算解析不出 ⇒ null。
+     * ⚠️ 这里比 Java 的 `SimpleDateFormat`（lenient，会把 "2026-13-45" 滚成 2027-02-18）严格，
+     * 与本轮统一的 C# 口径一致：误配留空，不造一个谁都没要的时刻。
+     */
+    private static function parseAbsolute(string $text): ?string
+    {
+        $d = \DateTimeImmutable::createFromFormat('!' . self::DATETIME_FORMAT, $text);
+        if ($d === false) {
+            return null;
+        }
+        $errors = \DateTimeImmutable::getLastErrors();
+        if ($errors !== false
+            && (($errors['error_count'] ?? 0) > 0 || ($errors['warning_count'] ?? 0) > 0)) {
+            return null;
+        }
+        return $d->format(self::DATETIME_FORMAT);
+    }
+
     /**
      * 注入发起人用户信息到流程变量（对齐 Java FlowUtil.addUserInfoToArgs）
      *
