@@ -25,8 +25,16 @@ namespace Jeeflow\Core\Util;
  *    才查 `process_name` 为 NULL/''；精确作用域里有记录就由它裁决）；
  * 2. 时间窗 `start_time <= now <= end_time`，**一侧为 NULL/空即该侧不限**；
  * 3. 自委托过滤 `surrogate <> operator`（自己委托给自己不生效）；
- * 4. `enabled` **只有 1 生效**，脏值（不可解析为整数）不得默认当启用
- *    ——PHP 既有方向 `(int)'abc'` → 0 即停用，本类保持该方向；
+ * 4. `enabled` **只认整数 1**（issues/130 案 A，owner 拍板"只认整数 1，与 java 一致"）：
+ *    接受集合只有 `int 1` 一档，`'1'` / `1.0` / `true` 这类"等价写法"与 `0` / `2` / 脏值 / null
+ *    一律停用。八栈阵营以 Java `ProcessSurrogate#isEffective` 的
+ *    `Integer.valueOf(1).equals(enabled)` 为基准（Go / Rust / MoonBit / C# 同形）；
+ *    PHP 旧实现走 `(int)` 强转，属"宽"阵营（同阵营还有 Python / Node），本案收窄。
+ *    ⚠️ **默认方向不变**：脏值→停用是 `docs/spec/05-spi.md`「脏值默认方向」条款钉过的正确方向
+ *    （PHP `(int)'abc'`→0），与 C# `ToInt` 回落 1（启用）的相反默认明确区分——
+ *    本案只收窄**接受集合**，方向一字不改。
+ *    真整数列被驱动回读成字符串（PDO 缓冲/模拟预处理）由**仓储边界**先还原，见 {@link hydrateEnabled()}；
+ *    判据本身不吃串。
  * 5. （条款 1.4）多条并存时取**主键 id 最大**的那条来裁决，内存仓不得"取遍历到的首条"。
  *
  * 另有**写侧**判据 {@link normalizeEnabledArg()}（条款 5「写侧」：缺键→1、`''`/脏值→0 且不抛错），
@@ -35,22 +43,42 @@ namespace Jeeflow\Core\Util;
 final class SurrogateRule
 {
     /**
-     * 判据④：`enabled` 只有整数 1 生效，脏值不得当启用。
+     * 判据④：`enabled` **只有整数 1 生效**（issues/130 案 A）。
      *
-     * - `null` / `0` / 其它整数（含 2、-1）→ 停用；
-     * - 不可解析为整数的脏值（`'abc'` / `''`）→ 停用（对齐 PHP `(int)'abc'`→0 的既有方向，
-     *   与 C# `ToInt` 回落 1 的相反默认明确区分）；
-     * - `'1'` / `'1.0'` / `1.0` / `true` → 启用（对齐 SQL 侧 `enabled = 1` 的隐式转换）。
+     * 接受集合＝ `{int 1}` 一档，其余一律停用：
+     * - `null` / `0` / 其它整数（`2`、`-1`）→ 停用；
+     * - 字符串 `'1'` / `'1.0'` / `''` / `'abc'` → 停用（**不再 `(int)` 强转**，等价写法不吃；
+     *   方向与旧实现一致，`docs/spec/05-spi.md`「脏值默认方向」条款本来就要求脏值停用）；
+     * - 浮点 `1.0`、布尔 `true` → 停用（不因"值相等"被认成启用）。
+     *
+     * 对齐 Java `Integer.valueOf(1).equals(enabled)`，与 Go / Rust / MoonBit / C# 同阵营。
+     * ⚠️ 整数列被驱动字符串化（PDO 模拟预处理给 `'1'`）**不在这里放行**——那是驱动边界的活，
+     * 见 {@link hydrateEnabled()}；自定义 SPI 仓储传非整数则按本判据停用，须实现方自己先归一。
      */
     public static function isEnabled(mixed $value): bool
     {
-        if ($value === null) return false;
-        if (is_bool($value)) return $value;
-        if (is_int($value)) return $value === 1;
-        if (is_float($value)) return $value === 1.0;
-        $s = trim((string) $value);
-        if ($s === '' || !is_numeric($s)) return false;
-        return (int) $s === 1;
+        return is_int($value) && $value === 1;
+    }
+
+    /**
+     * **驱动边界**还原：把整数列被驱动字符串化后的形态换回 `int`，再交 {@link isEnabled()} 裁决。
+     *
+     * 为什么需要：`enabled` 在现网是 `INT`/`tinyint(1)`，而 PHP 的 PDO 在缓冲查询下
+     * （mysqlnd 默认行为；本仓 MySQL 套件显式 `ATTR_EMULATE_PREPARES => true`）**把数值列一律
+     * 回读成 PHP 字符串**。判据④只认整数之后，不在驱动边界还原就会让 MySQL 宿主的委托整体判废
+     * 且毫无告警（Java `rs.getInt`、Go `Scan(&int)`、C# `GetFieldValue<int>` 干的是同一件事）。
+     *
+     * ⚠️ 这不是把接受集合放宽回去：只认**规范整数串**（`-?(0|[1-9]\d*)`，无空格、无前导零、
+     * 无小数点），`'1.0'` / `' 1'` / `'01'` / `'abc'` / `'1abc'` 以及 `true` / `1.0` 一律原样返回，
+     * 由判据④判停用。调用点只允许在**内置 SQL 仓储**装行处（`PdoProcessExtRepository`）；
+     * 业务方自定义 SPI 仓储传非整数属 issues/130 §2 的分叉源，按案 A 由实现侧自行归一。
+     */
+    public static function hydrateEnabled(mixed $value): mixed
+    {
+        if (is_string($value) && preg_match('/^-?(0|[1-9]\d*)$/', $value) === 1) {
+            return (int) $value;
+        }
+        return $value;
     }
 
     /**
@@ -66,6 +94,9 @@ final class SurrogateRule
      * 与契约「不可解析为整数的脏值落 0」方向相反（Node 首版则是 `toInt` 直接抛错打成 500）。
      * 故先做 `is_numeric` 判定再转。落 0 的行读侧（{@link isEnabled}）必然查不到生效委托——
      * 两侧同一套语义，跨层对拍用例即钉这一点。
+     * ⚠️ 读侧判据④自 issues/130 案 A 起**只认整数 1**，本方法正是它能成立于门面的前提：
+     * `'1'` / `true` 这类等价写法在**写侧**就落成整数 1，读侧才照样认生效（归一只做一次，
+     * 且做在写入处，不做在读侧判据里）。
      */
     public static function normalizeEnabledArg(mixed $raw): int
     {
@@ -132,7 +163,7 @@ final class SurrogateRule
     public static function isEffective(?array $row, string $operator, ?string $at): bool
     {
         if ($row === null) return false;
-        if (!self::isEnabled($row['enabled'] ?? null)) return false;      // 只认 1；0/2/脏值/null 均不生效
+        if (!self::isEnabled($row['enabled'] ?? null)) return false;      // 只认整数 1；'1'/1.0/true/0/2/脏值/null 均不生效（issues/130 案 A）
         if (self::isSelfDelegation($operator, $row['surrogate'] ?? null)) return false; // 含代理人为空
         if ($at === null) return true;
         return self::inWindow($row['start_time'] ?? $row['startTime'] ?? null,

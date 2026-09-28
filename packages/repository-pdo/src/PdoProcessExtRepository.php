@@ -307,8 +307,8 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
      *
      *  作用域规则与内存仓同形：processName 精确作用域里只要存在记录就由它裁决（不回落全局）；
      *  一条都没有才看 `process_name IS NULL OR = ''` 的全流程委托作用域。
-     *  裁决走 `SurrogateRule`（`enabled` 严格 1 认 PDO 回读的字符串 `'1'`；MySQL 对脏值的
-     *  隐式转换也不参与 WHERE，一律由 PHP 侧判），与内存仓同答案（条款 6 / 用例 27）。
+     *  裁决走 `SurrogateRule`（判据④自 issues/130 案 A 起**只认整数 1**，MySQL 对脏值的隐式转换
+     *  也不参与 WHERE，一律由 PHP 侧判），与内存仓同答案（条款 6 / 用例 27）。
      *  返回原始行（snake_case）。 */
     public function getSurrogate(string $operator, string $processName, ?string $time = null): ?array
     {
@@ -345,7 +345,16 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC) ?: [];
-        return $rows === [] ? null : SurrogateRule::pickLatest($rows);
+        $newest = $rows === [] ? null : SurrogateRule::pickLatest($rows);
+        // issues/130 案 A：读侧判据④只认整数 1，而 `enabled` 是 INT/tinyint(1) 列，PDO 在缓冲查询
+        // 下（mysqlnd 默认；本仓 MySQL 套件显式 ATTR_EMULATE_PREPARES=true）会把它回读成**字符串**
+        // '1'。还原整数是驱动边界的活（Java rs.getInt / Go Scan(&int) / C# GetFieldValue<int> 同理），
+        // 不在这里做就会让 MySQL 宿主的委托整体判废且零告警。
+        // ⚠️ 只规范整数串被还原（'1.0' / 'abc' / '1abc' 原样交判据 ⇒ 停用），不是把宽接受集合放回去。
+        if ($newest !== null && array_key_exists('enabled', $newest)) {
+            $newest['enabled'] = SurrogateRule::hydrateEnabled($newest['enabled']);
+        }
+        return $newest;
     }
 
     public function saveSurrogate(array $surrogate): string

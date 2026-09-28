@@ -389,6 +389,43 @@ class PdoSqliteSurrogateTest extends TestCase
         }
     }
 
+    /**
+     * issues/130 案 A 的**另一半**：判据④只认整数 1 之后，SQL 路的「驱动字符串化」必须照常通。
+     *
+     * 现网 `enabled` 是 INT/tinyint(1) 列，而 PDO 在缓冲查询下（mysqlnd 默认行为；本仓 MySQL 套件
+     * 显式 `ATTR_EMULATE_PREPARES => true`）把数值列**一律回读成 PHP 字符串**。旧实现靠读侧 `(int)`
+     * 强转兜住这一步，案 A 把接受集合收窄到整数之后兜不住了 ⇒ 还原动作挪到**驱动边界**
+     * （`newestSurrogateInScope` 交判据前调 `SurrogateRule::hydrateEnabled()`，对齐 Java `rs.getInt` /
+     * Go `Scan(&int)` / C# `GetFieldValue<int>`）。真 MySQL 那格在本机恒 skip，不补这一格的话
+     * "收窄"会让 MySQL 宿主的委托**整体判废且零告警**，所以这里用 `ATTR_STRINGIFY_FETCHES`
+     * 在 SQLite 上等价复现"驱动给串"的形态。
+     *
+     * 同用例钉住边界**不是**把 `(int)` 换个地方做：真表里是文本的脏值（`'abc'`，SQLite 整数列
+     * 存不进去会原样回读文本）仍判停用；且两仓同答案（用例 27）不因收窄而破。
+     */
+    public function testDriverStringifiedEnabledIsHydratedAtTheRepositoryBoundary(): void
+    {
+        $this->seed('4301', 'flowStr', 'opStr', 'sStrOne');            // 写侧归一 ⇒ 真表落整数 1
+        $this->pdo->exec("INSERT INTO wf_process_surrogate (id, process_name, operator, surrogate, enabled)
+            VALUES ('4302','flowTxt','opTxt','sTxtOff','abc')");       // 绕过写侧：真表里就是文本脏值
+
+        $this->pdo->setAttribute(\PDO::ATTR_STRINGIFY_FETCHES, true);
+        $hit = $this->pdoExt->getSurrogate('opStr', 'flowStr', self::AT);
+        $this->assertNotNull($hit, '驱动把 INT 列回读成字符串 \'1\' 时 SQL 路仍须命中'
+            . '（案 A 的驱动边界归一；漏归一＝MySQL 宿主委托整体判废）');
+        $this->assertSame('sStrOne', (string) $hit['surrogate']);
+        $this->assertSame(1, $hit['enabled'], '交判据④之前，行里的 enabled 须已在驱动边界还原成 PHP 整数');
+
+        $dirty = $this->pdoExt->getSurrogate('opTxt', 'flowTxt', self::AT);
+        $this->assertNull($dirty, '边界只还原规范整数串：真表列值是文本 \'abc\' 仍判停用'
+            . '（不是把 (int) 强转换个地方做）');
+
+        // 用例 27 不受影响：同一份台账在内存仓给出同一个结论
+        $mem = $this->memExt->getSurrogate('opStr', 'flowStr', self::AT);
+        $this->assertNotNull($mem, '双仓同答案：内存仓该档同样命中');
+        $this->assertSame((string) $hit['surrogate'], (string) $mem['surrogate']);
+    }
+
     // ── 辅助 ──
 
     private function deploy(string $file): string

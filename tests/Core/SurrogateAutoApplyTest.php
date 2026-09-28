@@ -18,6 +18,7 @@ use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\BuiltinJsonProvider;
 use Jeeflow\Core\Spi\JsonProviderInterface;
 use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
+use Jeeflow\Core\Util\SurrogateRule;
 use Jeeflow\WebContract\JeeflowFacade;
 use PHPUnit\Framework\TestCase;
 
@@ -358,6 +359,87 @@ class SurrogateAutoApplyTest extends TestCase
         $this->assertCount(0, $this->todoIds('sOut'));
         $this->assertCount(0, $this->todoIds('off'));
         $this->assertCount(0, $this->todoIds('dirty'), '脏值 enabled="abc" 落 0（停用），不得当启用');
+    }
+
+    /**
+     * issues/130 案 A（owner 拍板"只认整数 1，与 java 一致"）：判据④的**接受集合**只剩 `int 1` 一档。
+     *
+     * 旧 PHP 实现读侧是 `(int)` 宽松转换，另带 `is_bool` / `=== 1.0` 两个特例，于是 `'1'` / `1.0` /
+     * `true` 三个"等价写法"在本栈算启用；Java `Integer.valueOf(1).equals(enabled)` 与 Go / Rust /
+     * MoonBit / C# 一律判停用 ⇒ 八栈"三宽五严"，同一行脏值两套栈给出相反结论。本用例逐档打在
+     * **委托是否真的命中**（建单后读回的参与者集合 + 代理人待办数），判据退回 `(int)` 写法立刻红。
+     *
+     * ⚠️ 台账要绕开内置仓储的写侧归一：`saveSurrogate` 会先把 `'1'` 落成整数 1（条款 5 写侧，
+     * 那是另一件事），故建行后用**不做归一的** `updateSurrogate` 把原值盖回台账——这恰好就是
+     * issue §2 说的唯一显形路径（业务方自定义 SPI 仓储回行时传非整数 enabled）。
+     * 每档先自检"台账里真的是这个值、这个类型"，否则负向断言只是空转。
+     */
+    public function testEnabledAcceptsOnlyIntegerOneAndNoEquivalentForms(): void
+    {
+        // [标签, 台账里的 enabled 原值, 期望是否命中委托]
+        $cases = [
+            ['整数 1（唯一接受值）', 1, true],
+            ['整数 0', 0, false],
+            ['整数 2（脏值）', 2, false],
+            ["字符串 '1'（旧实现 (int) 强转吃它）", '1', false],
+            ['浮点 1.0（旧实现 $v === 1.0 吃它）', 1.0, false],
+            ['布尔 true（旧实现 is_bool 原样返回）', true, false],
+            ["字符串 'x'（不可解析脏值）", 'x', false],
+            ['null（缺值）', null, false],
+        ];
+        foreach ($cases as $i => [$label, $raw, $hit]) {
+            $this->newHarness();                       // 每轮一套干净台账，上一轮那条生效行不许串味
+            $agent = 'dsAgent' . $i;
+            $defineId = $this->deploy('01-simple.json');
+            $id = $this->extRepo->saveSurrogate([
+                'operator' => 'leader', 'surrogate' => $agent, 'processName' => 'simple',
+                'enabled' => 1,
+                'startTime' => '2020-01-01 00:00:00', 'endTime' => '2099-12-31 23:59:59',
+            ]);
+            $this->extRepo->updateSurrogate(['id' => $id, 'enabled' => $raw]);
+            $ledger = $this->extRepo->findSurrogateById($id);
+            $this->assertIsArray($ledger, "{$label}：前置台账行没落库");
+            $this->assertSame($raw, array_key_exists('enabled', $ledger) ? $ledger['enabled'] : '<缺键>',
+                "{$label}：前置自检——台账里须真的是该值且该类型，否则本档等于没测");
+
+            $start = $this->facade->flow('processDefine/startAndExecute', [
+                'processDefineId' => $defineId, 'operator' => 'user1',
+            ]);
+            $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+            $doing = $this->repo->findDoingTasks((string) $start['data']['processInstanceId']);
+            $this->assertCount(1, $doing, '前置：应推进到 task1（委托挂在 task1 的授权人 leader 名下）');
+            $this->assertSame($hit ? ['leader', $agent] : ['leader'],
+                $this->actorsOf((string) $doing[0]->getTaskId()),
+                '委托命中判据：enabled=' . $label . ' 期望命中=' . var_export($hit, true));
+            $this->assertCount($hit ? 1 : 0, $this->todoIds($agent),
+                "代理人待办数须与命中判据一致：enabled={$label}");
+        }
+    }
+
+    /**
+     * issues/130 案 A 的**驱动边界**归一（`SurrogateRule::hydrateEnabled`）：判据④不再吃串之后，
+     * "整数列被驱动回读成字符串"必须在仓储边界还原（SQL 路的真身在
+     * `PdoSqliteSurrogateTest::testDriverStringifiedEnabled...` 上钉）。本用例钉边界**不许顺手放宽**：
+     * 只认规范整数串 `-?(0|[1-9]\d*)`，`'1.0'` / `'01'` / `' 1'` / `'+1'` 之类一律原样返回，
+     * 交判据④判停用；已是整数的原样透传。
+     */
+    public function testHydrateEnabledOnlyAcceptsCanonicalIntegerText(): void
+    {
+        foreach ([['1', 1], ['0', 0], ['2', 2], ['-1', -1]] as [$text, $int]) {
+            $this->assertSame($int, SurrogateRule::hydrateEnabled($text), "规范整数串 '{$text}' 应还原为整数");
+        }
+        foreach (['1.0', '01', ' 1', '1 ', '+1', '1abc', 'x', '', 'abc'] as $text) {
+            $this->assertSame($text, SurrogateRule::hydrateEnabled($text),
+                "非规范整数串 '{$text}' 不得被还原（还原＝把接受集合放宽回去）");
+            $this->assertFalse(SurrogateRule::isEnabled(SurrogateRule::hydrateEnabled($text)),
+                "非规范整数串经边界还原后仍须判停用: [{$text}]");
+        }
+        foreach ([true, false, 1.0, 0.0, null, 2] as $v) {
+            $this->assertSame($v, SurrogateRule::hydrateEnabled($v), '非字符串入参原样透传');
+        }
+        $this->assertSame(1, SurrogateRule::hydrateEnabled(1), '整数 1 透传');
+        $this->assertTrue(SurrogateRule::isEnabled(SurrogateRule::hydrateEnabled('1')));
+        $this->assertFalse(SurrogateRule::isEnabled(SurrogateRule::hydrateEnabled('1.0')));
     }
 
     /** 判据② 边界：只给 startTime（endTime 为 null = 该侧不限）在窗内应生效。 */

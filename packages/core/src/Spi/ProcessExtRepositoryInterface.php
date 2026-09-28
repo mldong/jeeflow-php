@@ -60,7 +60,10 @@ interface ProcessExtRepositoryInterface
      *     的全流程兜底；精确作用域最新一条判否（含池空）后**仍要看**全流程作用域的最新一条（不得判否即止）；
      *  ② 时间窗 startTime/endTime，**一侧为 null/空即该侧不限**；
      *  ③ 自委托过滤 `surrogate <> operator`（自己委托给自己不生效）；
-     *  ④ `enabled` **只认整数 1**，脏值不得当启用（0/2/null 一律不生效）。
+     *  ④ `enabled` **只认整数 1**（issues/130 案 A，与 Java `Integer.valueOf(1).equals(enabled)` 同阵营）：
+     *     `'1'` / `1.0` / `true` 这类等价写法与 0 / 2 / 脏值 / null 一律不生效。整数列被驱动
+     *     字符串化要在**实现侧**先还原（内置 SQL 仓走 `SurrogateRule::hydrateEnabled()`），
+     *     引擎读侧不再做 `(int)` 宽松转换；
      *  ⚠️ 不得"先按②③④过滤、剩下的才取最新"——那等于"历史上留过一条窗内委托就永久生效"，
      *  用户随后新建的窗外/停用/脏值/自委托记录都判不动它（issues/123）。
      *  最新一条不生效 ⇒ 返回 null，**不回落**到更旧那条。$time 缺省取当前时间。 */

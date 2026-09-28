@@ -158,7 +158,7 @@ $engine->setSurrogateApplier(new NullSurrogateInterceptor());   // 也可整体�
 | ① 空 processName 兜底 | 先按当前流程名精确查，未命中再查 `process_name` 为 NULL/`''` 的全流程委托 |
 | ② 时间窗 | `start_time <= now <= end_time`，**一侧为 NULL/空即该侧不限** |
 | ③ 自委托过滤 | `surrogate <> operator`（自己委托给自己不生效；代理人为空串同样不生效） |
-| ④ enabled（读侧判据） | **只有 1 生效**，脏值（`'abc'` 等不可解析为整数的值）不得当启用 |
+| ④ enabled（读侧判据） | **只认整数 1**（issues/130 案 A，与 Java `Integer.valueOf(1).equals(enabled)` 同阵营）：`'1'` / `1.0` / `true` 等"等价写法"与 `0` / `2` / 脏值 / `null` 一律不生效。整数列被驱动回读成字符串时由**仓储侧**先还原（`SurrogateRule::hydrateEnabled()`，内置 PDO 仓已接），引擎读侧不再做 `(int)` 宽松转换；自定义 SPI 仓储传非整数按停用 |
 | ④ enabled（写侧入参） | 缺键→`1`；`''` / `'abc'` / `'1abc'` 等不可解析脏值→`0` 且**不抛错**；布尔 `true→1 / false→0`（`SurrogateRule::normalizeEnabledArg`，门面 save/update 与 PDO 落库前都过它） |
 | 附：多条命中 | 取**主键 id 最大**那条（SQL 侧 `ORDER BY id DESC`，内存侧同样按 id 数值序，不得取遍历首条） |
 
