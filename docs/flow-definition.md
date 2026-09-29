@@ -34,7 +34,7 @@
 | `snaker:decision` | `DecisionModel` | 决策节点，按表达式（`expr` / 边 `expr`）分流 |
 | `snaker:fork` | `ForkModel` | 并行分支 |
 | `snaker:join` | `JoinModel` | 合并，等待所有并行分支完成 |
-| `snaker:subProcess` | `SubProcessModel` | 子流程节点（`StartSubProcessHandler`） |
+| `snaker:subprocess` | `SubProcessModel` | 子流程节点（`StartSubProcessHandler`）· 类型键大小写不敏感归一与"未知档不得静默丢"义务见 spec 02 |
 | `snaker:end` | `EndModel` | 流程出口 |
 
 > ⚠️ **`snaker:custom` 自定义节点未实现**（PHP 1.0.x 无 CustomModel）。含 custom 节点的流程 JSON 在 PHP 引擎上无法解析，部署时需去掉或改用 handler 体系。
