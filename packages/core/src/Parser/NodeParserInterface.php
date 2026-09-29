@@ -39,6 +39,12 @@ interface NodeParserInterface
     public const EXT_FIELD_CANDIDATE_HANDLER_KEY = 'candidateHandler';
     public const EXT_FIELD_COUNTERSIGN_TYPE_KEY = 'countersignType';
     public const EXT_FIELD_COUNTERSIGN_COMPLETION_CONDITION_KEY = 'countersignCompletionCondition';
+    // 记录类（自定义）节点 properties 四键（spec 02-flow-definition.md §6；键名逐字对齐
+    // java NodeParser.CLASS_KEY / METHOD_NAME_KEY / ARGS_KEY / RETURN_VAL_KEY）
+    public const CLASS_KEY = 'clazz';
+    public const METHOD_NAME_KEY = 'methodName';
+    public const ARGS_KEY = 'args';
+    public const RETURN_VAL_KEY = 'val';
 
     /** @param LfEdge[] $edges */
     public function parse(LfNode $lfNode, array $edges): void;

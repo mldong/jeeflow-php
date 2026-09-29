@@ -68,6 +68,11 @@ class EndProcessHandler implements HandlerInterface
                             $newExec->setArgs($execution->getArgs());
                             $spm->execute($newExec);
                             $execution->addTasks($newExec->getProcessTaskList());
+                            // 父流程里的记录类（snaker:custom）节点在这一支上落的历史行同理要上收，
+                            // 漏一行就是"父流程的历史行只在内存里"（issues/142 A 批 · spec 02 §6.2 第 1 条）
+                            // ——⚠️ 只能走 addHistoryTasks，不能并进 addTasks：那条腿会连带
+                            // applySurrogate + fire 码 3（"新待办产生"），DONE 行不该收这两个副作用。
+                            $execution->addHistoryTasks($newExec->getHistoryTaskList());
                             // 父实例若被这一支流转带到终态，**它的**子流程节点会再进一次本处理器，
                             // 登记挂在 newExec 上；newExec 是这里的局部对象，随即丢弃 ⇒ 待播事件
                             // 必须与任务一起上收到外层 execution（同 addTasks 那条腿），漏一行

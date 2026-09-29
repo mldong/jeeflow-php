@@ -38,6 +38,10 @@ final class ModelParser
         self::registerParser('fork', new ForkNodeParser());
         self::registerParser('join', new JoinNodeParser());
         self::registerParser('subprocess', new SubProcessNodeParser());
+        // issues/142 A 批 · spec 02 §6.1/§6.2：补记录类（custom）这一档。
+        // 只补这一档——**不做大小写归一、不加别名**（issues/141 G4 义务 1/3 走 C 方案，
+        // 先立法后补实现，另轮处理），查表方式与既有七档逐字一致（剥 snaker: 前缀后精确匹配）。
+        self::registerParser('custom', new CustomNodeParser());
         self::$initialized = true;
     }
 
@@ -96,10 +100,13 @@ final class ModelParser
                 // issues/141 G4 义务 2（spec 02-flow-definition.md「类型键的三条义务」第 2 条）：
                 // 类型表查不到解析器时，跳过本身是允许的，但**必须先留一条可诊断记录**
                 // （节点 id ＋ 实得类型串含 snaker: 前缀原样），不允许"无声丢节点＋连带丢它的出边"。
-                // spec 02 点名的现读反面样本就是本栈：类型表七档无 'custom'（:34-40）、也无
+                // spec 02 曾点名本栈作现读反面样本：类型表七档无 'custom'（:34-40）、也无
                 // CustomNodeParser.php，而自家共享夹具 flows/08-custom-node.json:38 写着
-                // "type": "snaker:custom" ⇒ 该节点连同出边被无声吞掉。本轮 owner 明确**只补日志**，
-                // 不新增 custom 档、也不做大小写归一（义务 1 留到下一轮，java 同口径未做）。
+                // "type": "snaker:custom" ⇒ 该节点连同出边被无声吞掉。**issues/142 A 批已把
+                // custom 这一档补进类型表**（见 ensureInitialized 末尾），这一支从此只服务
+                // **真正未建档**的类型（大小写差异／拼错／设计器脏数据）——诊断姿势一字不动，
+                // 义务 2 的可诊断要求继续生效。仍**不**做大小写归一（义务 1 留到下一轮，
+                // java 同口径未做；别名保留是义务 3，同样另轮）。
                 // 日志通道沿用本仓 core 既有姿势（ProcessPublisher / SurrogateInterceptor 的 error_log，
                 // 不引新依赖），级别语义靠 "WARNING" 前缀表达（php 无日志级别对象）。
                 error_log('[jeeflow-php] WARNING 流程定义里的节点类型没有对应解析器，该节点及其出边将被跳过: '

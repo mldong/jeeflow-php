@@ -35,9 +35,68 @@
 | `snaker:fork` | `ForkModel` | 并行分支 |
 | `snaker:join` | `JoinModel` | 合并，等待所有并行分支完成 |
 | `snaker:subprocess` | `SubProcessModel` | 子流程节点（`StartSubProcessHandler`）· 类型键大小写不敏感归一与"未知档不得静默丢"义务见 spec 02 |
+| `snaker:custom` | `CustomModel` | **记录类**（自动执行／留痕）节点：执行 `clazz` 处理器 → 落一条 `task_state=20` 历史行 → 令牌沿出边继续流转 |
 | `snaker:end` | `EndModel` | 流程出口 |
 
-> ⚠️ **`snaker:custom` 自定义节点未实现**（PHP 1.0.x 无 CustomModel）。含 custom 节点的流程 JSON 在 PHP 引擎上无法解析，部署时需去掉或改用 handler 体系。
+## 自定义（记录类）节点 `snaker:custom`
+
+`properties` 四键与规范 02 §6 一致：
+
+| 键 | 说明 |
+|----|------|
+| `clazz` | 处理器**注册名**（必填）。PHP 没有 JVM 类路径可反射，流程 JSON 里写的 Java 全限定类名在本栈只是**字符串键**——集成方按它注册实例（见下） |
+| `methodName` | 要调用的方法名；未配 ⇒ 回落 `handle` |
+| `args` | 逗号分隔的**变量 key**，引擎按序从执行变量里取实参交给处理器 |
+| `val` | 返回值写入的变量 key；未配 ⇒ `custom_return_val`（`FlowConst::CUSTOM_RETURN_VAL`） |
+
+```json
+{
+  "id": "custom1",
+  "type": "snaker:custom",
+  "properties": {
+    "clazz": "com.mldong.jeeflow.test.TestCustomHandler",
+    "methodName": "execute",
+    "args": "param1",
+    "val": "customResult"
+  },
+  "text": { "value": "通知外部系统" }
+}
+```
+
+注册处理器（`CustomHandlerRegistry` 走既有 `ServiceContext` 定位器，与 `AssignmentHandlerRegistry` 同一条腿）：
+
+```php
+use Jeeflow\Core\Handler\CustomHandlerRegistry;
+use Jeeflow\Core\ServiceContext;
+use Jeeflow\Core\Spi\CustomHandlerInterface;
+
+$registry = new CustomHandlerRegistry();
+$registry->register('com.mldong.jeeflow.test.TestCustomHandler', new class implements CustomHandlerInterface {
+    public function handle(\Jeeflow\Core\Execution $execution, array $args = []): mixed
+    {
+        // 调外部系统、写台账……返回非 null 即落进执行变量 customResult
+        return 'PAY-' . $args[0];
+    }
+});
+ServiceContext::put(CustomHandlerRegistry::class, $registry);
+```
+
+处理器另两种形状同样被支持：实现既有 `HandlerInterface`（`handle(Execution): void`，不写返回值，
+对齐 java `IHandler` 那一支），或任意对象 ＋ `methodName` 指向它的一个公开方法（对齐 java 反射调方法那一支）。
+
+三条行为约定（规范 02 §6.1／§6.2，owner 2026-09-30 拍）：
+
+1. **记录类节点没有参与者是正常形态**，它既不解析参与者、也不产生待办：落的是
+   `task_state=20`（已完成）历史行，且**真写进 `wf_process_task`**（内存仓与 PDO 仓两条 INSERT 通道都落），
+   同时不会为它发 `PROCESS_TASK_START`（码 3 表达"新待办产生"）。
+2. **`clazz` 配错不打断建单**：`clazz` 为空串/缺失，与非空但未注册，两档各记一条
+   `error_log` WARNING（文案可分别诊断），然后**照常落历史行 + 令牌继续流转**，不抛异常。
+   处理器**自身执行失败**（已解析到、跑炸了）不在豁免内 ⇒ 照旧外抛，那是业务错误。
+3. 返回值只落进**执行变量**（同一次流转的下游节点可读，例如决策表达式 `customResult`），
+   不额外写进历史行的 `variable`。
+
+> ⚠️ 类型表**大小写敏感**且当前只有 `custom` 一档：`snaker:Custom` 之类写法仍会走"未知档"诊断
+> （记 WARNING 后跳过节点及其出边）。归一化与别名是规范 02「类型键的三条义务」第 1／3 条，另轮处理。
 
 ## 任务节点
 

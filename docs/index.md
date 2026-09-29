@@ -28,7 +28,7 @@
 | PDO 持久化（MySQL 八表 / SQLite） | ✅ | `packages/repository-pdo` |
 | PSR-15 接入 | ✅ | `JeeflowRequestHandler`（web-psr） |
 | 业务数据入库（persist / persist-meta） | ✅ 1.1.2 | `packages/persist`：拦截器调度 + ARCHIVE/SYNC 写侧；读侧仍由集成方挂 `metaTableReader` |
-| `snaker:custom` 自定义节点 | ⏳ 规划中 | 无 CustomModel，含该节点的流程 JSON 无法解析 |
+| `snaker:custom` 自定义节点 | ✅ | `CustomModel` + `CustomNodeParser`：执行 `clazz` 处理器（`CustomHandlerRegistry` 按名注册）→ 落 `task_state=20` 历史行并真写库 → 令牌续流；`clazz` 配错只记日志不打断建单。见 [流程定义 · 自定义节点](flow-definition.md#自定义记录类节点-snakercustom) |
 
 ## 相关
 

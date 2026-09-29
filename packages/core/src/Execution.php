@@ -27,6 +27,19 @@ class Execution
     private ?ProcessInstance $processInstance = null;
     /** @var ProcessTask[] */
     private array $processTaskList = [];
+    /**
+     * 记录类节点（`snaker:custom`）产生的**历史行**（`task_state=20`）——与
+     * {@see self::$processTaskList} 分开放是有原因的（issues/142 A 批 · spec 02 §6.1 第 2 条
+     * 硬结论／§6.2 第 1 条）：`processTaskList` 那条腿在引擎侧是
+     * `saveNewTask → applySurrogate → saveTask → notifyTaskStart`，即"新待办产生"的语义
+     * （码 3 PROCESS_TASK_START）。历史行**不是待办**，塞进那条腿会造出"给已完成行发
+     * 新待办事件"的假形状，还会让委托代理把一个 DONE 行的参与者改掉。
+     * ⇒ **落库与码 3 解耦**：本列表由引擎 `persistHistoryTasks` 单独走仓储 `saveTask`
+     *   （真落库，内存仓/SQL 仓同一条腿），既不 fire 码 3、也不过委托。
+     *
+     * @var ProcessTask[]
+     */
+    private array $historyTaskList = [];
     private bool $merged = false;
     private ?JeeflowEngineInterface $engine = null;
     private string $operator = '';
@@ -59,6 +72,26 @@ class Execution
         foreach ($tasks as $t) {
             $this->processTaskList[] = $t;
         }
+    }
+
+    /** 挂一条记录类历史行（DONE，task_state=20），落库由引擎 persistHistoryTasks 收口 */
+    public function addHistoryTask(ProcessTask $task): void
+    {
+        $this->historyTaskList[] = $task;
+    }
+
+    /** @param ProcessTask[] $tasks */
+    public function addHistoryTasks(array $tasks): void
+    {
+        foreach ($tasks as $t) {
+            $this->historyTaskList[] = $t;
+        }
+    }
+
+    /** @return ProcessTask[] */
+    public function getHistoryTaskList(): array
+    {
+        return $this->historyTaskList;
     }
 
     /** 登记一条待播的实例终态事件（不 fire，见 {@see self::drainPendingEnds()}） */

@@ -9,6 +9,7 @@ use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\JeeflowException;
+use Jeeflow\Core\Model\CustomModel;
 use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
@@ -203,6 +204,54 @@ class ProcessInstance
         );
         // issues/126 案 A 第一处写点：普通建单，变量源＝实例变量
         self::applyExpireTime($task, $expireExpr, $this->variables);
+        $this->tasks[] = $task;
+        return $task;
+    }
+
+    /**
+     * 创建**历史/已完成**任务行（记录类节点 `snaker:custom` 专用）—— 对齐 Java
+     * `ProcessInstance#createHistoryTask`（domain/ProcessInstance.java:425）。
+     *
+     * issues/142 A 批 · spec 02-flow-definition.md §6.1／§6.2（owner 2026-09-30 逐条拍）。形状：
+     * `ProcessTask::create(...)` ＋ `taskState = FINISHED(20)`、参与者＝**当前操作人**（留痕主体，
+     * 不是待办）、无 form／无 taskType／无 performType；两条**建单不变量**（`task_parent_id`
+     * ＋ 行级 `isFirstTaskNode`，issues/121 P1）与任务类完全同款，java 那边也是同一句注释。
+     *
+     * ⚠️ 三条硬要求的第 1 条「历史行必须**真落库**」不在本方法里兑现——本方法只造聚合根子实体；
+     * 落库腿在 {@see \Jeeflow\Core\JeeflowEngine} 的 `persistHistoryTasks`，走仓储 `saveTask`。
+     * 基准侧 java 正是缺这条腿（`createHistoryTask` 的返回值只进 `instance.tasks`，
+     * `updateInstance` 的级联只 UPDATE 不 INSERT ⇒ 那一行永远进不了库），本栈不复制这个洞。
+     *
+     * ⚠️ 与任务类的分界（§6.1 三条禁止形状，本方法逐条不犯）：
+     * ① 不按任务类建 DOING 行；② 不"兜底把行挂给当前操作人"伪造一条待办——操作人本就是
+     * 记录类的留痕主体，行状态是 DONE ⇒ 谁也办不动，不进待办列表；③ 不跳过节点不建行。
+     *
+     * @param string $operator 当前操作人；空串时**不**写出空归属值（issues/142 B 表那族病灶
+     *                         的上游进水口，宁可行上无参与者）
+     */
+    public function createHistoryTask(CustomModel $model, string $operator,
+                                       ?string $parentTaskId, bool $isFirstTaskNode): ProcessTask
+    {
+        $task = ProcessTask::create(
+            $this->instanceId,
+            $model->getName(),
+            $model->getDisplayName(),
+            null,
+            null,
+            null,
+            $operator !== '' ? [$operator] : [],
+            $operator,
+            $parentTaskId,
+            $isFirstTaskNode
+        );
+        $task->setTaskState(ProcessTaskState::FINISHED);
+        // DONE 行的 operator 列（= actorId）与 finish_time 要一并落地：本栈「我已办」列表按
+        // `state<>10 AND operator=?` 过滤（见 ProcessTask::withdraw 注释），这两列留 null 的话
+        // 留痕进了库却在任何列表里查不到 ⇒ 又回到 §6.1 禁的第 ③ 种形状"丢留痕"。
+        if ($operator !== '') {
+            $task->setActorId($operator);
+        }
+        $task->setFinishTime(date('Y-m-d H:i:s'));
         $this->tasks[] = $task;
         return $task;
     }

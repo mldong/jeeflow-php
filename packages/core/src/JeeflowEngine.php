@@ -141,6 +141,8 @@ class JeeflowEngine implements JeeflowEngineInterface
             foreach ($exec->getProcessTaskList() as $task) {
                 $this->saveNewTask($exec, $task);
             }
+            // 记录类（snaker:custom）历史行：**只落库、不发码 3、不过委托**，见 persistHistoryTasks
+            $this->persistHistoryTasks($exec);
             $this->repository->updateInstance($instance);
             // 实例终态事件（码 2）：发起即办结的短流（start→end、decision 直达结束）与
             // 子流程父实例都从这一支落库后播——顺序判据同 persistTasks 的收口。
@@ -326,6 +328,9 @@ class JeeflowEngine implements JeeflowEngineInterface
         foreach ($exec->getProcessTaskList() as $task) {
             $this->saveNewTask($exec, $task);
         }
+        // 记录类（snaker:custom）历史行落库（排在 updateInstance 之前——那边的级联只 UPDATE
+        // 已存在的行，先 INSERT 才不会把 DONE 行漏成"内存里有、库里没有"）
+        $this->persistHistoryTasks($exec);
         if ($exec->getProcessTask() !== null && $exec->getProcessTask()->getTaskId() !== null) {
             $this->repository->updateTask($exec->getProcessTask());
         }
@@ -399,6 +404,32 @@ class JeeflowEngine implements JeeflowEngineInterface
         $this->repository->saveTask($task);
         // PROCESS_TASK_START 在落库（分配 taskId）后 fire，见 start 内注释与 spec §11.2 原则 3
         $this->notifyTaskStart($task);
+    }
+
+    /**
+     * 记录类节点（`snaker:custom`）历史行的**落库收口**（issues/142 A 批 ·
+     * spec 02-flow-definition.md §6.2 第 1 条，owner 2026-09-30 拍）：
+     *
+     * 「落历史行」＝ `wf_process_task` 里**查得到**那一行（`task_state=20`），
+     * 只在聚合内存对象里 append 一条不算做到——基准侧 java/c# 正犯着这一条
+     * （`CustomModel.exec` 丢弃 `createHistoryTask` 的返回值只进 `instance.tasks`，
+     * 而 `updateInstance` 的级联只 UPDATE `taskId != null` 的行 ⇒ 那一行永远进不了库）。
+     * 本栈因此**不**复用 java 的落库姿势，改走仓储 `saveTask` 这条真 INSERT 腿
+     * （内存仓与 PDO 仓两条 INSERT 通道都由各自的 `saveTask` 兑现）。
+     *
+     * 与待办腿的三点分界（判据见 {@see Execution::$historyTaskList} 注释）：
+     * - **不 fire PROCESS_TASK_START（码 3）**：码 3 表达"新待办产生"，记录类节点不该有待办；
+     * - **不过委托代理**（`applySurrogate`）：委托改写的是"谁能办这一单"，DONE 行无人可办；
+     * - **不混进 `executeProcessTask` 的返回值**：那串是"本次新产生的待办"，
+     *   门面/集成方按它算待办数，历史记录行进去就会凭空多一条待办（§6.1 硬结论 2）。
+     *
+     * 覆盖两条漏斗：发起路径与 `persistTasks`（办理／跳转／退结束／退发起人四个入口都汇这里）。
+     */
+    private function persistHistoryTasks(Execution $exec): void
+    {
+        foreach ($exec->getHistoryTaskList() as $task) {
+            $this->repository->saveTask($task);
+        }
     }
 
     /** 应用生效委托（引擎内置、默认开启）；关闭或仓储缺席时零影响。 */

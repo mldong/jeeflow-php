@@ -14,6 +14,7 @@
 | 用户 | `UserProviderInterface` | `NoOpUserProvider` | 用户信息查询 |
 | JSON | `JsonProviderInterface` | `BuiltinJsonProvider` | JSON 编解码 |
 | 委托应用 | `SurrogateInterceptor`（内置类） | 引擎默认开启，见下文「委托代理自动生效」 | 建单时把生效中的被委托人并入参与者 |
+| 记录类节点处理器 | `CustomHandlerInterface`（经 `CustomHandlerRegistry` 按名注册） | 无（未注册 ⇒ custom 节点只落历史行＋续流并记 WARNING，不打断建单） | `snaker:custom` 节点 `properties.clazz` 的解析目标，见下文 |
 
 ## 接入表达式求值（决策/会签必接）
 
@@ -168,3 +169,47 @@ $engine->setSurrogateApplier(new NullSurrogateInterceptor());   // 也可整体�
 全流程兜底行，该流程自己配的委托一条都查不到。
 委托在待办列表的合并展示属集成方视图层职责（引擎只负责让代理人真的进 `wf_process_task_actor`）。
 
+
+## 接入记录类（自定义）节点处理器
+
+`snaker:custom` 是**记录类**节点（自动执行／留痕，不是待办）。java 端 `CustomModel.exec` 走
+`Class.forName(clazz)` 反射实例化，**PHP 没有 JVM 类路径可反射**——流程 JSON 是八栈共享夹具
+（`flows/08-custom-node.json` 里 `clazz` 就是一个 Java 全限定类名），所以本栈与 python/c# 同策：
+**按名注册实例**，键＝`clazz` 原样字符串。
+
+```php
+use Jeeflow\Core\Execution;
+use Jeeflow\Core\Handler\CustomHandlerRegistry;
+use Jeeflow\Core\ServiceContext;
+use Jeeflow\Core\Spi\CustomHandlerInterface;
+
+$registry = new CustomHandlerRegistry();
+$registry->register('com.mldong.jeeflow.test.TestCustomHandler', new class implements CustomHandlerInterface {
+    public function handle(Execution $execution, array $args = []): mixed
+    {
+        // $args ＝ properties.args 逗号串按变量 key 从执行变量取出的实参
+        return doSomethingExternal($args);   // 非 null ⇒ 写进 properties.val 指的执行变量键（缺省 custom_return_val）
+    }
+});
+ServiceContext::put(CustomHandlerRegistry::class, $registry);
+```
+
+三种处理器形状都被接受（引擎的调用式统一是 `$handler->{$method}($execution, $args)`，
+`$method` ＝ `properties.methodName`，未配回落 `handle`；PHP 用户态函数忽略多余实参）：
+
+| 形状 | 返回值 | 对齐 |
+|------|--------|------|
+| 实现 `CustomHandlerInterface`（`handle(Execution, array): mixed`） | 非 null 即落执行变量 | python `ICustomHandler` |
+| 实现既有 `HandlerInterface`（`handle(Execution): void`） | void ⇒ 不写变量键 | java `IHandler` 那一支（自己不写返回值） |
+| 任意对象 ＋ `methodName` 指向其公开方法（或 `Closure`／`__invoke` 对象，`methodName` 未配时） | 非 null 即落执行变量 | java 反射调方法那一支 |
+
+行为边界（规范 02 §6.2，owner 2026-09-30 拍，**不要改成抛异常**）：
+
+- `clazz` **为空串／缺失** 与 **非空但未注册** 是两档：各记一条可分别诊断的 `error_log` WARNING，
+  然后**照常落 `task_state=20` 历史行 + 令牌沿出边继续流转**，严禁抛异常打断建单
+  （与「节点属性配错不该把流程炸掉」同一条哲学）。注册表整体缺席也归"未注册"这一档。
+- 处理器**自身执行失败**（已解析到、跑炸了）**不在豁免内** ⇒ 照旧外抛，那是业务错误不是配错形状；
+  `methodName` 指的是对象上没有的方法同样外抛（`自定义模型[class=...]无法找到方法名称:...`，java 逐字同档）。
+- 历史行**必须真落库**（内存仓与 PDO 仓两条 INSERT 通道都由仓储 `saveTask` 兑现），
+  且**不走**"新待办"那条腿：不发 `PROCESS_TASK_START`（码 3 表达"新待办产生"）、
+  不过委托代理、不进 `executeProcessTask` 的返回值。

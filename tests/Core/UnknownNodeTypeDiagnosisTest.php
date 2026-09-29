@@ -110,29 +110,15 @@ final class UnknownNodeTypeDiagnosisTest extends TestCase
             '诊断记录也应带去前缀后的查表键，方便对照档位表，实际文案=' . $log);
     }
 
-    /**
-     * spec 点名的现读反面样本：自家共享夹具 `flows/08-custom-node.json` 里的 `snaker:custom`
-     * 节点（本仓类型表七档无 custom）必须被点名诊断，而不是无声吞掉。
-     */
-    public function testCustomNodeInSharedFixtureIsDiagnosed(): void
-    {
-        $json = file_get_contents(jeeflow_flows_dir() . '/08-custom-node.json');
-        $this->assertNotFalse($json, '08-custom-node.json 必须存在');
-
-        $model = ModelParser::parse($json);
-
-        $this->assertNull($model->getNode('custom1'),
-            '本轮不新增 custom 档（owner 明确）：该节点仍不进模型');
-        $log = $this->logTail();
-        $this->assertStringContainsString('nodeId=custom1', $log,
-            '夹具里的 custom1 必须被诊断点名，实际文案=' . $log);
-        $this->assertStringContainsString('snaker:custom', $log,
-            '诊断须带实得类型串 snaker:custom，实际文案=' . $log);
-        // 其余档照旧解析（诊断不是报错，不改变已有读数）
-        $this->assertNotNull($model->getStart(), '开始节点仍在');
-        $this->assertNotNull($model->getNode('apply'), 'apply 任务节点仍在');
-        $this->assertNotNull($model->getNode('end'), '结束节点仍在');
-    }
+    // testCustomNodeInSharedFixtureIsDiagnosed 已删除（2026-09-30，issues/142 §5 第 2 条改判）：
+    // 它钉的是「自家夹具 flows/08-custom-node.json 里的 snaker:custom 节点不进模型、只出未知档诊断」，
+    // 而本栈现在补上了 custom 档（CustomNodeParser ＋ CustomModel 执行腿 ＋ DONE 历史行），
+    // 那句 assertNull($model->getNode('custom1')) 与新契约正面互斥——实测病灶还原时它反过来变绿，
+    // 说明两件事不可能同时成立，属"跟着裁定改判"而非"改期望值蒙红"。
+    // custom 现在的形状由 tests/Core/CustomNodeRecordLegTest.php 的
+    // testCustomNodeIsParsedWithItsOutgoingEdge（进模型＋出边还在＋不再冒未知档诊断）反向钉住；
+    // 「未知档不得静默丢、要记可诊断日志」这条义务仍由本文件
+    // testUnknownNodeTypeIsLoggedNotSilentlyDropped / testBlankTypeIsAlsoDiagnosed 两格守着。
 
     /**
      * 已知档不得被日志改动带偏：正常定义解析时不应冒出"未知类型"诊断。
