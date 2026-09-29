@@ -127,24 +127,7 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
     {
         $rows = [];
         foreach ($this->instances as $inst) {
-            $row = $this->instanceToRow($inst);
-            // Enrich with define info (align Java instanceRowToMap L1257-1262)
-            $def = $this->findDefineById($inst->getDefineId());
-            if ($def !== null) {
-                // 兼容 PDO snake_case / 内存 camelCase 定义键（issues/82-6）
-                $row['processDefineName'] = $def['name'] ?? null;
-                $row['processDefineDisplayName'] = $def['display_name'] ?? $def['displayName'] ?? null;
-                $row['processDefineVersion'] = isset($def['version']) ? (int) $def['version'] : null;
-                $row['displayName'] = $def['display_name'] ?? $def['displayName'] ?? null;
-                $row['version'] = isset($def['version']) ? (int) $def['version'] : null;
-            } else {
-                $row['processDefineName'] = null;
-                $row['processDefineDisplayName'] = null;
-                $row['processDefineVersion'] = null;
-                $row['displayName'] = null;
-                $row['version'] = null;
-            }
-            $rows[] = $row;
+            $rows[] = $this->instanceRowWithDefine($inst);
         }
         $rows = $this->applyFilters($rows, $query, fn($row, $col) => $this->getInstanceField($row, $col));
         $total = count($rows);
@@ -297,24 +280,62 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         }
     }
 
+    /**
+     * issues/138 · ccList 行形状三要件（spec 06-facade.md §processInstance/ccList）
+     *
+     * 条文：行**必须来自实例**（`wf_process_instance`），`operator`＝实例 operator＝流程发起人，
+     * 主键键名＝`id`（实例 id），且「rows 同 processInstance/page 行结构」⇒ 与 pageInstances
+     * 共用 instanceRowWithDefine() 投影。旧实现直接返回 cc 行原样（`processInstanceId/actorId/
+     * state/createUser/createTime`，既无 `operator` 也无 `id`），是条文点名的错法 ③ + 缺要件。
+     *
+     * cc 行退成**过滤**：归属谓词列 `cc.actor_id`（spec 06 §2.5 口径表钉的列，不许动）映射到
+     * 该实例的 cc 行集合上，取 EXISTS 语义 —— 与 Java MemoryProcessRepository.pageCcInstances
+     * 同一写法（给实例行挂 cc.actor_id 再 matches），也与 PDO 侧
+     * `LEFT JOIN wf_process_cc_instance cc ON t.id = cc.process_instance_id` + `cc.actor_id = ?`
+     * 的过滤效果一致。
+     */
     public function pageCcInstances(PageQuery $query): PageResult
     {
-        $rows = $this->ccInstances;
-        // Handle filters
-        foreach ($query->getConditions() as $cond) {
-            $clean = preg_replace('/^[a-z]+\./', '', $cond['column']);
-            $rows = array_filter($rows, function ($row) use ($clean, $cond) {
-                // Map snake_case to camelCase
-                $field = $clean === 'actor_id' ? 'actorId' : ($clean === 'process_instance_id' ? 'processInstanceId' : $clean);
-                $actual = $row[$field] ?? null;
-                return match ($cond['op']) {
-                    'EQ' => (string) $actual === (string) $cond['value'],
-                    'LIKE' => str_contains((string) $actual, (string) $cond['value']),
-                    default => true,
-                };
-            });
+        /** @var array<string, array<int, array<string, mixed>>> $ccByInstance */
+        $ccByInstance = [];
+        foreach ($this->ccInstances as $cc) {
+            $ccByInstance[(string) $cc['processInstanceId']][] = $cc;
         }
-        $rows = array_values($rows);
+
+        $ccConditions = [];
+        $rowConditions = [];
+        foreach ($query->getConditions() as $cond) {
+            if (str_starts_with($cond['column'], 'cc.')) {
+                $ccConditions[] = $cond;
+            } else {
+                $rowConditions[] = $cond;
+            }
+        }
+
+        $rows = [];
+        foreach ($this->instances as $inst) {
+            $ccRows = $ccByInstance[(string) $inst->getInstanceId()] ?? [];
+            // 有归属条件时，无抄送行的实例不属于"抄送给我"；无 cc 条件时保持 PDO LEFT JOIN
+            // 的同读数（行源始终是实例表，cc 只是可缺省的关联）。
+            if ($ccConditions !== [] && $ccRows === []) continue;
+            foreach ($ccConditions as $cond) {
+                $col = $this->snakeToCamel(substr($cond['column'], 3));
+                $hit = false;
+                foreach ($ccRows as $cc) {
+                    if ($this->compareValues($cc[$col] ?? null, $cond['op'], $cond['value'])) {
+                        $hit = true;
+                        break;
+                    }
+                }
+                if (!$hit) continue 2;
+            }
+            $row = $this->instanceRowWithDefine($inst);
+            foreach ($rowConditions as $cond) {
+                if (!$this->matchCondition($row, $cond['column'], $cond['op'], $cond['value'])) continue 2;
+            }
+            $rows[] = $row;
+        }
+
         $total = count($rows);
         $slice = array_slice($rows, $query->getOffset(), $query->getPageSize());
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $slice);
@@ -460,7 +481,39 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
 
     private function matchCondition(array $row, string $col, string $op, mixed $value): bool
     {
-        $actual = $this->resolveColumnValue($row, $col);
+        return $this->compareValues($this->resolveColumnValue($row, $col), $op, $value);
+    }
+
+    /**
+     * 实例行 + 定义信息（issues/138：pageInstances 与 pageCcInstances 共用同一投影，
+     * 「rows 同 processInstance/page 行结构」由构造保证，不再两处各自漂移）。
+     *
+     * @return array<string, mixed>
+     */
+    private function instanceRowWithDefine(ProcessInstance $inst): array
+    {
+        $row = $this->instanceToRow($inst);
+        // Enrich with define info (align Java instanceRowToMap L1257-1262)
+        $def = $this->findDefineById($inst->getDefineId());
+        if ($def !== null) {
+            // 兼容 PDO snake_case / 内存 camelCase 定义键（issues/82-6）
+            $row['processDefineName'] = $def['name'] ?? null;
+            $row['processDefineDisplayName'] = $def['display_name'] ?? $def['displayName'] ?? null;
+            $row['processDefineVersion'] = isset($def['version']) ? (int) $def['version'] : null;
+            $row['displayName'] = $def['display_name'] ?? $def['displayName'] ?? null;
+            $row['version'] = isset($def['version']) ? (int) $def['version'] : null;
+        } else {
+            $row['processDefineName'] = null;
+            $row['processDefineDisplayName'] = null;
+            $row['processDefineVersion'] = null;
+            $row['displayName'] = null;
+            $row['version'] = null;
+        }
+        return $row;
+    }
+
+    private function compareValues(mixed $actual, string $op, mixed $value): bool
+    {
         return match ($op) {
             'EQ' => (string) $actual === (string) $value,
             'LIKE' => str_contains((string) $actual, (string) $value),

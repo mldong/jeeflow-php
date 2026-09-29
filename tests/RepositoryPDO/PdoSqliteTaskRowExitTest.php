@@ -186,7 +186,11 @@ SQL);
         $rows = $cc['data']['rows'] ?? [];
         $this->assertNotEmpty($rows, '前置：ccList 应有行（零行则本件恒真空）');
         foreach ($rows as $r) {
-            foreach (['ext', 'instanceExt'] as $k) {
+            // issues/138：ccList 的行源改成实例表后，行结构 = processInstance/page 行结构
+            // （spec 06-facade.md:994「rows 同 processInstance/page 行结构」+ :997「每一行必须来自
+            // wf_process_instance」）。instanceExt 是任务行（todoList/doneList）的增量条文（06:501-506），
+            // 实例行没有这一格 ⇒ 这里只钉 ext，与 assertExitShape 对 detail 行分档同一依据。
+            foreach (['ext'] as $k) {
                 $this->assertTrue(array_key_exists($k, $r), "ccList 行缺 {$k} 键");
                 if ($this->asArr($r[$k]) === []) {
                     $this->assertInstanceOf(\stdClass::class, $r[$k],

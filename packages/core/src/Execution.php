@@ -8,6 +8,7 @@ use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\ProcessTaskState;
+use Jeeflow\Core\Event\PendingInstanceEnd;
 use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\ProcessModel;
 
@@ -31,6 +32,17 @@ class Execution
     private string $operator = '';
     private ?NodeModel $nodeModel = null;
 
+    /**
+     * 实例终态待播队列（spec §11.2 原则 3／码 2 触发时机，见 {@see PendingInstanceEnd}）：
+     * 结束节点处理器只登记，真正的 fire 由引擎在 `repository->updateInstance` 成功返回后
+     * 统一 flush（{@see JeeflowEngine::flushInstanceEndEvents()}）。
+     *
+     * 随 execution 生死，不留静态登记表——并发流转互不串味。
+     *
+     * @var PendingInstanceEnd[]
+     */
+    private array $pendingEnds = [];
+
     public function __construct()
     {
         $this->args = FlowData::create();
@@ -47,6 +59,44 @@ class Execution
         foreach ($tasks as $t) {
             $this->processTaskList[] = $t;
         }
+    }
+
+    /** 登记一条待播的实例终态事件（不 fire，见 {@see self::drainPendingEnds()}） */
+    public function addPendingEnd(?PendingInstanceEnd $pendingEnd): void
+    {
+        if ($pendingEnd !== null) {
+            $this->pendingEnds[] = $pendingEnd;
+        }
+    }
+
+    /**
+     * 并入另一条 execution 的待播终态事件——子流程级联的收口姿势：处理器在**父实例**的
+     * 临时 execution 上办结父实例，登记要随任务一起上收到外层 execution，
+     * 与 {@see self::addTasks()} 同一条腿（漏了就是"父实例终态事件整支丢掉"）。
+     *
+     * @param PendingInstanceEnd[] $pendingEnds
+     */
+    public function addPendingEnds(array $pendingEnds): void
+    {
+        foreach ($pendingEnds as $pe) {
+            if ($pe instanceof PendingInstanceEnd) {
+                $this->pendingEnds[] = $pe;
+            }
+        }
+    }
+
+    /** @return PendingInstanceEnd[] */
+    public function getPendingEnds(): array
+    {
+        return $this->pendingEnds;
+    }
+
+    /** 取走并清空（引擎 flush 用；清空保证同一条登记不会被播两次） */
+    public function drainPendingEnds(): array
+    {
+        $taken = $this->pendingEnds;
+        $this->pendingEnds = [];
+        return $taken;
     }
 
     /** @return ProcessTask[] */

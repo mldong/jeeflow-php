@@ -16,12 +16,14 @@ class StartModel extends NodeModel
 {
     protected function exec(Execution $execution): void
     {
-        // INSTANCE_START（InstanceStart 语义，对齐 Java StartModel.exec）：
-        // 实例已在 saveInstance 落库、processInstanceId 已分配。本批次监听器
-        // 对它不发站内信（spec §4.4），但引擎 fire 以保持事件清单完整。
+        // PROCESS_INSTANCE_START（spec §11.3 码 1，对齐 Java StartModel.exec）：
+        // 实例已在 saveInstance 落库、processInstanceId 已分配——§11.2 原则 3 的「实例行 insert
+        // 之后」即此。本栈监听器对它不发站内信（§11.4/集成层职责），但引擎 fire 以保持清单完整。
         ProcessPublisher::notify(ProcessEvent::of(
-            ProcessEventTypeEnum::INSTANCE_START,
+            ProcessEventTypeEnum::PROCESS_INSTANCE_START,
             $execution->getProcessInstanceId(),
+            null,
+            [ProcessPublisher::KEY_INSTANCE_ID => $execution->getProcessInstanceId()],
         ));
         $this->runOutTransition($execution);
     }

@@ -36,13 +36,18 @@ final class JeeflowFacadeOperatorBlankTest extends TestCase
 {
     /**
      * 四个归属出口：[action, 归属谓词列（§2.5 口径表）, 行身份键, 无归属条件时的仓储方法]
+     *
+     * issues/138：ccList 的谓词列按 §2.5 口径表逐字写作 `cc.actor_id`（此前是 `t.actor_id`，
+     * 因为旧行源是 cc 表本身），行身份键按「行形状三要件」第三条改为 `id`（实例 id）——
+     * 条文：「行主键键名必须是 **`id`（实例 id）**」，错法 ③ 即「行主键出 `processInstanceId` 而没有 `id`」。
+     *
      * @var array<int, array{0:string,1:string,2:string,3:string}>
      */
     private const EXITS = [
         ['processInstance/page', 't.operator', 'id', 'pageInstances'],
         ['processTask/todoList', 'pta.actor_id', 'id', 'pageTodoTasks'],
         ['processTask/doneList', 't.operator', 'id', 'pageDoneTasks'],
-        ['processInstance/ccList', 't.actor_id', 'processInstanceId', 'pageCcInstances'],
+        ['processInstance/ccList', 'cc.actor_id', 'id', 'pageCcInstances'],
     ];
 
     /** 造数据读数：user1 发起 2 条、user2 发起 1 条、全库 3 条（三档互不相等，负向才有鉴别力） */

@@ -9,8 +9,10 @@ use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessEventTypeEnum;
+use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\Event\ProcessEvent;
 use Jeeflow\Core\Event\ProcessPublisher;
+use Jeeflow\Core\Event\PendingInstanceEnd;
 use Jeeflow\Core\Interceptor\SurrogateInterceptor;
 use Jeeflow\Core\Model\EndModel;
 use Jeeflow\Core\Model\ProcessModel;
@@ -31,6 +33,19 @@ use Jeeflow\Core\Util\FlowUtil;
  */
 class JeeflowEngine implements JeeflowEngineInterface
 {
+    /**
+     * 退回族 submitType（spec §11.3 码 6「含退发起人、软拒绝、跳转回退」，共用 TASK_REJECT 一号、
+     * 载荷再分）：2 拒绝 / 3 退回上一步 / 6 退回发起人 / 20 会签拒绝（软拒绝，issues/91 一票否决）。
+     * 0 发起 / 1 同意 / 4 跳转 / 5 重新提交 ⇒ {@see ProcessEventTypeEnum::TASK_COMPLETE}。
+     * 与 java `JeeflowEngineImpl.REJECT_SUBMIT_TYPES` 同表（§11.7 行为基准取 java）。
+     */
+    private const REJECT_SUBMIT_TYPES = [
+        SubmitType::REJECT,
+        SubmitType::ROLLBACK,
+        SubmitType::ROLLBACK_TO_OPERATOR,
+        SubmitType::COUNTERSIGN_DISAGREE,
+    ];
+
     private ProcessRepositoryInterface $repository;
 
     /**
@@ -119,13 +134,16 @@ class JeeflowEngine implements JeeflowEngineInterface
                 $start->execute($exec);
             }
             // 8. 持久化产生的任务，并更新实例
-            //    TASK_START 事件须在 saveTask 落库（分配 taskId）之后 fire——对齐
-            //    spec §4.4「任务落库后逐任务 fire，监听器可按 taskId 反查」与 Java
+            //    PROCESS_TASK_START 事件须在 saveTask 落库（分配 taskId）之后 fire——对齐
+            //    spec §11.2 原则 3 / §11.3 码 3「任务落库后逐任务 fire，监听器可按 taskId 反查」与 Java
             //    JeeflowEngineImpl start 内循环（CreateTaskHandler 阶段 taskId 尚未生成，不 fire）。
             foreach ($exec->getProcessTaskList() as $task) {
                 $this->saveNewTask($exec, $task);
             }
             $this->repository->updateInstance($instance);
+            // 实例终态事件（码 2）：发起即办结的短流（start→end、decision 直达结束）与
+            // 子流程父实例都从这一支落库后播——顺序判据同 persistTasks 的收口。
+            $this->flushInstanceEndEvents($exec);
             return $instance;
         });
     }
@@ -142,8 +160,13 @@ class JeeflowEngine implements JeeflowEngineInterface
             if ($node !== null) {
                 $node->execute($exec);
             }
-            // 抄送
-            $ccActors = $exec->getArgs()->get(FlowConst::CC_ACTORS);
+            // 抄送（§11.7 办理腿）：判据取**本次提交的 args**，不取 $exec->getArgs()——后者是
+            // prepareExecution 合并过的「实例变量 ← 本次参数」，而实例变量在上一步办理时已被
+            // completeTask 全量并入（含那一步的 tf_ccActors）⇒ 读合并值会让"抄送"这个事实被
+            // 后续每一次办理重放一次（重复建 cc 行 + 重复 fire CC_CREATE + 重复站内信）。
+            // §11.2 原则 1「同一事实只发一次」/§11.1「严禁出现重复抄送/重复通知」；
+            // 行为基准＝Java JeeflowEngineImpl:130 `handleCcActors(..., args.get(CC_ACTORS))`。
+            $ccActors = $args?->get(FlowConst::CC_ACTORS);
             $this->handleCcActors($exec->getProcessInstance()->getInstanceId(), $operator, $ccActors);
             $this->persistTasks($exec);
             return $exec->getProcessTaskList();
@@ -263,6 +286,14 @@ class JeeflowEngine implements JeeflowEngineInterface
         }
         $this->repository->updateTask($task);
 
+        // 任务被办掉 / 被退回（spec §11.3 码 5 TASK_COMPLETE / 码 6 TASK_REJECT，issues/132 新增）：
+        // 紧跟上面这次 updateTask（任务行 state 落库）之后 fire——§11.2 原则 3 的「落库之后」即此。
+        // 四个办理入口（常规办理 / 跳转 / 退结束 / 退发起人）都汇过 prepareExecution 这一条漏斗，
+        // 与 saveNewTask 之于 PROCESS_TASK_START 同构（契约「覆盖全部流转路径」）。
+        // 两支互斥（§11.3 码 6「同一动作走 reject 就不再 fire complete」）：判据取载荷 submitType，
+        // 不为「拒绝/退回上一步/退发起人/会签否决」各开一号（§11.2 原则 2）。
+        $this->notifyTaskFinished($instance, $task, $operator, $args);
+
         // 合并流程变量
         $mergedArgs = FlowData::create();
         $mergedArgs->setAll($instance->getVariables()->toArray());
@@ -290,7 +321,7 @@ class JeeflowEngine implements JeeflowEngineInterface
     {
         // 共用 executeProcessTask / executeAndJumpTask / executeAndJumpToEnd /
         // executeAndJumpToFirstTaskNode 全部办理路径：saveTask 落库（分配 taskId）
-        // 之后逐任务 fire TASK_START（对齐 Java JeeflowEngineImpl.persistTasks）。
+        // 之后逐任务 fire PROCESS_TASK_START（对齐 Java JeeflowEngineImpl.persistTasks）。
         foreach ($exec->getProcessTaskList() as $task) {
             $this->saveNewTask($exec, $task);
         }
@@ -298,6 +329,58 @@ class JeeflowEngine implements JeeflowEngineInterface
             $this->repository->updateTask($exec->getProcessTask());
         }
         $this->repository->updateInstance($exec->getProcessInstance());
+        // 实例终态事件（码 2）：紧跟上面那次 updateInstance —— 行的 state 已落库才允许播
+        $this->flushInstanceEndEvents($exec);
+    }
+
+    /**
+     * 实例终态事件（码 2 `PROCESS_INSTANCE_END`）的统一收口——
+     * spec §11.2 原则 3「只在落库之后 fire」／§11.3 码 2「实例 `state` 更新为
+     * 20/30/40/45/50/99 之一并落库之后」／08-compliance 场景 32。
+     * 逐字移植 Java `JeeflowEngineImpl#flushInstanceEndEvents`。
+     *
+     * 处理器（`EndProcessHandler`）只往 execution 挂 {@see PendingInstanceEnd}，
+     * 本方法在实例行**真正落库之后**把它们播出去。两条路径都要覆盖，缺一即丢事件：
+     *
+     * - **正常路径**：登记的就是本次 execution 的实例，行已由调用方那次
+     *   `repository->updateInstance`（或发起路径的 `saveInstance`+`updateInstance`）
+     *   写好 ⇒ 这里只补播，不重复写；
+     * - **子流程父实例路径**：子实例办结时处理器在**父实例**的 execution 上继续流转，
+     *   父实例**不走**子流程这次的 `updateInstance`（本栈历史缺口与 java 同病：父实例终态
+     *   只改内存，内存仓储因存的是对象引用而照不出来，SQL 仓储下那一行永远停在 10）
+     *   ⇒ 这里按登记带的聚合根补一次 `updateInstance`，再播。先写后播的顺序对父实例同样成立。
+     *
+     * 载荷 state 取登记时刻的快照整数（＝刚落库那一行的值），不重读聚合根——登记之后
+     * 流转还可能继续触碰该对象，重读会播出一个没写过的中间值。
+     *
+     * 本栈可到达的终态档位：码 2 只由结束节点产生（办结 20／拒绝 45，`EndProcessHandler`
+     * 是 `finish()`/`reject()` 的唯一调用者）。其余档位各自的归宿——30 撤回走门面 `withdraw`
+     * （先 `updateInstance` 后 fire 码 8，写后播已满足，且 §11.3 码 8 明写**不补发 2**）；
+     * 40 终止、50 挂起、99 废弃在 main 源没有可达的收口点（`ProcessInstance::interrupt`／
+     * `abandonTask` 生产路径零调用者，见 issues/132 事件腿报告与 08-compliance 场景 34 的
+     * unreachable 记账）；将来出现写这些档位的收口点时，须在该次落库后补 fire，
+     * 不得在集成层主动补发（spec §11.1）。
+     *
+     * 副作用（顺带收口）：修复前码 2 在 `node->execute` 里就地 fire，流转后续步骤抛异常
+     * 导致事务回滚时事件已经漏出去；现在事件排在写库之后，回滚的那次不再播。
+     */
+    private function flushInstanceEndEvents(Execution $exec): void
+    {
+        $pending = $exec->drainPendingEnds();
+        if ($pending === []) {
+            return;
+        }
+        foreach ($pending as $end) {
+            $instance = $end->getInstance();
+            $ownInstance = $instance === null
+                || ($exec->getProcessInstanceId() !== null
+                    && $exec->getProcessInstanceId() === (string) $end->getInstanceId());
+            if (!$ownInstance) {
+                // 父实例（或更上层）被这一支流转连带办结：它的行不在本次 updateInstance 范围内，补写
+                $this->repository->updateInstance($instance);
+            }
+            ProcessPublisher::notifyInstanceEnd($end->getInstanceId(), $end->getState());
+        }
     }
 
     /**
@@ -313,7 +396,7 @@ class JeeflowEngine implements JeeflowEngineInterface
     {
         $this->applySurrogate($exec, $task);
         $this->repository->saveTask($task);
-        // TASK_START 在落库（分配 taskId）后 fire，见 start 内注释与 spec §4.4
+        // PROCESS_TASK_START 在落库（分配 taskId）后 fire，见 start 内注释与 spec §11.2 原则 3
         $this->notifyTaskStart($task);
     }
 
@@ -354,17 +437,13 @@ class JeeflowEngine implements JeeflowEngineInterface
         }
         if (!empty($ccArr) && $instanceId !== null) {
             $this->repository->createCcInstance($instanceId, $operator, $ccArr);
-            // CC_CREATE（issues/102 新增；本批次仅 PHP 引擎实现）：逐抄送人 fire，与
-            // createCcInstance 逐行 INSERT 的粒度对应（issue 102 表头「逐抄送人」）。
+            // CC_CREATE（spec §11.3 码 4）：cc 行**落库之后**逐抄送人 fire，与 createCcInstance
+            // 逐行 INSERT 的粒度对应（issue 102 表头「逐抄送人」）。三条路径（发起 f_ccActors /
+            // 办理 tf_ccActors / 门面手动 createCCInstance）共用 ProcessPublisher::notifyCcCreate
+            // 这一把收口（§11.7「发起与办理走同一个 notifyCcCreate」）。
             // sourceId=instanceId，ccActorId=抄送人 id（监听器直接取用免反查 cc 表）。
             // fire 在 runInTx 事务内，监听器同连接反查可见本事务写入（与 Java 同事务一致）。
-            foreach ($ccArr as $actorId) {
-                ProcessPublisher::notify(ProcessEvent::of(
-                    ProcessEventTypeEnum::CC_CREATE,
-                    $instanceId,
-                    (string) $actorId,
-                ));
-            }
+            ProcessPublisher::notifyCcCreate((string) $instanceId, $ccArr);
         }
     }
 
@@ -378,13 +457,47 @@ class JeeflowEngine implements JeeflowEngineInterface
     }
 
     /**
-     * fire「任务开始」事件（TASK_START / 新待办）。
+     * fire「任务办结 / 任务退回」事件（spec §11.3 码 5 {@code TASK_COMPLETE} / 码 6
+     * {@code TASK_REJECT}，issues/132 新增）。
      *
-     * 引擎契约（spec §4.4 / Java JeeflowEngineImpl.notifyTaskStart）：事件在任务行
+     * 调用点唯一：{@see self::prepareExecution()} 里 `repository->updateTask($task)` 之后——
+     * 任务行的 `state` 就是在这次 updateTask 落库的（§11.2 原则 3），四个办理入口都汇过这里。
+     *
+     * 分派判据＝载荷 `submitType`：{@see self::REJECT_SUBMIT_TYPES} 命中发 6，其余发 5，二者互斥；
+     * 缺省按 AGREE 处理（与 EndProcessHandler 读 submitType 的缺省同口径）。「跳转回退」
+     * （submitType=4 且目标在上游）本栈仍归 5——引擎不为此做图回溯，监听器按载荷自判（§11.2 原则 2）。
+     */
+    private function notifyTaskFinished(ProcessInstance $instance, ProcessTask $task,
+                                        string $operator, ?FlowData $args): void
+    {
+        if ($task->getTaskId() === null) {
+            return; // 与 notifyTaskStart 同款守卫：无 taskId 的事实反查不到，不发
+        }
+        $submitType = $args?->getInt(FlowConst::SUBMIT_TYPE) ?? SubmitType::AGREE;
+        $isReject = in_array($submitType, self::REJECT_SUBMIT_TYPES, true);
+        ProcessPublisher::notify(ProcessEvent::of(
+            $isReject ? ProcessEventTypeEnum::TASK_REJECT : ProcessEventTypeEnum::TASK_COMPLETE,
+            $task->getTaskId(),
+            null,
+            [
+                ProcessPublisher::KEY_INSTANCE_ID => $instance->getInstanceId(),
+                ProcessPublisher::KEY_TASK_ID => $task->getTaskId(),
+                ProcessPublisher::KEY_OPERATOR => $operator,
+                ProcessPublisher::KEY_SUBMIT_TYPE => $submitType,
+            ],
+        ));
+    }
+
+    /**
+     * fire「任务开始」事件（PROCESS_TASK_START / 新待办，spec §11.3 码 3）。
+     *
+     * 引擎契约（§11.2 原则 3 / Java JeeflowEngineImpl.notifyTaskStart）：事件在任务行
      * **落库之后**触发，{@code sourceId = taskId} 必须可被监听器 findTaskById 反查。
      * 故本方法只在 saveTask（分配 taskId）之后调用；{@code getTaskId()===null} 不 fire
      * （对齐 Java 的 taskId 守卫注释——handler 阶段 taskId 尚为 null，那时 fire 会因
      * 监听器 sourceId 空守卫漏发「新待办」）。
+     *
+     * 直传载荷键（§11.3 码 3 必备）：instanceId / taskId / actors。
      */
     private function notifyTaskStart(ProcessTask $task): void
     {
@@ -392,8 +505,14 @@ class JeeflowEngine implements JeeflowEngineInterface
             return;
         }
         ProcessPublisher::notify(ProcessEvent::of(
-            ProcessEventTypeEnum::TASK_START,
+            ProcessEventTypeEnum::PROCESS_TASK_START,
             $task->getTaskId(),
+            null,
+            [
+                ProcessPublisher::KEY_INSTANCE_ID => $task->getProcessInstanceId(),
+                ProcessPublisher::KEY_TASK_ID => $task->getTaskId(),
+                ProcessPublisher::KEY_ACTORS => $task->getActorIds(),
+            ],
         ));
     }
 }

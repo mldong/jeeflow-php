@@ -32,12 +32,20 @@ use PHPUnit\Framework\TestCase;
  */
 final class PdoSqliteOwnershipBlankConditionTest extends TestCase
 {
-    /** [PageQuery 列, 仓储方法, 无归属条件时的全库行数] */
+    /**
+     * [PageQuery 列, 仓储方法, 无归属条件时的全库行数]
+     *
+     * issues/138 后 ccList 的列写作 `cc.actor_id`、行源是实例表（spec 06-facade.md §2.5 口径表
+     * 「`processInstance/ccList` | `cc.actor_id EQ operator`」+ §ccList 行形状三要件「`ccList` 的每一行
+     * 必须来自 `wf_process_instance`（cc 表只当过滤/关联用）」）。于是"无归属条件的全库行数"
+     * 从 cc 行数（1）变成实例行数（2）—— 与 Java JdbcProcessRepository
+     * .pageCcInstances = pageInstances(query, cc=true) 同读数（LEFT JOIN 不过滤）。
+     */
     private const OWNERSHIP = [
         ['t.operator', 'pageInstances', 2],
         ['t.operator', 'pageDoneTasks', 2],
         ['pta.actor_id', 'pageTodoTasks', 1],
-        ['t.actor_id', 'pageCcInstances', 1],
+        ['cc.actor_id', 'pageCcInstances', 2],
     ];
 
     private \PDO $pdo;
@@ -141,7 +149,7 @@ SQL);
         $this->assertCount(1, $this->repo->pageTodoTasks($query2)->getRows());
 
         $query3 = new PageQuery(1, 50);
-        $query3->add('t.actor_id', 'EQ', 'nobody');
+        $query3->add('cc.actor_id', 'EQ', 'nobody');
         $this->assertCount(0, $this->repo->pageCcInstances($query3)->getRows());
     }
 

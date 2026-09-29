@@ -10,9 +10,12 @@ use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\CountersignType;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\PerformType;
+use Jeeflow\Core\Enum\ProcessEventTypeEnum;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
+use Jeeflow\Core\Event\ProcessEvent;
+use Jeeflow\Core\Event\ProcessPublisher;
 use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
@@ -359,6 +362,18 @@ class JeeflowFacade
         $inst->withdraw($operator);
         // updateInstance 级联落库（PDO 仓内部逐任务 updateTask；内存仓与聚合共享对象引用）
         $this->repository->updateInstance($inst);
+        // TASK_WITHDRAW（spec §11.3 码 8，issues/132 新增）：撤回把实例 state 写 30 **落库之后**、
+        // 被撤任务行更新完成，**每轮撤回只 fire 一次**（一次撤回动的是一个事实，不逐任务发）。
+        // 上面聚合根守卫（issues/134 非 10 一律拒 20010009）被拒的那次走不到这里 ⇒ 被拒不发本支。
+        ProcessPublisher::notify(ProcessEvent::of(
+            ProcessEventTypeEnum::TASK_WITHDRAW,
+            $instanceId,
+            null,
+            [
+                ProcessPublisher::KEY_INSTANCE_ID => $instanceId,
+                ProcessPublisher::KEY_OPERATOR => $operator,
+            ],
+        ));
         return $this->ok();
     }
 
@@ -619,6 +634,21 @@ class JeeflowFacade
         $task->setUpdateTime($now);
         $task->setUpdateUser($operator);
         $this->repository->updateTask($task);
+        // TASK_TRANSFER（spec §11.3 码 7，issues/132 新增）：任务参与者被替换**并落库之后** fire
+        // （上面 removeTaskActor/addTaskActor/updateTask 三次写都已完成，§11.2 原则 3）。
+        // sourceId=taskId；转办不新建任务行 ⇒ 本支不伴随 PROCESS_TASK_START(3)。
+        ProcessPublisher::notify(ProcessEvent::of(
+            ProcessEventTypeEnum::TASK_TRANSFER,
+            $taskId,
+            null,
+            [
+                ProcessPublisher::KEY_INSTANCE_ID => (string) $task->getProcessInstanceId(),
+                ProcessPublisher::KEY_TASK_ID => $taskId,
+                ProcessPublisher::KEY_FROM_ACTOR => $fromActor,
+                ProcessPublisher::KEY_TO_ACTOR => $toActor,
+                ProcessPublisher::KEY_OPERATOR => $operator,
+            ],
+        ));
         return $this->ok();
     }
 
@@ -868,6 +898,11 @@ class JeeflowFacade
         $operator = $this->toStr($args['operator'] ?? '');
         if (empty($actorIds)) return $this->error('抄送人不能为空');
         $this->repository->createCcInstance($instanceId, $operator, $actorIds);
+        // 手动抄送腿同样 fire CC_CREATE（spec §11.2 原则 1 ＋ §11.3 码 4 三条路径同判 ＋
+        // §11.6「java 是手动不 fire 那一派，本案唯一一处基准要向 go/py/node 学」——PHP 同病本轮并修）：
+        // 「新增了一条抄送记录」这个事实与谁触发无关，cc 行落库之后逐抄送人发一次，
+        // 与发起/办理腿共用 ProcessPublisher::notifyCcCreate 同一把收口（严禁集成层自行补发，§11.1）。
+        ProcessPublisher::notifyCcCreate($instanceId, $actorIds);
         return $this->ok();
     }
 
@@ -883,8 +918,12 @@ class JeeflowFacade
     {
         $query = $this->queryParser->parse($args);
         // issues/129：归属谓词「抄送我的」——空串视同未传，回落缺省 user1
+        // issues/138：谓词列写作 cc.actor_id（spec 06 §2.5 口径表钉的列，语义不变），与 Java
+        // JeeflowFacade.ccList 的 query.add("cc.actor_id","EQ",userId) 逐字同形。ccList 的行源
+        // 已是 wf_process_instance（别名 t），被抄送人在 JOIN 进来的 cc 表上，故这里必须用 cc. 前缀；
+        // 两仓储各自把该键落到 cc 表的列上（PDO 直接拼进 WHERE，内存仓按 EXISTS 匹配实例的 cc 行）。
         $userId = $this->operatorOf($args);
-        $query->add('t.actor_id', 'EQ', $userId);
+        $query->add('cc.actor_id', 'EQ', $userId);
         $page = $this->repository->pageCcInstances($query);
         return $this->pageResult($page);
     }

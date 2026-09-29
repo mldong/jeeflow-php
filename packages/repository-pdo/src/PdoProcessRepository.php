@@ -227,27 +227,7 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $stmt->execute($whereParams);
         $rows = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
-            $rows[] = [
-                'id' => PdoValue::strId($row['id']) ?? '',
-                'parentId' => PdoValue::strId($row['parent_id']),
-                'processDefineId' => PdoValue::strId($row['process_define_id']),
-                'state' => (int) $row['state'],
-                'parentNodeName' => $row['parent_node_name'],
-                'businessNo' => $row['business_no'],
-                'operator' => $row['operator'] ?? '',
-                'ext' => json_decode((string)($row['variable'] ?? '{}'), true) ?: (object)[], // issues/124：variable 原串出口下线
-                'createTime' => $row['create_time'],
-                'createUser' => PdoValue::strId($row['create_user']),
-                'updateTime' => $row['update_time'],
-                'updateUser' => PdoValue::strId($row['update_user']),
-                'expireTime' => $row['expire_time'],
-                // JOIN fields from wf_process_define
-                'processDefineName' => $row['process_define_name'] ?? null,
-                'processDefineDisplayName' => $row['process_define_display_name'] ?? null,
-                'processDefineVersion' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
-                'displayName' => $row['process_define_display_name'] ?? null,
-                'version' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
-            ];
+            $rows[] = $this->instanceRow($row);
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
     }
@@ -440,53 +420,46 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $stmt->execute([date('Y-m-d H:i:s'), (string) $instanceId, $operator]);
     }
 
+    /**
+     * issues/138 · ccList 行形状三要件（spec 06-facade.md §processInstance/ccList）
+     *
+     * 条文逐字：「`ccList` 的每一行**必须来自 `wf_process_instance`**（cc 表只当过滤/关联用），
+     * `operator` 必须是**实例的 `operator`＝流程发起人**，行主键键名必须是 **`id`（实例 id）**」，
+     * 且「rows 同 processInstance/page 行结构」。
+     *
+     * 旧实现把 `wf_process_cc_instance` 当行源（`FROM wf_process_cc_instance t`），于是出口是
+     * cc 行的形状：主键叫 `processInstanceId`、没有 `id`、还多了 `actorId` —— 正是条文列的错法 ③。
+     * 现在行源换成实例表，`t` 这个别名归实例表，cc 表退到 `cc` 别名的 JOIN，出口与 pageInstances
+     * 共用同一个 instanceRow() 投影 ⇒ 两处形状由构造保证一致，不再各自漂移。
+     *
+     * 归属谓词（spec 06 §2.5 口径表钉的 `cc.actor_id EQ operator`，不许动）仍按 cc 的列过滤：
+     * buildConditions 把 PageQuery 的列名原样拼进 WHERE，门面注入 `cc.actor_id` 即落到 JOIN 表的列，
+     * 与 Java JdbcProcessRepository.pageCcInstances = pageInstances(query, cc=true)
+     * （`LEFT JOIN wf_process_cc_instance cc ON t.id = cc.process_instance_id` +
+     * CC_INSTANCE_WHITELIST 含 `cc.actor_id`）同一条 SQL 形状。
+     */
     public function pageCcInstances(PageQuery $query): PageResult
     {
         [$whereSql, $whereParams] = $this->buildConditions($query);
 
-        // Count (JOIN to match Java engine behavior)
-        $countSql = "SELECT COUNT(*) FROM wf_process_cc_instance t "
-            . "LEFT JOIN wf_process_instance pi ON t.process_instance_id = pi.id "
-            . "LEFT JOIN wf_process_define pd ON pi.process_define_id = pd.id "
-            . "WHERE 1=1" . $whereSql;
-        $countStmt = $this->pdo->prepare($countSql);
+        // Count（与数据查询同一个 FROM/JOIN，行数口径不打架）
+        $baseSql = ' FROM wf_process_instance t '
+            . 'LEFT JOIN wf_process_cc_instance cc ON t.id = cc.process_instance_id '
+            . 'LEFT JOIN wf_process_define pd ON t.process_define_id = pd.id '
+            . 'WHERE 1=1';
+        $countStmt = $this->pdo->prepare("SELECT COUNT(*)" . $baseSql . $whereSql);
         $countStmt->execute($whereParams);
         $total = (int) $countStmt->fetchColumn();
 
-        // Fetch with JOINs for displayName/version + instance variable for ext
         $order = $query->getOrderBy() ?: 't.create_time DESC';
-        $sql = "SELECT t.*, pd.display_name AS process_define_display_name, pd.name AS process_define_name, "
-            . "pd.version AS process_define_version, pi.operator AS instance_operator, pi.variable AS instance_variable "
-            . "FROM wf_process_cc_instance t "
-            . "LEFT JOIN wf_process_instance pi ON t.process_instance_id = pi.id "
-            . "LEFT JOIN wf_process_define pd ON pi.process_define_id = pd.id "
-            . "WHERE 1=1" . $whereSql . " ORDER BY $order"
+        $sql = "SELECT t.*, pd.name AS process_define_name, pd.display_name AS process_define_display_name, "
+            . "pd.version AS process_define_version" . $baseSql . $whereSql . " ORDER BY $order"
             . SqlPaging::clause($query->getPageSize(), $query->getOffset());
         $stmt = $this->pdo->prepare($sql);
         $stmt->execute($whereParams);
         $rows = [];
         while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
-            // Parse instance variable JSON for ext (align with pagedTaskQuery / pageInstances)
-            $instanceVarJson = $row['instance_variable'] ?? null;
-            $instanceExt = null;
-            if ($instanceVarJson !== null && is_string($instanceVarJson)) {
-                $decoded = json_decode($instanceVarJson, true);
-                $instanceExt = is_array($decoded) ? $decoded : null;
-            }
-            $rows[] = [
-                'processInstanceId' => PdoValue::strId($row['process_instance_id']),
-                'actorId' => PdoValue::strId($row['actor_id']),
-                'state' => (int) $row['state'],
-                'createTime' => $row['create_time'],
-                'createUser' => PdoValue::strId($row['create_user']),
-                // JOIN fields for frontend display
-                'displayName' => $row['process_define_display_name'] ?? null,
-                'processDefineName' => $row['process_define_name'] ?? null,
-                'version' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
-                'operator' => PdoValue::strId($row['instance_operator'] ?? null),
-                'ext' => ($instanceExt ?? []) ?: (object)[],
-                'instanceExt' => ($instanceExt ?? []) ?: (object)[],
-            ];
+            $rows[] = $this->instanceRow($row);
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
     }
@@ -514,6 +487,39 @@ class PdoProcessRepository implements ProcessRepositoryInterface
     }
 
     // ── 内部方法 ──
+
+    /**
+     * 实例行的唯一投影（issues/138）：pageInstances 与 pageCcInstances 共用 ⇒
+     * 「rows 同 processInstance/page 行结构」（spec 06-facade.md:994）由构造保证。
+     * 主键键名 `id`＝实例 id、`operator`＝实例 operator＝流程发起人，两者都是条文三要件。
+     *
+     * @param array<string, mixed> $row t.* + pd.* 三列的查询行
+     * @return array<string, mixed>
+     */
+    private function instanceRow(array $row): array
+    {
+        return [
+            'id' => PdoValue::strId($row['id']) ?? '',
+            'parentId' => PdoValue::strId($row['parent_id']),
+            'processDefineId' => PdoValue::strId($row['process_define_id']),
+            'state' => (int) $row['state'],
+            'parentNodeName' => $row['parent_node_name'],
+            'businessNo' => $row['business_no'],
+            'operator' => $row['operator'] ?? '',
+            'ext' => json_decode((string)($row['variable'] ?? '{}'), true) ?: (object)[], // issues/124：variable 原串出口下线
+            'createTime' => $row['create_time'],
+            'createUser' => PdoValue::strId($row['create_user']),
+            'updateTime' => $row['update_time'],
+            'updateUser' => PdoValue::strId($row['update_user']),
+            'expireTime' => $row['expire_time'],
+            // JOIN fields from wf_process_define
+            'processDefineName' => $row['process_define_name'] ?? null,
+            'processDefineDisplayName' => $row['process_define_display_name'] ?? null,
+            'processDefineVersion' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
+            'displayName' => $row['process_define_display_name'] ?? null,
+            'version' => isset($row['process_define_version']) ? (int) $row['process_define_version'] : null,
+        ];
+    }
 
     private function defineRow(array $row): array
     {
