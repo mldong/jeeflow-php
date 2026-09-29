@@ -12,6 +12,7 @@ use Jeeflow\Core\Spi\InMemoryIdGenerator;
 use Jeeflow\Core\Spi\PageQuery;
 use Jeeflow\Core\Spi\PageResult;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
+use Jeeflow\Core\Util\CcActorUtil;
 
 /**
  * 内存仓储实现 —— 用于单元测试
@@ -260,6 +261,11 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
 
     public function createCcInstance(int|string $instanceId, string $operator, array $actorIds): void
     {
+        // issues/141 G10「空不创建行」（spec 06-facade.md §2.10 实现要求①「两层都挡」）：**写侧**兜底——
+        // 空串/纯空白/null 一律丢弃，落库值取 trim 后的串（" 123 " 与 "123" 是同一个人）。绕过引擎漏斗
+        // 与门面**直连本仓储**的调用方（集成层、第三方仓储消费者）同样建不出 actor_id='' 的行。
+        // 判据与 PDO 仓、与漏斗层同一条：都走 \Jeeflow\Core\Util\CcActorUtil（单点复用，别再抄两份）。
+        $actorIds = CcActorUtil::normalizeList($actorIds);
         // issues/141 G2 写侧判重＝幂等空操作（spec 06-facade.md §4），与 PDO 仓同一条判据：
         // 同一 (实例, 被抄送人) 已有 cc 行 ⇒ 跳过——①不新增行 ②不重置未读（state 保持原值）
         // ③不更新原行时间（createTime/updateTime 逐字不变）。判重放在**写侧**：查询侧不引入去重、
@@ -310,17 +316,20 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
      * 三条入口（发起 f_ccActors／办理 tf_ccActors／门面手动 createCCInstance）拿这个子集去 fire
      * CC_CREATE，子集为空整支不发（spec 11.2 原则 1「码=事实」）。
      *
+     * issues/141 G10「空不创建行」（spec 06-facade.md §2.10）：入参先过 CcActorUtil::normalizeList
+     * ——空串/纯空白/null 丢弃、值取 trim 后的串，故返回的**子集**不可能含空值（子集直接拿去 fire，
+     * 带空值就等于往 CC_CREATE 事件里灌空归属人）。
+     *
      * @param string[] $actorIds
      * @return string[]
      */
     public function createCcInstanceIfAbsent(int|string $instanceId, string $operator, array $actorIds): array
     {
+        // issues/141 G10 写侧兜底：与 createCcInstance 同一条判据（单点复用，不另抄一份）
+        $actorIds = CcActorUtil::normalizeList($actorIds);
         $existing = $this->findCcActorIds($instanceId);
         $fresh = [];
         foreach ($actorIds as $actorId) {
-            if ($actorId === null) {
-                continue;
-            }
             if (in_array($actorId, $existing, false)) {
                 continue;
             }

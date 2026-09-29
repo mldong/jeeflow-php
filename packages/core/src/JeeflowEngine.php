@@ -24,6 +24,7 @@ use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
+use Jeeflow\Core\Util\CcActorUtil;
 use Jeeflow\Core\Util\FlowUtil;
 
 /**
@@ -427,14 +428,15 @@ class JeeflowEngine implements JeeflowEngineInterface
 
     private function handleCcActors(?string $instanceId, string $operator, mixed $ccUserIds): void
     {
-        if ($ccUserIds === null) return;
-        if (is_string($ccUserIds)) {
-            $ccArr = array_filter(array_map('trim', explode(',', $ccUserIds)));
-        } elseif (is_array($ccUserIds)) {
-            $ccArr = array_map('strval', $ccUserIds);
-        } else {
-            return;
-        }
+        // issues/141 G10「空不创建行」（spec 06-facade.md §2.10）：发起 f_ccActors 与办理 tf_ccActors
+        // 两条腿共用 CcActorUtil::normalize 这一支归一——逗号串与数组两种形态同判据，空串/纯空白/
+        // 数组里的空元素一律丢弃，落库与比较值取 trim 后的串；**丢完为空 ⇒ 不建 cc 行、也不 fire 码 4**。
+        // 旧形状的两处病灶都在这一条里收掉：
+        //  ① 数组腿只做 strval、完全不过滤 ⇒ ['7801','','  '] 真落 3 行（含 actor_id=''／'  '）；
+        //  ② 逗号串腿用 array_filter 假值判据 ⇒ '0' 这类"看起来像空"的正常 id 被吃掉（实测 0 行）。
+        // 漏斗之外两仓写侧还各有一层兜底（InMemory/PdoProcessRepository::createCcInstance），
+        // 直连仓储的调用方同样灌不进空值（spec §2.10 实现要求①「两层都挡」）。
+        $ccArr = CcActorUtil::normalize($ccUserIds);
         if (!empty($ccArr) && $instanceId !== null) {
             // issues/141 G2 写侧判重＝幂等空操作（spec 06-facade.md §4）：同一 (实例, 被抄送人) 已有
             // cc 行时跳过——不新增行、不重置未读、不更新原行时间；**新建子集**才拿去 fire。

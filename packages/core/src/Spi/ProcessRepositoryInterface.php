@@ -88,14 +88,24 @@ interface ProcessRepositoryInterface
     // ── 抄送 ──
 
     /**
-     * 建 cc 行。
+     * 建 cc 行（最底层写入口）。
      *
      * issues/141 G2 写侧判重＝幂等空操作（spec 06-facade.md §4）：本方法**自带判重**——
      * 同一 `(instanceId, actorId)` 已有 cc 行时跳过，不新增行、不重置未读、不更新原行时间。
      * 需要"到底新建了哪些人"（拿去 fire CC_CREATE）的调用方请走
      * {@see self::createCcInstanceIfAbsent()}，不要直接用本方法后按原始请求全量 fire。
      *
-     * @param string[] $actorIds
+     * issues/141 G10「空不创建行」（spec 06-facade.md §2.10）：入参里的**空串、纯空白、`null`
+     * 一律丢弃**，落库值取 trim 后的串（`" 123 "` 与 `"123"` 是同一个人，与上面的 G2 判重同一条尺子）。
+     * 这条义务必须落在**这一层**而不只落在引擎漏斗里——绕过 {@code JeeflowEngine::handleCcActors}
+     * 与门面、直连仓储的调用方（集成层、第三方仓储消费者）同样不得把空归属值灌进 `actor_id`，
+     * 那正是 issues/129 那族「空 operator 读全库」的病根。
+     * 自带两仓的落点：{@see \Jeeflow\Core\Util\CcActorUtil::normalizeList()}（单点复用，两仓同一条判据）。
+     *
+     * ⚠️ 本轮**没有**往本接口加任何方法：PHP 接口不能有默认方法体，G2 那两个必选成员已经是
+     * "第三方自实现仓储升版致命"的账（见 changelog），判据一律加在 concrete 仓与共用工具里。
+     *
+     * @param string[] $actorIds 抄送人集合（空值元素由实现方丢弃，不建行）
      */
     public function createCcInstance(int|string $instanceId, string $operator, array $actorIds): void;
 
@@ -132,6 +142,10 @@ interface ProcessRepositoryInterface
      *
      * 仓储不覆写 {@see self::findCcActorIds()}（返回空集）时，本方法退化成"全量建行＋全量返回"
      * ＝旧行为，与 java 侧 default 方法同一档（见上方兼容性说明）。
+     *
+     * issues/141 G10「空不创建行」（spec 06-facade.md §2.10）：返回的子集**不得含空串/纯空白**，
+     * 元素一律是 trim 后的串——这个子集会被三条入口直接拿去 fire 码 4，带空值等于往事件里灌
+     * 空归属人；入参丢完为空 ⇒ 子集为空 ⇒ 不建行、整支不 fire（与"空集合"同档）。
      *
      * @param string[] $actorIds
      * @return string[] 实际新建的 actor 子集

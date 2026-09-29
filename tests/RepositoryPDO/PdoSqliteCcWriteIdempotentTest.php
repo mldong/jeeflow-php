@@ -9,6 +9,7 @@ use Jeeflow\Core\Event\ProcessEvent;
 use Jeeflow\Core\Event\ProcessEventListener;
 use Jeeflow\Core\Event\ProcessEventListenerRegistry;
 use Jeeflow\Core\JeeflowEngine;
+use Jeeflow\Core\Repository\InMemoryProcessRepository;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\BuiltinJsonProvider;
 use Jeeflow\Core\Spi\JsonProviderInterface;
@@ -259,6 +260,138 @@ SQL);
         $this->assertSame(['6901', '6902', '6903'], $listener->actorIds(),
             'SQL 后端的手动腿也须"拿子集去 fire"：已知人 6901 不得在第二轮再发码 4');
         $this->assertSame(3, $this->ccRowCount('inst-1'), 'cc 行只多一条（6901/6902/6903）');
+    }
+
+    // ═══ G10：空抄送人不建 cc 行（owner 2026-09-29 拍「空不创建行」，spec 06-facade.md §2.10） ═══
+    //
+    // 与内存仓那件（`Jeeflow\Tests\Core\CcBlankActorDroppedTest`）同一条判据、同一批格：
+    // SQL 仓写侧是"两层都挡"的第二层——绕过引擎漏斗与门面直连本仓储的调用方也灌不进空值。
+
+    /** 门面＋只收码 4 的监听器（G10 那批格共用；不动既有测试的装配）。 */
+    private function facadeWithCcRecorder(): array
+    {
+        $facade = new JeeflowFacade(new JeeflowEngine($this->repo), $this->repo);
+        $recorder = new PdoCcCreateRecorder();
+        ProcessEventListenerRegistry::register($recorder);
+        return [$facade, $recorder];
+    }
+
+    /**
+     * 手动腿给全空白 ⇒ 库里一行都不许有、码 4 一支都不发，并且与既有的"空 actorIds"档
+     * **逐字同判**（spec §2.10 实现要求③，不新造错误码/文案）。
+     * 改前形状：`['']` 经 `(array)` 强转算"非空"往下走 ⇒ 真落一条 actor_id='' 的行还 fire 码 4。
+     */
+    public function testG10BlankCcActorsCreateNoRowAtAllOnSqlBackend(): void
+    {
+        [$facade, $recorder] = $this->facadeWithCcRecorder();
+
+        $blank = $facade->flow('processInstance/createCCInstance', [
+            'processInstanceId' => 'inst-g10-all', 'operator' => 'zhangsan', 'actorIds' => ['', '   '],
+        ]);
+
+        $this->assertSame(99999999, $blank['code'], 'G10：全空白与空集合同档（spec 06 §2.10）');
+        $this->assertSame('抄送人不能为空', $blank['msg'], 'G10：沿用既有文案，不新造错误语义');
+        $this->assertSame(0, $this->ccRowCount('inst-g10-all'), 'G10：cc 表必须零行');
+        $this->assertSame([], $this->repo->findCcActorIds('inst-g10-all'), 'G10：actor 集合必须为空');
+        $this->assertSame([], $recorder->actorIds(), 'G10：全空白不得 fire 码 4');
+    }
+
+    /** 混着给：只丢空元素，有效的人照旧落行＋fire。 */
+    public function testG10BlankElementsAreDroppedValidOnesRemain(): void
+    {
+        [$facade, $recorder] = $this->facadeWithCcRecorder();
+
+        $resp = $facade->flow('processInstance/createCCInstance', [
+            'processInstanceId' => 'inst-g10-mixed', 'operator' => 'zhangsan',
+            'actorIds' => ['8701', '', '  ', '8702'],
+        ]);
+
+        $this->assertSame(0, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(['8701', '8702'], $this->repo->findCcActorIds('inst-g10-mixed'),
+            'G10：空元素丢弃、有效元素保留');
+        $this->assertSame(2, $this->ccRowCount('inst-g10-mixed'), "G10：库里只有两行（不得有 actor_id=''）");
+        $this->assertSame(['8701', '8702'], $recorder->actorIds(), 'G10：fire 的入参只含有效的人');
+    }
+
+    /**
+     * 写侧兜底：绕过引擎/门面直连仓储时，空串／纯空白／`null` 同样建不出行。
+     * 只修漏斗（`JeeflowEngine::handleCcActors`）不修写侧，第三方仓储直投就还能灌进空值——本条钉第二层。
+     */
+    public function testG10RepoWritePathAlsoDropsBlankActors(): void
+    {
+        $this->repo->createCcInstance('inst-g10-repo', 'zhangsan', ['', '   ', null, '8801']);
+
+        $this->assertSame(['8801'], $this->repo->findCcActorIds('inst-g10-repo'),
+            'G10：SQL 仓写侧空串/纯空白/null 都不建行');
+        $this->assertSame(1, $this->ccRowCount('inst-g10-repo'), 'G10：只落那一行');
+    }
+
+    /** 落库值取 trim 后的串：`' 8901 '` 与 `'8901'` 是同一个人（与 G2 判重咬合，实现要求②）。 */
+    public function testG10CcActorValueIsTrimmedAndHitsTheDedupRule(): void
+    {
+        $this->repo->createCcInstance('inst-g10-trim', 'zhangsan', [' 8901 ']);
+        $this->assertSame(['8901'], $this->repo->findCcActorIds('inst-g10-trim'),
+            'G10：入库值应是 trim 后的串');
+
+        [$facade, $recorder] = $this->facadeWithCcRecorder();
+        $facade->flow('processInstance/createCCInstance', [
+            'processInstanceId' => 'inst-g10-trim', 'operator' => 'zhangsan', 'actorIds' => ['8901'],
+        ]);
+
+        $this->assertSame(1, $this->ccRowCount('inst-g10-trim'),
+            'G10：带空格与不带空格判为同一人 ⇒ 不新增行（不 trim 就把 G2 写侧判重打穿）');
+        $this->assertSame([], $recorder->actorIds(), 'G10：判重命中 ⇒ 不 fire 码 4');
+    }
+
+    /** createCcInstanceIfAbsent 返回的子集也不得含空值——子集直接拿去 fire。 */
+    public function testG10IfAbsentSubsetExcludesBlankActors(): void
+    {
+        $created = $this->repo->createCcInstanceIfAbsent('inst-g10-subset', 'zhangsan',
+            ['', '8951', '  ', ' 8952 ']);
+
+        $this->assertSame(['8951', '8952'], $created, 'G10：实际新建子集只含有效且 trim 后的人');
+        $this->assertSame(['8951', '8952'], $this->repo->findCcActorIds('inst-g10-subset'),
+            'G10：子集与库里真行一致');
+    }
+
+    /** 反向哨兵：判据只吃空值，不吃 `'0'` 这类"看起来像空"的正常 id（实现要求④）。 */
+    public function testG10NormalActorIdsAreNotMistakenForBlank(): void
+    {
+        [$facade, $recorder] = $this->facadeWithCcRecorder();
+
+        $resp = $facade->flow('processInstance/createCCInstance', [
+            'processInstanceId' => 'inst-g10-sentinel', 'operator' => 'zhangsan',
+            'actorIds' => ['0', 'user-1'],
+        ]);
+
+        $this->assertSame(0, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(['0', 'user-1'], $this->repo->findCcActorIds('inst-g10-sentinel'),
+            "G10 只丢空串/纯空白：'0' 不得被吃掉");
+        $this->assertSame(['0', 'user-1'], $recorder->actorIds(), '反向哨兵：照旧逐人 fire');
+    }
+
+    /**
+     * 两仓同答案（issues/117 场景 27 那把尺子）：同一批空值矩阵分别喂内存仓与 SQL 仓，
+     * 落库的 actor 集合必须逐字一致——G1 那族"同一栈两个答案"的分叉不许在写侧重演。
+     */
+    public function testG10BothRepositoriesGiveTheSameAnswer(): void
+    {
+        $memory = new InMemoryProcessRepository();
+        $matrix = [
+            'all-blank'   => ['', '   ', null],
+            'mixed'       => ['', '9101', '  ', ' 9102 '],
+            'zero'        => ['0'],
+            'dup-padded'  => ['9103', ' 9103 '],
+            'non-scalar'  => ['9104', ['nested'], new \stdClass()],
+        ];
+        foreach ($matrix as $case => $actorIds) {
+            $this->repo->createCcInstance('inst-g10-both', 'zhangsan', $actorIds);
+            $memory->createCcInstance('inst-g10-both', 'zhangsan', $actorIds);
+        }
+        $this->assertSame($memory->findCcActorIds('inst-g10-both'), $this->repo->findCcActorIds('inst-g10-both'),
+            'G10：内存仓与 SQL 仓对空抄送人必须给同一个答案');
+        $this->assertSame(['9101', '9102', '0', '9103', '9104'], $this->repo->findCcActorIds('inst-g10-both'),
+            'G10：两仓共同答案＝只丢空值、值取 trim 后的串、同一人不重复落行');
     }
 }
 

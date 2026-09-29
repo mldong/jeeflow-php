@@ -27,6 +27,7 @@ use Jeeflow\Core\Spi\ProcessRepositoryInterface;
 use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
 use Jeeflow\Core\Spi\UserSearchProviderInterface;
+use Jeeflow\Core\Util\CcActorUtil;
 use Jeeflow\Core\Util\JeeflowQueryParser;
 use Jeeflow\Core\Util\SurrogateRule;
 
@@ -894,9 +895,15 @@ class JeeflowFacade
     private function createCCInstance(array $args): array
     {
         $instanceId = $this->toStr($args['processInstanceId'] ?? '');
-        $actorIds = (array) ($args['actorIds'] ?? []);
+        // issues/141 G10「空不创建行」（spec 06-facade.md §2.10 实现要求③）：手动腿与引擎腿过同一条
+        // 归一腿（CcActorUtil::normalize，逗号串与数组两形同判据）——空串/纯空白/数组里的空元素一律
+        // 丢弃，**丢完为空 ⇒ 与本仓既有的"空 actorIds"档同判**（沿用 抄送人不能为空 文案，不新造
+        // 错误码/文案），既不建 cc 行也不 fire 码 4。
+        // 旧形状：(array) 强转只把标量裹成单元素、且不筛空值 ⇒ ['']／['','  '] 都算"非空"往下走，
+        // 实测真落 actor_id=''／'  ' 的行还 fire 码 4——空归属值正是 issues/129 那族的病根。
+        $actorIds = CcActorUtil::normalize($args['actorIds'] ?? []);
         $operator = $this->toStr($args['operator'] ?? '');
-        if (empty($actorIds)) return $this->error('抄送人不能为空');
+        if ($actorIds === []) return $this->error('抄送人不能为空');
         // issues/141 G2 写侧判重＝幂等空操作（spec 06-facade.md §4）：手动腿与引擎腿同一条判据
         // （spec §11.7「三条入口共用一支」）——已有 cc 行的 (实例, 人) 跳过，不新增行、
         // 不重置未读、不更新原行时间；只有**实际新建的子集**拿去 fire。
