@@ -173,8 +173,19 @@ final class JeeflowFacadeOperatorBlankTest extends TestCase
             $this->assertNotEmpty($blank, $label . ' 空串档悄悄变空页 = issues/129 的本栈症状');
 
             // 负向：既不是全库，也不是对照用户，也不是空集
+            // ⚠️ 两个形状按 issues/141 G1 分档（owner 2026-09-29 拍）：
+            //   · 三条常规出口（pageInstances / pageTodoTasks / pageDoneTasks）保留"不加条件=全库"这条对照，
+            //     它专门用来抓"归属过滤被整条丢掉"；
+            //   · pageCcInstances 的"缺归属条件"从 09-29 起**按契约必须返回空页**（spec 06 §2.5），
+            //     所以这里改成钉"空页"，非空的鉴别力由上面那条 `assertNotEmpty($blank)` 承担
+            //     （user1 档没读数 ⇒ 造数据失败，前置那格就会先红）。
             $all = $this->idsOfRepo($repo, $noCondMethod, $idKey);
-            $this->assertCount(self::ALL_ROWS, $all, $label . ' 全库读数（无归属条件）应为 ' . self::ALL_ROWS);
+            if ('pageCcInstances' === $noCondMethod) {
+                $this->assertSame([], $all,
+                    $label . ' cc 分页缺归属条件必须空页（issues/141 G1 · spec 06 §2.5），不得退化成返回全部实例');
+            } else {
+                $this->assertCount(self::ALL_ROWS, $all, $label . ' 全库读数（无归属条件）应为 ' . self::ALL_ROWS);
+            }
             $this->assertNotEquals($all, $blank, $label . ' 空串档读成了全库（归属过滤被丢弃）');
             $this->assertCount(self::USER2_ROWS, $user2, $label . ' 对照用户读数');
             $this->assertNotEquals($user2, $blank, $label . ' 空串档不得等于对照用户档');

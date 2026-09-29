@@ -75,6 +75,10 @@ final class ProcessPublisher
      * 调用前提（§11.2 原则 3）：cc 行已由 `IProcessRepository::createCcInstance` **落库**。
      * 接收人过滤（trim / 非空 / 去重）由集成层监听器负责，引擎只按 cc 行粒度 fire。
      *
+     * **入参一律是"实际新建的 actor 子集"**（issues/141 G2 · spec 06-facade.md §4）：调用点先走
+     * `ProcessRepositoryInterface::createCcInstanceIfAbsent()` 拿到子集，子集为空整支不 fire——
+     * §11.2 原则 1「码=事实」，重复抄送没发生"创建"就不该发码 4，严禁照旧按原始请求全量 fire。
+     *
      * @param string[]|array $ccActorIds
      */
     public static function notifyCcCreate(?string $instanceId, array $ccActorIds): void

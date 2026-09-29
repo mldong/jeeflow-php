@@ -260,24 +260,93 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
 
     public function createCcInstance(int|string $instanceId, string $operator, array $actorIds): void
     {
+        // issues/141 G2 写侧判重＝幂等空操作（spec 06-facade.md §4），与 PDO 仓同一条判据：
+        // 同一 (实例, 被抄送人) 已有 cc 行 ⇒ 跳过——①不新增行 ②不重置未读（state 保持原值）
+        // ③不更新原行时间（createTime/updateTime 逐字不变）。判重放在**写侧**：查询侧不引入去重、
+        // 历史重复行也不清理（owner 2026-09-29 拍「接受既成事实」）。
+        $existing = $this->findCcActorIds($instanceId);
         foreach ($actorIds as $actorId) {
+            if (in_array($actorId, $existing, false)) {
+                continue;
+            }
+            $now = date('Y-m-d H:i:s');
             $this->ccInstances[] = [
                 'processInstanceId' => (string) $instanceId,
                 'actorId' => $actorId,
                 'state' => 0,
                 'createUser' => $operator,
-                'createTime' => date('Y-m-d H:i:s'),
+                'createTime' => $now,
+                // 建行即写 update_time，形状对齐 wf_process_cc_instance 的两列（PDO 仓 INSERT 同样
+                // 带 update_time）。缺这一格 issues/141 G2 的③档「重复抄送不得刷新原行时间」
+                // 在内存仓就无从可测——updateCcStatus 会刷它，所以它是真会动的列。
+                'updateTime' => $now,
             ];
+            // 同一次调用内重复给同一个人也算"已存在"，只落一行
+            $existing[] = $actorId;
         }
+    }
+
+    /**
+     * issues/141 G2：某实例已有 cc 行的 actor id（写侧判重的读侧，SPI 覆写）。
+     *
+     * @return string[]
+     */
+    public function findCcActorIds(int|string $instanceId): array
+    {
+        $ids = [];
+        foreach ($this->ccInstances as $cc) {
+            if ((string) $cc['processInstanceId'] === (string) $instanceId) {
+                $ids[] = $cc['actorId'];
+            }
+        }
+        return $ids;
+    }
+
+    /**
+     * issues/141 G2：判重后只插新人并返回**实际新建**的子集（照 java
+     * `IProcessRepository#createCcInstanceIfAbsent` 的 default 实现；PHP 接口不能有方法体，
+     * 故自带两仓各自实现一份，判据逐字同一条）。
+     *
+     * 三条入口（发起 f_ccActors／办理 tf_ccActors／门面手动 createCCInstance）拿这个子集去 fire
+     * CC_CREATE，子集为空整支不发（spec 11.2 原则 1「码=事实」）。
+     *
+     * @param string[] $actorIds
+     * @return string[]
+     */
+    public function createCcInstanceIfAbsent(int|string $instanceId, string $operator, array $actorIds): array
+    {
+        $existing = $this->findCcActorIds($instanceId);
+        $fresh = [];
+        foreach ($actorIds as $actorId) {
+            if ($actorId === null) {
+                continue;
+            }
+            if (in_array($actorId, $existing, false)) {
+                continue;
+            }
+            if (!in_array($actorId, $fresh, false)) {
+                $fresh[] = $actorId;
+            }
+        }
+        if ($fresh !== []) {
+            $this->createCcInstance($instanceId, $operator, $fresh);
+        }
+        return $fresh;
     }
 
     public function updateCcStatus(int|string $instanceId, string $operator): void
     {
+        // 已读：state 0→1，并刷 update_time——与 PDO 仓的 `SET state = 1, update_time = ?` 同形
+        // （issues/141 G2 之后内存仓的 cc 行带 state/updateTime，"重复抄送不重置未读/不刷时间"
+        // 两档才有可对照的写点）。
+        $now = date('Y-m-d H:i:s');
         foreach ($this->ccInstances as &$cc) {
             if ($cc['processInstanceId'] === (string) $instanceId && $cc['actorId'] === $operator) {
                 $cc['state'] = 1;
+                $cc['updateTime'] = $now;
             }
         }
+        unset($cc);
     }
 
     /**
@@ -293,9 +362,20 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
      * 同一写法（给实例行挂 cc.actor_id 再 matches），也与 PDO 侧
      * `LEFT JOIN wf_process_cc_instance cc ON t.id = cc.process_instance_id` + `cc.actor_id = ?`
      * 的过滤效果一致。
+     *
+     * issues/141 G1 在此之上再收一层：**归属条件必填**，缺失/空值一律空页（见方法体内的判据）。
      */
     public function pageCcInstances(PageQuery $query): PageResult
     {
+        // issues/141 G1 归属条件必填（spec 06-facade.md §2.5「抄送分页同一条尺子」）：
+        // `cc.actor_id` 缺失或为空值 ⇒ 空页。判据与 PdoProcessRepository::pageCcInstances 的
+        // 同名同判据逐字一条——旧形状是本仓"无 cc 条件时保持 PDO LEFT JOIN 的同读数"（返全部实例），
+        // 于是同一份数据两仓都可能各自漂移；G1 把这条尺子从"门面漏挂条件"延长到"仓储自己不认"：
+        // 绕过门面的调用方必须在这一层顶住，而不是拿到整库。
+        if (!self::hasEffectiveCondition($query, 'cc.actor_id')) {
+            return new PageResult($query->getPageNum(), $query->getPageSize(), 0, []);
+        }
+
         /** @var array<string, array<int, array<string, mixed>>> $ccByInstance */
         $ccByInstance = [];
         foreach ($this->ccInstances as $cc) {
@@ -315,8 +395,8 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         $rows = [];
         foreach ($this->instances as $inst) {
             $ccRows = $ccByInstance[(string) $inst->getInstanceId()] ?? [];
-            // 有归属条件时，无抄送行的实例不属于"抄送给我"；无 cc 条件时保持 PDO LEFT JOIN
-            // 的同读数（行源始终是实例表，cc 只是可缺省的关联）。
+            // 行源始终是实例表，cc 只是关联过滤：无抄送行的实例不属于"抄送给我"。
+            // （走到这里 $ccConditions 必非空——归属条件必填的判据已在方法入口挡掉空页档。）
             if ($ccConditions !== [] && $ccRows === []) continue;
             foreach ($ccConditions as $cond) {
                 $col = $this->snakeToCamel(substr($cond['column'], 3));
@@ -339,6 +419,33 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         $total = count($rows);
         $slice = array_slice($rows, $query->getOffset(), $query->getPageSize());
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $slice);
+    }
+
+    /**
+     * 某一列是否给了**有效**条件（值非 null、字符串非全空白、集合非空）
+     * —— 与 PdoProcessRepository::hasEffectiveCondition 同名同判据（issues/141 G1）。
+     *
+     * 只管归属谓词列的"必填"，不参与任何可选过滤的空值放行（issues/129 那条边界不变）。
+     */
+    private static function hasEffectiveCondition(PageQuery $query, string $column): bool
+    {
+        foreach ($query->getConditions() as $cond) {
+            if ($cond['column'] !== $column) {
+                continue;
+            }
+            $val = $cond['value'];
+            if ($val === null) {
+                continue;
+            }
+            if (is_string($val) && trim($val) === '') {
+                continue;
+            }
+            if (is_array($val) && $val === []) {
+                continue;
+            }
+            return true;
+        }
+        return false;
     }
 
     /** @return array<int, array> */

@@ -897,12 +897,18 @@ class JeeflowFacade
         $actorIds = (array) ($args['actorIds'] ?? []);
         $operator = $this->toStr($args['operator'] ?? '');
         if (empty($actorIds)) return $this->error('抄送人不能为空');
-        $this->repository->createCcInstance($instanceId, $operator, $actorIds);
+        // issues/141 G2 写侧判重＝幂等空操作（spec 06-facade.md §4）：手动腿与引擎腿同一条判据
+        // （spec §11.7「三条入口共用一支」）——已有 cc 行的 (实例, 人) 跳过，不新增行、
+        // 不重置未读、不更新原行时间；只有**实际新建的子集**拿去 fire。
+        $created = $this->repository->createCcInstanceIfAbsent($instanceId, $operator, $actorIds);
         // 手动抄送腿同样 fire CC_CREATE（spec §11.2 原则 1 ＋ §11.3 码 4 三条路径同判 ＋
         // §11.6「java 是手动不 fire 那一派，本案唯一一处基准要向 go/py/node 学」——PHP 同病本轮并修）：
         // 「新增了一条抄送记录」这个事实与谁触发无关，cc 行落库之后逐抄送人发一次，
         // 与发起/办理腿共用 ProcessPublisher::notifyCcCreate 同一把收口（严禁集成层自行补发，§11.1）。
-        ProcessPublisher::notifyCcCreate($instanceId, $actorIds);
+        // 入参＝实际新建子集（issues/141 G2）：重复抄送没发生"创建"⇒ 不发码 4，子集为空整支不 fire。
+        if ($created !== []) {
+            ProcessPublisher::notifyCcCreate($instanceId, $created);
+        }
         return $this->ok();
     }
 

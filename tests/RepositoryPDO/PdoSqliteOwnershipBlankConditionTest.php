@@ -129,10 +129,19 @@ SQL);
                 $rows = $this->repo->{$method}($query)->getRows();
                 $this->assertSame([], $rows,
                     "归属列 {$column} 遇 {$label} 须得到空页（issues/129 第二层：绝不允许把这条条件丢掉）");
-                // 同一张表不加条件确实有行 ⇒ 上一条"空"不是恒真空，而是过滤出来的
-                $all = $this->repo->{$method}(new PageQuery(1, 50))->getRows();
+                // 同一张表不加条件确实有行 ⇒ 上一条"空"不是恒真空，而是过滤出来的。
+                // ⚠️ pageCcInstances 例外（issues/141 G1，owner 2026-09-29 拍）：cc 分页**缺归属条件按契约必须空页**，
+                //    不能再拿它当"全库基线"。基线改走 pageInstances——issues/138 后两者行源同为 `wf_process_instance`
+                //    （cc 表只当过滤/关联），所以读数等价、非空对照不丢。
+                $all = 'pageCcInstances' === $method
+                    ? $this->repo->pageInstances(new PageQuery(1, 50))->getRows()
+                    : $this->repo->{$method}(new PageQuery(1, 50))->getRows();
                 $this->assertCount($totalInDb, $all,
                     "{$method} 全库基线（空表会让上面的断言失去鉴别力）");
+                if ('pageCcInstances' === $method) {
+                    $this->assertSame([], $this->repo->pageCcInstances(new PageQuery(1, 50))->getRows(),
+                        'cc 分页缺归属条件必须空页（G1），且不得与上面的非空基线互换');
+                }
             }
         }
     }

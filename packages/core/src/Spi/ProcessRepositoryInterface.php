@@ -88,14 +88,72 @@ interface ProcessRepositoryInterface
     // ── 抄送 ──
 
     /**
+     * 建 cc 行。
+     *
+     * issues/141 G2 写侧判重＝幂等空操作（spec 06-facade.md §4）：本方法**自带判重**——
+     * 同一 `(instanceId, actorId)` 已有 cc 行时跳过，不新增行、不重置未读、不更新原行时间。
+     * 需要"到底新建了哪些人"（拿去 fire CC_CREATE）的调用方请走
+     * {@see self::createCcInstanceIfAbsent()}，不要直接用本方法后按原始请求全量 fire。
+     *
      * @param string[] $actorIds
      */
     public function createCcInstance(int|string $instanceId, string $operator, array $actorIds): void;
 
-    /** 标记抄送已读 */
+    /**
+     * issues/141 G2 写侧判重的**读侧**：某实例已存在 cc 行的 actor id 集合。
+     *
+     * 形状照 java 参考实现（`IProcessRepository#findCcActorIds`，default 方法返回空集）。
+     * ⚠️ PHP 接口**不能有方法体**，故这里只能声明为**必选方法**（本仓 SPI 演进的既有姿势，
+     * 同 issues/115 的 `removeTaskActor`）——自实现仓储的集成方必须补这两个方法，
+     * 最小实现即 java 的 default 语义：本方法返回 `[]` ⇒ 不判重，
+     * {@see self::createCcInstanceIfAbsent()} 原样转调 {@see self::createCcInstance()}
+     * 并把**全量入参**当"新建子集"返回＝旧行为。
+     *
+     * jeeflow 自带的两仓（{@see \Jeeflow\Core\Repository\InMemoryProcessRepository} 与
+     * PDO 仓 `Jeeflow\RepositoryPDO\PdoProcessRepository`）**必须**给出真实实现：否则
+     * issues/141 G1 那条「同一栈 SQL 仓与内存仓两个答案」的分叉会在写侧重演一遍。
+     *
+     * @return string[]
+     */
+    public function findCcActorIds(int|string $instanceId): array;
+
+    /**
+     * issues/141 G2：写侧幂等建 cc 行，返回**实际新建**的 actor 子集（顺序与入参一致，
+     * 同一次调用内的重复也折叠）。
+     *
+     * 同一 `(instanceId, actorId)` 已有 cc 行时**跳过**：①不新增行、②不重置未读状态
+     * （`state`）、③不更新原行时间（`create_time`/`update_time` 逐字不变）——重复抄送同一个人
+     * 在数据面上是 no-op（owner 2026-09-29 明确「不需要重置」，不产生"再提醒一次"语义）。
+     *
+     * 为什么要返回子集而不是 void：spec 11.2 原则 1「码值表达发生了什么事实」⇒
+     * 没发生"创建"就不得 fire `CC_CREATE`（码 4）。三条入口（发起 `f_ccActors`／办理 `tf_ccActors`／
+     * 门面手动 `createCCInstance`）逐人 fire 的入参一律换成这个子集，子集为空则整支不 fire
+     * （见 {@see \Jeeflow\Core\Event\ProcessPublisher::notifyCcCreate()} 的两个调用点）。
+     *
+     * 仓储不覆写 {@see self::findCcActorIds()}（返回空集）时，本方法退化成"全量建行＋全量返回"
+     * ＝旧行为，与 java 侧 default 方法同一档（见上方兼容性说明）。
+     *
+     * @param string[] $actorIds
+     * @return string[] 实际新建的 actor 子集
+     */
+    public function createCcInstanceIfAbsent(int|string $instanceId, string $operator, array $actorIds): array;
+
+    /**
+     * 标记抄送已读
+     */
     public function updateCcStatus(int|string $instanceId, string $operator): void;
 
-    /** 抄送列表分页 */
+    /**
+     * 抄送列表分页（"抄送我"）。
+     *
+     * **归属条件必填**（issues/141 G1 · spec 06-facade.md §2.5「抄送分页同一条尺子」）：
+     * 查询必须带 `cc.actor_id` 的**有效**归属条件；条件缺失或为空值（值为 null / 字符串全空白 /
+     * 集合为空）时**返回空页**（`recordCount=0`、`rows=[]`），严禁退化成"这条不加"而返回全部实例。
+     * 非归属列的空值放行不受影响（`m_` 前缀那类可选过滤照旧按"没填即不过滤"）。
+     *
+     * 同一栈的 SQL 仓与内存仓在同一条判据上**必须给同一个答案**（issues/117 场景 27 那把尺子
+     * 扩到 ccList）：只修一边不算修完。
+     */
     public function pageCcInstances(PageQuery $query): PageResult;
 
     // ── 统计（issues/103） ──

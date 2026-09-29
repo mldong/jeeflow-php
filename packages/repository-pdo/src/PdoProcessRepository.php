@@ -396,7 +396,16 @@ class PdoProcessRepository implements ProcessRepositoryInterface
     public function createCcInstance(int|string $instanceId, string $operator, array $actorIds): void
     {
         $now = date('Y-m-d H:i:s');
+        // issues/141 G2 写侧判重＝幂等空操作（spec 06-facade.md §4），与内存仓同一条判据：
+        // 同一 (实例, 被抄送人) 已有 cc 行时直接跳过——①不新增行 ②不重置未读（state 保持原值）
+        // ③不更新原行时间（连 UPDATE 都不发，create_time/update_time 逐字不变）。
+        // 判重在写侧而不是查询侧：SELECT 保持现状不引入 DISTINCT（owner 2026-09-29 拍），
+        // 库里历史遗留的重复行也不清理。
+        $existing = $this->findCcActorIds($instanceId);
         foreach ($actorIds as $actorId) {
+            if (in_array($actorId, $existing, false)) {
+                continue;
+            }
             $stmt = $this->pdo->prepare(
                 'INSERT INTO wf_process_cc_instance (id, process_instance_id, actor_id, state, create_time, create_user, update_time, update_user)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -411,7 +420,60 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 $now,
                 $operator,
             ]);
+            // 同一次调用内的重复也算"已存在"，只落一行
+            $existing[] = $actorId;
         }
+    }
+
+    /**
+     * issues/141 G2：某实例已有的 cc 行 actor id（写侧判重的读侧，SPI 覆写）。
+     *
+     * 返回**可追加**的 List——{@see self::createCcInstance()} 在插入过程中往里追加，
+     * 让同一次调用内的重复也只落一行（与 Java JdbcProcessRepository.findCcActorIds 同形）。
+     *
+     * @return string[]
+     */
+    public function findCcActorIds(int|string $instanceId): array
+    {
+        $stmt = $this->pdo->prepare('SELECT actor_id FROM wf_process_cc_instance WHERE process_instance_id = ?');
+        $stmt->execute([(string) $instanceId]);
+        $actorIds = [];
+        while ($row = $stmt->fetch(\PDO::FETCH_ASSOC)) {
+            $actorIds[] = (string) $row['actor_id'];
+        }
+        return $actorIds;
+    }
+
+    /**
+     * issues/141 G2：判重后只插新人并返回**实际新建**的子集（照 java
+     * `IProcessRepository#createCcInstanceIfAbsent` 的 default 实现；PHP 接口不能有方法体，
+     * 故自带两仓各自实现一份，判据逐字同一条）。
+     *
+     * 三条入口（发起 f_ccActors／办理 tf_ccActors／门面手动 createCCInstance）拿这个子集去 fire
+     * CC_CREATE，子集为空整支不发（spec 11.2 原则 1「码=事实」）。
+     *
+     * @param string[] $actorIds
+     * @return string[]
+     */
+    public function createCcInstanceIfAbsent(int|string $instanceId, string $operator, array $actorIds): array
+    {
+        $existing = $this->findCcActorIds($instanceId);
+        $fresh = [];
+        foreach ($actorIds as $actorId) {
+            if ($actorId === null) {
+                continue;
+            }
+            if (in_array($actorId, $existing, false)) {
+                continue;
+            }
+            if (!in_array($actorId, $fresh, false)) {
+                $fresh[] = $actorId;
+            }
+        }
+        if ($fresh !== []) {
+            $this->createCcInstance($instanceId, $operator, $fresh);
+        }
+        return $fresh;
     }
 
     public function updateCcStatus(int|string $instanceId, string $operator): void
@@ -440,6 +502,16 @@ class PdoProcessRepository implements ProcessRepositoryInterface
      */
     public function pageCcInstances(PageQuery $query): PageResult
     {
+        // issues/141 G1 归属条件必填（spec 06-facade.md §2.5「抄送分页同一条尺子」）：
+        // `cc.actor_id` 缺失或为空值 ⇒ 空页。旧形状是这条 LEFT JOIN 不带条件时返回**全部实例**，
+        // 而内存仓那一侧只放"有 cc 行的实例"——同一栈两个仓储两个答案，正是 issues/117 场景 27
+        // 立过法的那一类，所以 SQL 仓与内存仓必须钉在同一条判据上。
+        // 空值档（空串/全空白/null）原先由 buildConditions 的"照值比对"自然得到 0 行
+        // （issues/129 本栈无通用放行），这一格补的是"条件整条没给"。
+        if (!self::hasEffectiveCondition($query, 'cc.actor_id')) {
+            return new PageResult($query->getPageNum(), $query->getPageSize(), 0, []);
+        }
+
         [$whereSql, $whereParams] = $this->buildConditions($query);
 
         // Count（与数据查询同一个 FROM/JOIN，行数口径不打架）
@@ -462,6 +534,32 @@ class PdoProcessRepository implements ProcessRepositoryInterface
             $rows[] = $this->instanceRow($row);
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
+    }
+
+    /**
+     * 是否给了某一列的**有效**条件（值非 null、字符串非全空白、集合非空）。
+     * issues/141 G1：归属谓词"必填"的判据，与内存仓 InMemoryProcessRepository::hasEffectiveCondition
+     * 同名同判据（两仓必须给同一个答案）。空串/全空白/null 都算没填。
+     */
+    private static function hasEffectiveCondition(PageQuery $query, string $column): bool
+    {
+        foreach ($query->getConditions() as $cond) {
+            if ($cond['column'] !== $column) {
+                continue;
+            }
+            $val = $cond['value'];
+            if ($val === null) {
+                continue;
+            }
+            if (is_string($val) && trim($val) === '') {
+                continue;
+            }
+            if (is_array($val) && $val === []) {
+                continue;
+            }
+            return true;
+        }
+        return false;
     }
 
     // ── 统计（issues/103） ──
