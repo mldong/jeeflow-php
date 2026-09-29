@@ -99,9 +99,18 @@ class CustomModel extends NodeModel
         } elseif ($this->methodName === '' && is_callable($handler)) {
             $ret = $handler($execution, $argValues);
         } else {
-            // ⚠️ 已解析到处理器、但方法不可解析：**不在 §6.2 第 2 条的豁免面里**（那条只管
-            // "clazz 不可解析"），与 java CustomModel「无法找到方法名称」逐字同档 ⇒ 外抛。
-            throw new JeeflowException('自定义模型[class=' . $clazz . ']无法找到方法名称:' . $method);
+            // spec 02 §6.2 第 2 条的豁免面边界（八栈对表时补的细则）：判据只有一句
+            // **「这一行处理器代码有没有被执行过」**——
+            //   没执行过 ⇒ 配错档 ⇒ 记日志＋照常落历史行＋续流：clazz 空/未注册、反射实例化失败、
+            //           methodName 未配或在处理器上找不到、参数形状对不上；
+            //   执行过 ⇒ 业务错档 ⇒ 照旧外抛：handle/方法体内部抛出的异常。
+            // `methodName` 配错属前者：配置在调用**之前**就错、处理器一行都没跑，外抛并不比
+            // 一条带 class+method 名的日志更可诊断，反而把整条建单炸掉（java 已同档改判，
+            // 见 jeeflow-java CustomModel.invokeHandler 的 HandlerConfigException 分支）。
+            error_log('[jeeflow-php] WARNING custom 节点的 methodName 在处理器上找不到（属性配错），'
+                . '跳过执行、照常落历史行并续流: nodeId=' . $this->getName()
+                . ', clazz=' . $clazz . ', methodName=' . $method);
+            return;
         }
 
         // 返回值落执行变量（非 null 才写，java IHandler 支不写返回值 ⇒ 同款静默）

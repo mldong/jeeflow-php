@@ -355,20 +355,34 @@ final class CustomNodeRecordLegTest extends TestCase
     }
 
     /**
-     * 已解析到处理器、但 `methodName` 指的方子不存在 ⇒ **不在** §6.2 第 2 条豁免面
-     * （那条只管 clazz），与 java CustomModel「无法找到方法名称」逐字同档 ⇒ 外抛。
+     * 已解析到处理器、但 `methodName` 指的方子不存在 ⇒ **配错档**（记日志＋照常落历史行＋续流）。
+     *
+     * ⚠️ 本格于 2026-09-30 按 spec 02 §6.2 第 2 条的**豁免面边界**改判（原名
+     * testMissingMethodOnResolvedHandlerPropagates，断言 expectException 无法找到方法名称）。
+     * 八栈派工回来对表发现两栈各自解读了同一句：java 把"方法找不到"归配错档记日志继续，
+     * php 当时按 java 的**旧**文案外抛。细则收成一句——**「这一行处理器代码有没有被执行过」**：
+     * 没执行过（clazz 空/未注册、反射失败、methodName 未配或找不到、参数形状对不上）＝配错档不炸；
+     * 执行过（方法体内部抛的）＝业务错档照旧外抛（由 testHandlerFailurePropagates 钉着）。
+     * 配置项在调用之前就错，外抛只会把整条建单炸掉，并不比一条带 class+method 名的日志更可诊断。
      */
-    public function testMissingMethodOnResolvedHandlerPropagates(): void
+    public function testMissingMethodOnResolvedHandlerIsConfigArmAndFlowContinues(): void
     {
         $this->handlers->register('emit.handler', fn() => 'x');
-        [, $applyTaskId] = $this->startFlow('custom-no-method', self::flow('custom-no-method', [
+        [$instanceId, $applyTaskId] = $this->startFlow('custom-no-method', self::flow('custom-no-method', [
             self::taskNode('apply', 'applicant'),
             self::customNode('custom1', ['clazz' => 'emit.handler', 'methodName' => 'noSuchMethod']),
         ]));
 
-        $this->expectException(\Throwable::class);
-        $this->expectExceptionMessage('无法找到方法名称');
         $this->engine->executeProcessTask($applyTaskId, 'user1', FlowData::create());
+
+        $row = $this->historyRowOf($instanceId, 'custom1');
+        $this->assertSame(20, $row->getTaskState(), '方法配错也不能妨碍留痕行照常落库');
+        $log = $this->logTail();
+        $this->assertStringContainsString('methodName', $log, '日志要能指到配错的那一项：' . $log);
+        $this->assertStringContainsString('noSuchMethod', $log, '日志要带方法名原值：' . $log);
+        $this->assertStringContainsString('emit.handler', $log, '日志要带 clazz，实际文案=' . $log);
+        $this->assertStringNotContainsString('无法找到方法名称', $log,
+            '旧的异常文案不该再出现在这条路上（那档已归配错、只记日志）');
     }
 
     // ═══ 5. 返回值落执行变量 ═══
