@@ -185,14 +185,33 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         return $result;
     }
 
+    /**
+     * 追加任务参与人（**增量**语义，原参与人不动）。
+     *
+     * issues/142 B 批（spec 06-facade.md §2.11「归属值写侧归一」要求①「两层都挡」的第二层）：
+     * 入参先过 {@see CcActorUtil::normalizeList()}——trim、空串/纯空白/null 丢弃、同次调用折叠，
+     * 落库值与判重**都取 trim 后的串**（`" 123 "` 与 `"123"` 是同一个人）。绕过门面直连本仓储的
+     * 调用方（集成层、第三方仓储消费者）同样灌不进 `actor_id=''`，那是 issues/129 那族
+     * 「空归属值读全库」的进水口。判据单点复用，与 PDO 仓逐字同一条（两仓必须同答案，issues/117 场景 27）。
+     *
+     * ⚠️ 判重是**严格**串比较（`in_array(..., true)`）：松散比较在 PHP 8 把数字串按数值比，
+     * `'0' == '00'`、`'1' == '01'` ⇒ 第二个人被静默丢掉（issues/141 G2 在本栈的实测踩点，
+     * commit a45dd13 收口；本方法比较的两侧都已经是归一后的串，不存在第二把尺子）。
+     */
     public function addTaskActor(int|string $taskId, array $actorIds): void
     {
+        // 写侧兜底＋空列表早退：归一后为空 ⇒ 一次写入都不发生（B 表实读本栈两仓都没有这一层）
+        $actorIds = CcActorUtil::normalizeList($actorIds);
+        if ($actorIds === []) return;
         $task = $this->tasks[(string) $taskId] ?? null;
         if ($task === null) return;
         $existing = $task->getActorIds();
+        // 与既有值判重也取同一把尺子：既有集合过一遍归一再比（脏历史行里的 " 8601 " 与 "8601" 同人）
+        $known = CcActorUtil::normalizeList($existing);
         foreach ($actorIds as $aid) {
-            if (!in_array($aid, $existing, true)) {
+            if (!in_array($aid, $known, true)) {
                 $existing[] = $aid;
+                $known[] = $aid;
             }
         }
         $task->setActorIds($existing);

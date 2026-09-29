@@ -341,8 +341,25 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         return $result;
     }
 
+    /**
+     * 追加任务参与人（**增量**语义，原参与人不动）。
+     *
+     * issues/142 B 批（spec 06-facade.md §2.11「归属值写侧归一」要求①「两层都挡」的第二层）：
+     * 入参先过 {@see CcActorUtil::normalizeList()}（与内存仓、与 cc 两支写侧、与门面腿**同一枚**单点），
+     * 于是 trim、空串/纯空白/null 丢弃、同次调用折叠三件事在 SQL 写侧同样成立——
+     * B 表实读本栈这条腿是"零空值守卫"，连"空列表早退"都没有（而同文件 `removeTaskActor` 反而有），
+     * `null` 元素直接撞 `NOT NULL constraint` / error 1048 把整个 action 打崩。
+     * 绕过门面直连本仓储的调用方从此灌不进 `actor_id=''`（issues/129 那族「空归属值读全库」的进水口）。
+     *
+     * ⚠️ 判重取的是**列值精确比较**（`WHERE actor_id = ?` 绑 trim 后的串），与归一函数内部的严格
+     * 串比较同一条尺子；PHP 松散比较会把 `'0' == '00'` 判同人（issues/141 G2 本栈实测踩点），
+     * 所以这里既不回 PHP 侧松散比较，也不许在绑定前漏掉 trim——否则同一人落两行、把判重打穿。
+     */
     public function addTaskActor(int|string $taskId, array $actorIds): void
     {
+        // 写侧兜底＋空列表早退：归一后为空 ⇒ 一条 INSERT 都不发
+        $actorIds = CcActorUtil::normalizeList($actorIds);
+        if ($actorIds === []) return;
         $now = date('Y-m-d H:i:s');
         foreach ($actorIds as $actorId) {
             // Check if already exists

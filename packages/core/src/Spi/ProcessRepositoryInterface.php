@@ -64,7 +64,36 @@ interface ProcessRepositoryInterface
     /** 查找已完成的任务 */
     public function findHistoryTasks(int|string $instanceId): array;
 
-    /** 为任务追加参与人（去重追加，不清空既有参与人） */
+    /**
+     * 为任务追加参与人（去重追加，不清空既有参与人）。
+     *
+     * **空值义务（issues/142 B 批 · spec 06-facade.md §2.11「归属值写侧归一」）**：
+     * 这条义务**每个实现方都要自带**，不能只写在 {@see self::createCcInstance()} 上——
+     * §2.11 末段"SPI 注释义务"点名的正是这个形状：注释只挂 cc 一支，第三方照注释实现必然漏任务侧。
+     *
+     *  1. **写侧兜底（两层里的第二层，要求①）**：入参里的**空串、纯空白、`null`** 一律丢弃，
+     *     不得落进 `wf_process_task_actor.actor_id`。门面的加签腿自己也会归一，但**绕过门面
+     *     直连仓储**的调用方（集成层、第三方仓储消费者）照样能从这一层灌进去，那空归属值正是
+     *     issues/129 那族「空 operator 读全库」的进水口。
+     *  2. **落库与判重都取 trim 后的值（要求②）**：`" 123 "` 与 `"123"` 是同一个人，
+     *     不 trim 就会与自己下面的判重错开，同一人落两行。
+     *  3. **判重必须严格比较（要求④）**：PHP 松散比较把数字串按数值比（`'0' == '00'`、`'1' == '01'`）
+     *     ⇒ 第二个人被静默丢掉（issues/141 G2 在本栈的实测踩点）；`'0'` 这类"看起来像空"的正常 id
+     *     **不得**被当空值丢弃，判空一律 `trim(...) === ''`，严禁无回调 `array_filter`／`empty()`。
+     *  4. **归一后为空 ⇒ 空操作**（不发 INSERT、不改既有参与人）。
+     *  5. 同一栈的 SQL 仓与内存仓在同一条判据上**必须给同一个答案**（issues/117 场景 27），
+     *     只修一边不算修完。
+     *
+     * 本仓两处的落点：{@see \Jeeflow\Core\Util\CcActorUtil::normalizeList()}（§2.10 已落地的那一枚
+     * 单点，§2.11 要求"复用、不要再抄第二份"）——内存仓与 PDO 仓各调一次，两仓同判据。
+     *
+     * ⚠️ `taskId` 是**主键**，与上面"归属值为空 ⇒ 丢弃"是两件事（§2.11 末段主键档）：
+     * 空串/纯空白的 task id 属调用方写错，必须在门面/引擎那一层响亮报错
+     * （本仓落点 `JeeflowFacade::taskSurrogate()` 的 `processTaskId 缺失或非法`），
+     * 严禁拿 `''`/`0` 当 id 往下落库；实现方**不得**用"查不到就静默跳过"替代上层的报错。
+     *
+     * @param string[] $actorIds 参与人集合（空值元素由实现方丢弃，不落行）
+     */
     public function addTaskActor(int|string $taskId, array $actorIds): void;
 
     /**
@@ -153,7 +182,21 @@ interface ProcessRepositoryInterface
     public function createCcInstanceIfAbsent(int|string $instanceId, string $operator, array $actorIds): array;
 
     /**
-     * 标记抄送已读
+     * 标记抄送已读。
+     *
+     * **归属值义务（issues/142 B 批 · spec 06-facade.md §2.11 表第五行）**：`operator` 在这里是
+     * **归属谓词的值**（`WHERE cc.actor_id = ?`），不是普通可选过滤——它必须**归一后再比**：
+     *  1. 比较两侧都取 trim 后的串（`" 123 "` 与 `"123"` 是同一个人）；
+     *  2. **空串/纯空白不得命中任何行**：否则一条空 operator 会把 `state=1` 批量打到历史
+     *     `actor_id=''` 的脏行上（正是 issues/129 那族「空归属值读全库」的读侧变体）。
+     * 空值档（丢弃/空页）的收口姿势与 {@see self::pageCcInstances()} 的"归属条件为空 ⇒ 返回空页"
+     * 同一条尺子。
+     *
+     * ⚠️ 本栈**当前形状如实留痕**（issues/142 B 批派单只含本条的注释义务，未含实现改动）：
+     * `JeeflowFacade::updateCCStatus()` 目前把 `operator` 原样透传（未 trim、空值不拦），
+     * 两仓按传入值直接比较 ⇒ 上面两条是**待收口的实现要求**，不是已验绿的现状。
+     * 实现方若先补上归一（本方法语义不变，只把脏档挡住），须与门面腿共用
+     * {@see \Jeeflow\Core\Util\CcActorUtil} 那一枚单点，**不要抄第二份判据**。
      */
     public function updateCcStatus(int|string $instanceId, string $operator): void;
 

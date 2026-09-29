@@ -541,13 +541,32 @@ class JeeflowFacade
         return $this->ok($result);
     }
 
+    /**
+     * 加签（`processTask/surrogate`，`processTask/addCandidate` 同体复用本方法）。
+     *
+     * issues/142 B 批（spec 06-facade.md §2.11「归属值写侧归一」）三处收口，逐字照 §2.10 的四点要求：
+     *  - **两形同判据**：逗号串与数组都过 {@see CcActorUtil::normalizeActors()}（§2.10 已落地的那一枚
+     *    单点，§2.11 末段点名"复用、不要再抄第二份"）。旧形状两条腿两把尺子——串腿
+     *    `array_filter(array_map('trim', explode(...)))` **不带回调**＝假值判据，实测吃掉 `'0'`
+     *    （要求④在本腿失守）；数组腿原样直连仓储（不 trim、不丢空、不收类型，`null` 元素真往
+     *    `actor_id` 里灌）。
+     *  - **主键档另判一档**：`processTaskId` 缺失/空串/纯空白响亮报错，不得拿 `''` 当 id 落库
+     *    （旧形状 `:546` 完全不校验，`addTaskActor('', …)` 照跑）；沿用本仓 transfer 腿既有文案
+     *    `processTaskId 缺失或非法`，不新造。
+     *  - **空 actorIds 是报错不是成功**：丢完为空 ⇒ `actorIds 缺失`（码 99999999）。
+     *    旧形状返回 **code=0 成功**，是八栈独一份、§2.11③ 点名的违反档；文案与 go/node 同档，
+     *    本仓错误信封（`error()` ⇒ 99999999）不变，不新造错误码。
+     *
+     * 写侧还有第二层兜底（两仓 `addTaskActor` 自己再挡一次，§2.11①「两层都挡」），
+     * 本方法的空档判定仍**必须先于**任何仓储调用——绕过门面直连仓储的调用方与门面得同判据。
+     */
     private function taskSurrogate(array $args): array
     {
-        $taskId = $this->toStr($args['processTaskId'] ?? $args['id'] ?? '');
-        $actorIds = $args['actorIds'] ?? [];
-        if (is_string($actorIds)) {
-            $actorIds = array_filter(array_map('trim', explode(',', $actorIds)));
-        }
+        $taskId = CcActorUtil::normalizeActor($args['processTaskId'] ?? $args['id'] ?? '');
+        if ($taskId === '') return $this->error('processTaskId 缺失或非法');
+        // 逗号串与数组两形同判据：trim → 空串/纯空白/null 丢弃 → 同次调用折叠（§2.11 表第一行）
+        $actorIds = CcActorUtil::normalizeActors($args['actorIds'] ?? []);
+        if ($actorIds === []) return $this->error('actorIds 缺失');
         $this->repository->addTaskActor($taskId, $actorIds);
         return $this->ok();
     }
@@ -573,11 +592,16 @@ class JeeflowFacade
     {
         $operator = trim($this->toStr($args['operator'] ?? ''));
         if ($operator === '') return $this->error('operator 必填');
-        $fromActor = trim($this->toStr($args['fromActor'] ?? ''));
+        // issues/142 B 批（spec 06-facade.md §2.11 表第二行）：from/to 两个归属位**归一后再用**，
+        // 且过的是 §2.10 那同一枚单点（{@see CcActorUtil::normalizeActor()}，与加签集合腿、两仓写侧
+        // 逐字同一条尺子）——不 trim 就会与写侧判重错开，同一人落两行；非标量入参数组/对象判成空，
+        // 走下面既有的"必填"档响亮报错（旧形状 `(string)` 强转数组会撞 Array to string conversion）。
+        $fromActor = CcActorUtil::normalizeActor($args['fromActor'] ?? '');
         if ($fromActor === '') return $this->error('fromActor 必填');
-        $toActor = trim($this->toStr($args['toActor'] ?? ''));
+        $toActor = CcActorUtil::normalizeActor($args['toActor'] ?? '');
         if ($toActor === '') return $this->error('toActor 必填');
-        $taskId = $this->toStr($args[FlowConst::PROCESS_TASK_ID_KEY] ?? $args['id'] ?? '');
+        // 主键档：空串与纯空白同判"缺失"，不得拿 '' 当 id 往下落库（与加签腿同一条文案）
+        $taskId = CcActorUtil::normalizeActor($args[FlowConst::PROCESS_TASK_ID_KEY] ?? $args['id'] ?? '');
         if ($taskId === '') return $this->error('processTaskId 缺失或非法');
 
         $task = $this->repository->findTaskById($taskId);
