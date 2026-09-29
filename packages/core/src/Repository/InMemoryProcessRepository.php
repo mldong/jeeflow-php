@@ -272,7 +272,7 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         // 历史重复行也不清理（owner 2026-09-29 拍「接受既成事实」）。
         $existing = $this->findCcActorIds($instanceId);
         foreach ($actorIds as $actorId) {
-            if (in_array($actorId, $existing, false)) {
+            if (in_array($actorId, $existing, true)) {
                 continue;
             }
             $now = date('Y-m-d H:i:s');
@@ -330,10 +330,10 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         $existing = $this->findCcActorIds($instanceId);
         $fresh = [];
         foreach ($actorIds as $actorId) {
-            if (in_array($actorId, $existing, false)) {
+            if (in_array($actorId, $existing, true)) {
                 continue;
             }
-            if (!in_array($actorId, $fresh, false)) {
+            if (!in_array($actorId, $fresh, true)) {
                 $fresh[] = $actorId;
             }
         }

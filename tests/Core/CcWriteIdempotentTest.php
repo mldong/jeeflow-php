@@ -261,6 +261,33 @@ final class CcWriteIdempotentTest extends TestCase
     }
 
     /** SPI 直测：createCcInstanceIfAbsent 的返回值就是"实际新建子集"。 */
+    /**
+     * 判重比的是**字符串本身**，不是 PHP 的==：`'0'` 与 `'00'` 是两个不同的人，必须各落一行。
+     *
+     * 本栈 G2 刚落地时写的是无严格档的 `in_array($actorId, $existing, false)`，
+     * 而 PHP 把两个数字串按数值比（`'0' == '00'` 为真）⇒ 第二个人被当成"已抄送过"静默丢掉，
+     * java 的 `List.contains` 是精确比较、会落两行。这是 G10 普查时顺带照出来的跨栈分叉，
+     * 判据换成严格档（`true`）后由本格钉住——`'1'`/`'01'` 同形，一并覆盖。
+     */
+    public function testNumericLookingActorIdsAreNotCollapsedByPhpLooseComparison(): void
+    {
+        $instanceId = $this->startInstance();
+
+        $this->manualCc($instanceId, '0', '00', '1', '01');
+
+        $this->assertSame(['0', '00', '1', '01'], $this->ccActorIds($instanceId),
+            '数字串形状的不同 actor id 必须各落一行（PHP 松散比较会把它们折成两个人以外的一行）');
+        $this->assertSame(['0', '00', '1', '01'], $this->firedCcActorIds(),
+            '四个人就该 fire 四支码 4');
+
+        $this->ccListener->reset();
+        $this->manualCc($instanceId, '00');
+
+        $this->assertSame(['0', '00', '1', '01'], $this->ccActorIds($instanceId),
+            '同一个人 00 再抄一次仍走幂等空操作（换成严格比较不该把真重复也放开）');
+        $this->assertCount(0, $this->firedCcActorIds(), '真重复 ⇒ 一支都不许 fire');
+    }
+
     public function testCreateCcInstanceIfAbsentReturnsTheCreatedSubset(): void
     {
         $instanceId = $this->startInstance();

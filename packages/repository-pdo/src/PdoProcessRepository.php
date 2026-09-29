@@ -410,7 +410,7 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         // 库里历史遗留的重复行也不清理。
         $existing = $this->findCcActorIds($instanceId);
         foreach ($actorIds as $actorId) {
-            if (in_array($actorId, $existing, false)) {
+            if (in_array($actorId, $existing, true)) {
                 continue;
             }
             $stmt = $this->pdo->prepare(
@@ -473,10 +473,10 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $existing = $this->findCcActorIds($instanceId);
         $fresh = [];
         foreach ($actorIds as $actorId) {
-            if (in_array($actorId, $existing, false)) {
+            if (in_array($actorId, $existing, true)) {
                 continue;
             }
-            if (!in_array($actorId, $fresh, false)) {
+            if (!in_array($actorId, $fresh, true)) {
                 $fresh[] = $actorId;
             }
         }

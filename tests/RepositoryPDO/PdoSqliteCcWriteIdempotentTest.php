@@ -374,6 +374,29 @@ SQL);
      * 两仓同答案（issues/117 场景 27 那把尺子）：同一批空值矩阵分别喂内存仓与 SQL 仓，
      * 落库的 actor 集合必须逐字一致——G1 那族"同一栈两个答案"的分叉不许在写侧重演。
      */
+    /**
+     * 判重的比较档必须是**严格比较**：PHP 默认把两个数字串按数值比（'0' == '00' 为真），
+     * 于是第二个人被判成"已抄送过"静默丢掉，而 java 的 List.contains 是精确比较会落两行。
+     * G10 普查时照出来的跨栈分叉，两仓一起钉（同一批数字串形状喂两仓，答案必须一致且是四行）。
+     */
+    public function testG2DedupComparesActorIdsStrictlyNotByPhpNumerics(): void
+    {
+        $memory = new InMemoryProcessRepository();
+
+        $this->repo->createCcInstance('inst-g2-strict', 'zhangsan', ['0', '00', '1', '01']);
+        $memory->createCcInstance('inst-g2-strict', 'zhangsan', ['0', '00', '1', '01']);
+
+        $this->assertSame(['0', '00', '1', '01'], $this->repo->findCcActorIds('inst-g2-strict'),
+            'SQL 仓：数字串形状的不同 actor id 必须各落一行（松散比较会把四个人折成两个）');
+        $this->assertSame($memory->findCcActorIds('inst-g2-strict'), $this->repo->findCcActorIds('inst-g2-strict'),
+            'SQL 仓与内存仓同答案');
+
+        $this->repo->createCcInstanceIfAbsent('inst-g2-strict', 'zhangsan', ['00', '000']);
+
+        $this->assertSame(['0', '00', '1', '01', '000'], $this->repo->findCcActorIds('inst-g2-strict'),
+            '真重复（00）不新增、新的人（000）照旧落行——严格比较两头都得对');
+    }
+
     public function testG10BothRepositoriesGiveTheSameAnswer(): void
     {
         $memory = new InMemoryProcessRepository();
