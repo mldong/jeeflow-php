@@ -225,11 +225,15 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
     {
         $task = $this->tasks[(string) $taskId] ?? null;
         if ($task === null) return;
-        if ($actorIds === []) return;
-        $remove = array_map(strval(...), $actorIds);
+        // issues/142 B 批 §9.2 第二批收口（同一条尺子）：删除位也按**归一后的值**比较——
+        // 入参不 trim 就删不掉规范行（【 8601 】删不掉 8601），而空串入参在历史脏行上会**误删**
+        // 别人的 actor_id=空串 行。归一后为空 ⇒ 什么都不删（早退）。
+        $remove = CcActorUtil::normalizeActors($actorIds);
+        if ($remove === []) return;
+        $known = array_map(strval(...), $task->getActorIds());
         $kept = array_values(array_filter(
             $task->getActorIds(),
-            fn($aid) => !in_array((string) $aid, $remove, true)
+            fn($aid) => !in_array(trim((string) $aid), $remove, true)
         ));
         $task->setActorIds($kept);
     }
@@ -364,6 +368,12 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
 
     public function updateCcStatus(int|string $instanceId, string $operator): void
     {
+        // issues/142 B 批（spec 06 §2.11 表第四行）：比较位先归一，**归一为空 ⇒ 一条都不动**。
+        // 旧形状直接比入参原样：带前后空格打不中规范值（该条永远未读），而空 operator 会
+        // 把所有历史 actor_id 为空串的脏行批量打成已读——issues/129 那族【空归属值读全库】
+        // 在写侧的复现。门面腿已经挡过一次，这里是【两层都挡】的第二层（§2.11 要求①）。
+        $operator = CcActorUtil::normalizeActor($operator);
+        if ($operator === '') return;
         // 已读：state 0→1，并刷 update_time——与 PDO 仓的 `SET state = 1, update_time = ?` 同形
         // （issues/141 G2 之后内存仓的 cc 行带 state/updateTime，"重复抄送不重置未读/不刷时间"
         // 两档才有可对照的写点）。

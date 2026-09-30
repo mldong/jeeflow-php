@@ -11,6 +11,7 @@ use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
 use Jeeflow\Core\ServiceContext;
+use Jeeflow\Core\Util\CcActorUtil;
 
 /**
  * 创建任务处理器
@@ -79,21 +80,16 @@ class CreateTaskHandler implements HandlerInterface
         $actors = [];
         $args = $execution->getArgs();
 
-        // 1. 动态指定下一节点处理人优先
-        $nextNodeOperator = $args->get(FlowConst::NEXT_NODE_OPERATOR);
-        if ($nextNodeOperator !== null && (string) $nextNodeOperator !== '') {
-            if (is_array($nextNodeOperator) || $nextNodeOperator instanceof \Traversable) {
-                foreach ((array) $nextNodeOperator as $o) {
-                    $t = trim((string) $o);
-                    if ($t !== '' && !in_array($t, $actors, true)) $actors[] = $t;
-                }
-            } else {
-                foreach (explode(',', (string) $nextNodeOperator) as $a) {
-                    $t = trim($a);
-                    if ($t !== '' && !in_array($t, $actors, true)) $actors[] = $t;
-                }
-            }
-            return $actors;
+        // 1. 动态指定下一节点处理人优先（issues/142 B 批 · spec 06 §2.11 表第三行）：
+        //    逗号串与数组**两形同判据**，且必须复用 §2.10 那一枚单点。旧形状是本仓的第三、第四把
+        //    手写尺子（数组臂与串臂各写一份 trim／丢空／去重），与门面腿、两仓写侧迟早分叉；
+        //    外层那个 (string) 强转在入参是数组时还会撞 PHP 的 Array to string conversion 警告，
+        //    靠【转出来是非空串】侥幸走进数组臂——那是运气不是设计。
+        //    单点已含四件：逐元素 trim → 空串/纯空白/null 丢弃 → 同次调用折叠（严格比较，
+        //    '0' 与 '00' 是两个不同的人）→ 两形同一入口。
+        $byVar = CcActorUtil::normalizeActors($args->get(FlowConst::NEXT_NODE_OPERATOR));
+        if ($byVar !== []) {
+            return $byVar;
         }
 
         // 2. 固定指派 assignee

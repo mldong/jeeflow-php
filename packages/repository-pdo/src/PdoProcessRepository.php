@@ -379,11 +379,17 @@ class PdoProcessRepository implements ProcessRepositoryInterface
      */
     public function removeTaskActor(int|string $taskId, array $actorIds): void
     {
-        if ($actorIds === []) return;
+        // issues/142 B 批 §9.2「第二批」里的一条，本轮随手同批收掉（同一枚尺子的比较位，留着就是分叉）：
+        // 删除位也按**归一后的值**比。旧形状把入参原样绑进 `actor_id = ?`，于是
+        // 【 8601 】删不掉规范行 8601（该人还留在待办里，用户面是【摘人没生效】）；
+        // 而空串/纯空白入参会去删历史 actor_id='' 的脏行——那是替脏数据做掉唯一痕迹。
+        // 归一后为空 ⇒ 一行都不删（早退，与内存仓同判据；上面 379 行那条注释说的        // 『传空列表直接返回，避免退化成清空该任务全部参与者』在这里仍然成立）。
+        $remove = CcActorUtil::normalizeActors($actorIds);
+        if ($remove === []) return;
         $stmt = $this->pdo->prepare(
             'DELETE FROM wf_process_task_actor WHERE process_task_id = ? AND actor_id = ?'
         );
-        foreach ($actorIds as $actorId) {
+        foreach ($remove as $actorId) {
             $stmt->execute([(string) $taskId, (string) $actorId]);
         }
     }
@@ -505,6 +511,12 @@ class PdoProcessRepository implements ProcessRepositoryInterface
 
     public function updateCcStatus(int|string $instanceId, string $operator): void
     {
+        // issues/142 B 批（spec 06 §2.11 表第四行，§2.11 要求①『两层都挡』的第二层）：
+        // WHERE 里的归属值先归一，归一为空 ⇒ 一条都不发。旧形状把入参原样绑进 `actor_id = ?`，
+        // 于是空 operator 会把历史 actor_id='' 的脏行批量打成已读（替脏数据洗白），
+        // 而带前后空格的合法入参反而打不中规范行（点了已读没反应）。与内存仓同判据。
+        $operator = CcActorUtil::normalizeActor($operator);
+        if ($operator === '') return;
         $stmt = $this->pdo->prepare('UPDATE wf_process_cc_instance SET state = 1, update_time = ? WHERE process_instance_id = ? AND actor_id = ?');
         $stmt->execute([date('Y-m-d H:i:s'), (string) $instanceId, $operator]);
     }

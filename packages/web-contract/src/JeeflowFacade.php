@@ -943,10 +943,26 @@ class JeeflowFacade
         return $this->ok();
     }
 
+    /**
+     * 标记抄送已读。
+     *
+     * issues/142 B 批（spec 06 §2.11 表第四行）：`operator` 是归属列的**比较位**，必须【归一后再比】。
+     * 旧形状把入参原样递给仓储，于是两个方向都错：
+     *   · 带前后空格的入参打不中已落库的规范值（该条永远未读，用户面是【点了已读没反应】）；
+     *   · 空 operator 会把 state=1 批量打到历史 actor_id 为空串的脏行上——issues/129 那族
+     *     【空归属值读全库】在写侧的复现。故归一后为空 ⇒ 一条 UPDATE 都不发。
+     * 两仓各自还会再挡一次（§2.11 要求①【两层都挡】）：绕过门面直连仓储的调用方同样挡得住。
+     * 主键档 processInstanceId 本轮不外扩——要报错就得新造文案，违 §2.11 要求③；
+     * 同一条裁定在 java 也记了，见 issues/142 §9.1 裁定③／§9.2 第二批。
+     */
     private function updateCCStatus(array $args): array
     {
         $instanceId = $this->toStr($args['processInstanceId'] ?? '');
-        $operator = $this->toStr($args['operator'] ?? '');
+        // 归一（trim → 空串/纯空白/null 丢弃）后为空 ⇒ no-op：绝不拿空值去比归属列
+        $operator = CcActorUtil::normalizeActor($args['operator'] ?? '');
+        // 与 java 基准逐字同文案（issues/121 R1 定的『以 Java 文案为基准』；本仓 transfer 腿已有这句），
+        // 不新造错误码/文案——§2.11 要求③。仓储侧还有第二层 no-op 守卫（两层都挡）。
+        if ($operator === '') return $this->error('operator 必填');
         $this->repository->updateCcStatus($instanceId, $operator);
         return $this->ok();
     }

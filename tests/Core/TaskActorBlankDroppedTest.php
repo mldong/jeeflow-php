@@ -456,6 +456,142 @@ final class TaskActorBlankDroppedTest extends TestCase
         $this->assertSame(99999999, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
         $this->assertSame('processTaskId 缺失或非法', $resp['msg'], '主键档：空串与纯空白同判');
     }
+
+    // ═══ 第二遍收尾（issues/142 §9.2 第二批 · php 落地段）═══
+    // 三条腿：CreateTaskHandler 的 nextNodeOperator 两臂换单点 ／ 门面 updateCCStatus
+    // 的 operator 归一＋空报错 ／ 两仓 removeTaskActor 的删除位 trim。前两遍已钉 add/
+    // surrogate/transfer/addTaskActor，本段钉的是当时仍持手写尺子的剩余写点。
+
+    /** 部署 01-simple 并起一单，返回实例 id（第二遍格用：cc 行挂在实例上）。 */
+    private function startedInstanceId(): string
+    {
+        $deploy = $this->facade->flow('processDefine/deploy', [
+            'content' => file_get_contents(jeeflow_flows_dir() . '/01-simple.json'),
+            'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $deploy['code'], json_encode($deploy, JSON_UNESCAPED_UNICODE));
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $deploy['data']['processDefineId'], 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        return (string) $start['data']['processInstanceId'];
+    }
+
+    /** 部署 02-multi-task 并起一单，给 task1 补参与者 leader 后返回其 taskId（nextNodeOperator 格用：task1 后面是 task2）。 */
+    private function multiTask1Id(): string
+    {
+        $deploy = $this->facade->flow('processDefine/deploy', [
+            'content' => file_get_contents(jeeflow_flows_dir() . '/02-multi-task.json'),
+            'operator' => 'zhangsan',
+        ]);
+        $this->assertSame(0, $deploy['code'], json_encode($deploy, JSON_UNESCAPED_UNICODE));
+        $start = $this->facade->flow('processInstance/startAndExecute', [
+            'processDefineId' => $deploy['data']['processDefineId'], 'operator' => 'zhangsan',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        $instanceId = (string) $start['data']['processInstanceId'];
+
+        foreach ($this->repo->findDoingTasks($instanceId) as $task) {
+            if ($task->getTaskName() === 'task1') {
+                $taskId = (string) $task->getTaskId();
+                $this->repo->addTaskActor($taskId, ['leader']);
+                return $taskId;
+            }
+        }
+        $this->fail('前置：02-multi-task 起单后应有 task1 待办');
+    }
+
+    /** task1 办结（带 tf_nextNodeOperator）后取 task2 行；取不到即 fail。 */
+    private function task2AfterTask1(string $instanceId): ProcessTask
+    {
+        foreach ($this->repo->findDoingTasks($instanceId) as $task) {
+            if ($task->getTaskName() === 'task2') return $task;
+        }
+        $this->fail('前置：task1 办结后应有 task2 待办');
+    }
+
+    /** §9.2：nextNodeOperator 串腿走单点——脏串「  manager ,, 」落进 task2 的只剩 manager。 */
+    public function testNextNodeOperatorStringLegGoesThroughTheSinglePoint(): void
+    {
+        $taskId = $this->multiTask1Id();
+        $instanceId = $this->task($taskId)->getProcessInstanceId();
+
+        $resp = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $taskId, 'operator' => 'leader',
+            'tf_nextNodeOperator' => '  manager ,,  ',
+        ]);
+        $this->assertSame(0, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
+
+        $task2 = $this->task2AfterTask1((string) $instanceId);
+        $this->assertSame(['manager'], $task2->getActorIds(),
+            '§9.2：串臂必须复用单点（trim＋丢空），脏串不得落「 manager」带空格行或空行');
+    }
+
+    /** §9.2：nextNodeOperator 数组腿同一枚单点——旧形状的 (string) 强转在数组入参时靠运气。 */
+    public function testNextNodeOperatorArrayLegGoesThroughTheSamePoint(): void
+    {
+        $taskId = $this->multiTask1Id();
+        $instanceId = $this->task($taskId)->getProcessInstanceId();
+
+        $resp = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $taskId, 'operator' => 'leader',
+            'tf_nextNodeOperator' => [' 9101 ', '', '   ', '0'],
+        ]);
+        $this->assertSame(0, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
+
+        $task2 = $this->task2AfterTask1((string) $instanceId);
+        $this->assertSame(['9101', '0'], $task2->getActorIds(),
+            '§9.2：数组臂与串臂同判据（空值丢弃、哨兵 0 存活、连续下标），两臂不得分叉');
+    }
+
+    /** §9.2：updateCCStatus 的 operator 归一——带空格打得中规范行，空/纯空白报「operator 必填」。 */
+    public function testUpdateCcStatusTrimsOperatorAndBlankIsRejected(): void
+    {
+        $instanceId = $this->startedInstanceId();
+        $cc = $this->facade->flow('processInstance/createCCInstance', [
+            'processInstanceId' => $instanceId, 'operator' => 'user1', 'actorIds' => ['9101'],
+        ]);
+        $this->assertSame(0, $cc['code'], json_encode($cc, JSON_UNESCAPED_UNICODE));
+
+        $hit = $this->facade->flow('processInstance/updateCCStatus', [
+            'processInstanceId' => $instanceId, 'operator' => ' 9101 ',
+        ]);
+        $this->assertSame(0, $hit['code'], json_encode($hit, JSON_UNESCAPED_UNICODE));
+        $row = null;
+        foreach ($this->repo->getCcInstances() as $r) {
+            if ((string) $r['processInstanceId'] === $instanceId && $r['actorId'] === '9101') { $row = $r; }
+        }
+        $this->assertNotNull($row, '前置：应有 9101 的 cc 行');
+        $this->assertSame(1, $row['state'], '「 9101 」必须打得中 9101 的行（比较位归一）');
+
+        foreach (['', '   '] as $blank) {
+            $resp = $this->facade->flow('processInstance/updateCCStatus', [
+                'processInstanceId' => $instanceId, 'operator' => $blank,
+            ]);
+            $this->assertSame(99999999, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
+            $this->assertSame('operator 必填', $resp['msg'],
+                '空 operator 不得往下落（旧形状会把历史空串脏行批量打成已读），文案对齐 java 基准');
+        }
+    }
+
+    /** §9.2：removeTaskActor 删除位 trim——带空格删得掉规范行，空串入参不误删历史脏行。 */
+    public function testRemoveTaskActorTrimsMatchAndBlankListIsNoOp(): void
+    {
+        $taskId = $this->task1Id($this->facade, $this->repo);
+        $this->repo->addTaskActor($taskId, [' 8601 ']);
+        $this->assertSame(['leader', '8601'], $this->actorsOf($taskId), '前置：写侧落库存 trim 值');
+
+        $this->repo->removeTaskActor($taskId, [' 8601 ']);
+        $this->assertSame(['leader'], $this->actorsOf($taskId), '删除位必须按 trim 后的值比较（【 8601 】删得掉 8601）');
+
+        // 历史脏行：库里有 actor_id=空串 的行（旧版本写进去的）。空串入参绝不能把它当"要删的人"。
+        $this->task($taskId)->setActorIds(['leader', '']);
+        $this->repo->removeTaskActor($taskId, ['']);
+        $this->repo->removeTaskActor($taskId, ['  ', null]);
+        $this->repo->removeTaskActor($taskId, []);
+        $this->assertSame(['leader', ''], $this->actorsOf($taskId),
+            '§9.2：归一后为空 ⇒ 什么都不删（空串入参批量误删脏行＝issues/129 写侧复现）');
+    }
 }
 
 /**
