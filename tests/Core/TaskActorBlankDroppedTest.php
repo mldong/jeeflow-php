@@ -544,12 +544,12 @@ final class TaskActorBlankDroppedTest extends TestCase
             '§9.2：数组臂与串臂同判据（空值丢弃、哨兵 0 存活、连续下标），两臂不得分叉');
     }
 
-    /** §9.2：updateCCStatus 的 operator 归一——带空格打得中规范行，空/纯空白报「operator 必填」。 */
-    public function testUpdateCcStatusTrimsOperatorAndBlankIsRejected(): void
+    /** §9.2：updateCCStatus 的 operator 归一——带空格打得中规范行；空回落 user1（java 基准）。 */
+    public function testUpdateCcStatusTrimsOperatorAndBlankFallsBackToUser1(): void
     {
         $instanceId = $this->startedInstanceId();
         $cc = $this->facade->flow('processInstance/createCCInstance', [
-            'processInstanceId' => $instanceId, 'operator' => 'user1', 'actorIds' => ['9101'],
+            'processInstanceId' => $instanceId, 'operator' => 'user1', 'actorIds' => ['9101', 'user1'],
         ]);
         $this->assertSame(0, $cc['code'], json_encode($cc, JSON_UNESCAPED_UNICODE));
 
@@ -557,20 +557,23 @@ final class TaskActorBlankDroppedTest extends TestCase
             'processInstanceId' => $instanceId, 'operator' => ' 9101 ',
         ]);
         $this->assertSame(0, $hit['code'], json_encode($hit, JSON_UNESCAPED_UNICODE));
-        $row = null;
-        foreach ($this->repo->getCcInstances() as $r) {
-            if ((string) $r['processInstanceId'] === $instanceId && $r['actorId'] === '9101') { $row = $r; }
-        }
-        $this->assertNotNull($row, '前置：应有 9101 的 cc 行');
-        $this->assertSame(1, $row['state'], '「 9101 」必须打得中 9101 的行（比较位归一）');
+        $rowOf = function (string $actorId): array {
+            foreach ($this->repo->getCcInstances() as $r) {
+                if ($r['actorId'] === $actorId) return $r;
+            }
+            $this->fail("前置：应有 {$actorId} 的 cc 行");
+        };
+        $this->assertSame(1, $rowOf('9101')['state'], '「 9101 」必须打得中 9101 的行（比较位归一）');
+        $this->assertSame(0, $rowOf('user1')['state'], '只动 9101 的行');
 
+        // 空档回落 user1（java operatorArg→normalizeActor 的可观测行为，error 分支不可达），
+        // 且绝不把 state=1 批量打到历史 actor_id='' 的脏行上（issues/129 写侧对偶）。
         foreach (['', '   '] as $blank) {
             $resp = $this->facade->flow('processInstance/updateCCStatus', [
                 'processInstanceId' => $instanceId, 'operator' => $blank,
             ]);
-            $this->assertSame(99999999, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
-            $this->assertSame('operator 必填', $resp['msg'],
-                '空 operator 不得往下落（旧形状会把历史空串脏行批量打成已读），文案对齐 java 基准');
+            $this->assertSame(0, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
+            $this->assertSame(1, $rowOf('user1')['state'], '空 operator 回落 user1（issues/129 案 A）');
         }
     }
 

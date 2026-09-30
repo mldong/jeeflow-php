@@ -958,11 +958,13 @@ class JeeflowFacade
     private function updateCCStatus(array $args): array
     {
         $instanceId = $this->toStr($args['processInstanceId'] ?? '');
-        // 归一（trim → 空串/纯空白/null 丢弃）后为空 ⇒ no-op：绝不拿空值去比归属列
-        $operator = CcActorUtil::normalizeActor($args['operator'] ?? '');
-        // 与 java 基准逐字同文案（issues/121 R1 定的『以 Java 文案为基准』；本仓 transfer 腿已有这句），
-        // 不新造错误码/文案——§2.11 要求③。仓储侧还有第二层 no-op 守卫（两层都挡）。
-        if ($operator === '') return $this->error('operator 必填');
+        // issues/142 B 批（spec 06 §2.11 表第四行）：operator 先过 operatorOf（空串/缺键回落
+        // demo 缺省 user1，issues/129 案 A 与 java operatorArg 同一条规则）再归一取 trim 值——
+        // 不 trim 则「 9101 」打不中库里 trim 后的行（点了已读没反应）。java 基准同构：
+        // normalizeActor(operatorArg(args))，其 error("operator 必填") 分支因 operatorArg
+        // 恒回落 user1 而不可达，可观测行为就是「空 ⇒ 标记 user1 自己的行」，本栈照抄。
+        // 仓储侧还有第二层 no-op 守卫（归一后为空 ⇒ 一条都不动，两层都挡）。
+        $operator = CcActorUtil::normalizeActor($this->operatorOf($args));
         $this->repository->updateCcStatus($instanceId, $operator);
         return $this->ok();
     }
