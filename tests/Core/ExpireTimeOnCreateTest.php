@@ -167,6 +167,102 @@ class ExpireTimeOnCreateTest extends TestCase
         }
     }
 
+    // ═══ issues/137 E（相对档前缀允许两端空白）═══
+
+    /**
+     * issues/137 E（owner 2026-10-01 拍"统一 trim" · spec 04 §相对档前缀允许两端空白）：
+     * ①前缀带空白的相对档**照样算得出**，②单位符后面带空白仍落穿，③trim 不是裁容错。
+     *
+     * 本栈病灶在 `FlowUtil::tryInt` 的正则是 `^…$` 锚死的、不吃空白 ⇒ 改前 `" 2h"` 的前缀 `" 2"`
+     * 被正则拒（java 同形是 `Integer.parseInt` 抛 NFE）。各栈整数解析对空白的容忍度天然不同
+     * （go `Atoi` 前 `TrimSpace`、rust `.trim()`、.NET `TryParse` 与 python `int()` 默认收），
+     * 不显式 trim 就是"同一份流程定义别家有到期时间、php 没有"。
+     *
+     * 三条分界（基准＝jeeflow-java `ExpireTimeOnCreateTest::paddedRelativePrefixStillApplies`
+     * `bf1f401`）的判据形状都是**同一行** `expire − create`，不是"非空"空判：
+     * ① `" 2h"` / `"	2h"`（tab 也算空白）/ `"2 h"`（空格落在前缀区内、末位仍是单位符）⇒ ≈2h；
+     *    `d` 档同尺（`" 2d"`），证明两个调用点走的是同一把尺子；
+     * ② `"2h "` 末位是空格 ⇒ 认不出单位 ⇒ 落穿绝对档 ⇒ NULL（**这一格钉住"只裁前缀不裁整串"**——
+     *    整串去空白后它就变成合法的 `2h` 了，而"整体裁空白"没立过法）；
+     * ③ `" 2.5h"` ⇒ trim 之后仍是小数误配 ⇒ 仍落穿。
+     */
+    public function testPaddedRelativePrefixStillApplies(): void
+    {
+        $leading = $this->createOn($this->instance(), ' 2h');
+        $this->assertExpireAbout2HAfterCreate($leading->getExpireTime(), $leading->getCreateTime(),
+            '前缀带一个空格的 2h');
+
+        $tabbed = $this->createOn($this->instance(), "\t2h");
+        $this->assertExpireAbout2HAfterCreate($tabbed->getExpireTime(), $tabbed->getCreateTime(),
+            '前缀带 tab 的 2h');
+
+        $inside = $this->createOn($this->instance(), '2 h');
+        $this->assertExpireAbout2HAfterCreate($inside->getExpireTime(), $inside->getCreateTime(),
+            '空白落在前缀区内（数字与单位符之间）');
+
+        // 天档经的是另一个调用点（`$unit === 'd'` 那一支），同一把尺子 ⇒ 空白同样该裁
+        $this->assertExpireAboutDays($this->createOn($this->instance(), ' 2d'), 2, '天档带空前缀 2d');
+
+        $trailing = $this->createOn($this->instance(), '2h ');
+        $this->assertNotNull($trailing->getCreateTime(), '对照："2h " 那行的 createTime 仍应有值');
+        $this->assertNull($trailing->getExpireTime(),
+            '单位符后面带空白 ⇒ 末位不是 s/m/h/d、认不出单位 ⇒ 落穿绝对档 ⇒ NULL；'
+            . '这里若算出了值，说明裁空白被做成了"整个表达式去空白"');
+
+        $decimal = $this->createOn($this->instance(), ' 2.5h');
+        $this->assertNotNull($decimal->getCreateTime(), '对照：" 2.5h" 那行的 createTime 仍应有值');
+        $this->assertNull($decimal->getExpireTime(),
+            'trim 之后照样是误配（小数）⇒ 仍落穿；trim 不是把"裁空白"顺手做成"裁容错"');
+    }
+
+    /**
+     * issues/137 E 的两条边界对照面：
+     * ④ 判负（137 D）在 trim **之后**照旧生效——`" -5h"` 裁成 `-5` 仍算不合法 ⇒ NULL，
+     *   不许因为"加了 trim"就把负数档漏成放行（`[+-]?` 保留、负号仍被正则收进来再由 `$n < 0` 拦）；
+     * 对照 不带空格的 `2h` / `+2h` 仍≈2h——上一格那批断言不是恒真，摘掉 tryInt 的 trim 也不会
+     *   误伤它们，这一格才是"新格有牙"的参照系。
+     */
+    public function testPaddedNegativePrefixStillStaysNullWithUnpaddedControl(): void
+    {
+        // ④ trim 之后判负照旧（-5h）；'-5m ' 那档末位带空格、单位都认不出，同为 NULL
+        foreach ([' -5h', '-5m ', ' -5d'] as $expr) {
+            $task = $this->createOn($this->instance(), $expr);
+            $this->assertNotNull($task->getCreateTime(), "对照：\"{$expr}\" 那行的 createTime 仍应有值");
+            $this->assertNull($task->getExpireTime(),
+                "\"{$expr}\" 必须 NULL：带空白不改变判负（137 D 在 trim 之后仍生效），"
+                . '放行负数＝写进一个过去的时刻，新建即逾期');
+        }
+
+        $plain = $this->createOn($this->instance(), '2h');
+        $this->assertExpireAbout2HAfterCreate($plain->getExpireTime(), $plain->getCreateTime(),
+            '正向对照（不带空格的 2h）');
+        $plus = $this->createOn($this->instance(), '+2h');
+        $this->assertExpireAbout2HAfterCreate($plus->getExpireTime(), $plus->getCreateTime(),
+            '正向对照（+2h，加号照旧收）');
+    }
+
+    /**
+     * issues/137 E 的边界：裁的只到**相对档前缀**——变量档的键名与绝对档的字符串本身都不 trim。
+     * `" dueAt "` 这个表达式**取不到**变量 `dueAt`（`$args->has($expr)` 吃的是原串），
+     * 也不许因本次改动突然取到；落穿后末位是空格 ⇒ 相对档不认 ⇒ 绝对档解析不出 ⇒ NULL。
+     *
+     * 这一格同时是"整串 trim"变异的第二块试金石：真在 processTime 开头 trim 整串，
+     * `" dueAt "` 就会命中变量档算出 2026-12-31 10:00:00 而当场红。
+     */
+    public function testVariableTierKeyIsNotTrimmedByTheNewPrefixTrim(): void
+    {
+        $inst = $this->instance(['dueAt' => '2026-12-31 10:00:00']);
+        $task = $this->createOn($inst, ' dueAt ');
+        $this->assertNotNull($task->getCreateTime(), '对照：这一行确实建过单');
+        $this->assertNull($task->getExpireTime(),
+            '变量档键名不做 trim ⇒ " dueAt " 取不到 dueAt，按既有误配落穿 ⇒ NULL'
+            . '（若这里算出了变量值，说明裁空白被做成了整个表达式去空白）');
+
+        // 绝对档同样不吃空白：带前导空格的合法时间串仍按未立法的宽容处理 ⇒ NULL
+        $this->assertNull($this->createOn($this->instance(), ' 2026-12-31 10:00:00')->getExpireTime(),
+            '绝对档的字符串本身不 trim');
+    }
+
     // ═══ §1.8 串行会签两格（引擎级，走共享夹具） ═══
 
     /**

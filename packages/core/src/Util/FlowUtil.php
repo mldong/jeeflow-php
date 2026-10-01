@@ -30,7 +30,8 @@ final class FlowUtil
      *     （DateTimeInterface / 毫秒整数时间戳 / "Y-m-d H:i:s" 字符串；字符串解析失败 ⇒ null）。
      *     值为其它类型（bool / float / array / object）⇒ **落穿**继续走第 2、3 档。
      *  2. **相对档**：expr 以 `s|m|h|d` 结尾且前缀是整数 ⇒ now + N 秒/分/时/天
-     *     （`d` 走日历加天，不乘 86400 秒）。
+     *     （`d` 走日历加天，不乘 86400 秒）。空白只在前缀那一侧被裁（issues/137 E，见 `tryInt`）——
+     *     **本档判单位符用的仍是 `$expr` 原串末位**，`"2h "` 认不出单位照旧落穿，别在这里改成先 trim 整串。
      *  3. **绝对档**：把 expr 本身按 "Y-m-d H:i:s" 解析 ⇒ 时刻；失败 ⇒ null。
      *
      * 三条**故意的**实现取舍（都不是随手写的）：
@@ -129,9 +130,24 @@ final class FlowUtil
      *
      * 只裁负、**不裁加号**：正则里的 `+` 保留不动。各栈整数解析（python `[+-]?`、node `[-+]?\d+`、
      * java `Integer.parseInt`）都收 '+'，裁掉加号等于新造一处跨栈分叉 ⇒ `+2h` 在本栈仍是 now+7200s。
+     *
+     * issues/137 E（owner 2026-10-01 拍"统一 trim" · spec 04 §相对档前缀允许两端空白，基准＝java
+     * `FlowUtil.parseIntOrNull` `bf1f401`）：**判整数之前**先裁掉前缀的两端空白。到期表达式是设计器
+     * 手填/JSON 搬运的字符串，`" 2h"` 夹一个空格是常态，而各栈整数解析对空白的容忍度天然不同（go 在
+     * `strconv.Atoi` 前显式 `TrimSpace`、rust `.trim()`、.NET `int.TryParse` 与 python `int()` 默认就收
+     * 前后空白），本栈的正则是 `^…$` 锚死的、原本不吃 ⇒ 不 trim 就是"同一份流程定义别家有到期时间、
+     * php 没有"。正则一个字不改（`[+-]?` 保留）。
+     *
+     * ⚠️ **裁的位置只到前缀，不动整串**：单位符判定（上面 `$unit = substr($expr, -1)`）与绝对档
+     * 拿到的仍是**原串**——`"2h "` 的末位是空格、认不出单位，照旧按误配落穿；把整串去空白是
+     * "顺手把裁空白做成裁容错"，那是另一件没立过法的事。变量档的键名同样不 trim（`$args->has($expr)`
+     * 吃原串），否则 `" dueAt "` 会突然取到值，改的是另一件事。判负（137 D）在 trim 之后仍生效：
+     * `" -5h"` ⇒ 裁成 `-5` ⇒ 命中 `$n < 0` ⇒ 落穿。
      */
     private static function tryInt(string $s): ?int
     {
+        // issues/137 E：只裁前缀两端空白，之后的判定（整数格式 → 非负）一概不变
+        $s = trim($s);
         if (preg_match('/^[+-]?\d{1,18}$/', $s) !== 1) {
             return null;
         }
