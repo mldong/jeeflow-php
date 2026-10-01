@@ -123,6 +123,7 @@ class JeeflowFacade
                 'processTask/surrogate' => $this->taskSurrogate($args),
                 'processTask/addCandidate' => $this->taskSurrogate($args),
                 'processTask/transfer' => $this->taskTransfer($args),
+                'processTask/removeTaskActor' => $this->taskRemoveActor($args), // issues/115 残留：第 47 个 action
                 'processTask/latest' => $this->taskLatest($args),
                 'processTask/candidatePage' => $this->candidatePage($args),
                 // ── 视图端点 ──
@@ -674,6 +675,90 @@ class JeeflowFacade
                 ProcessPublisher::KEY_OPERATOR => $operator,
             ],
         ));
+        return $this->ok();
+    }
+
+    /**
+     * 摘除参与人（issues/115 残留 · 门面第 **47** 个 action，规范 06 §processTask/removeTaskActor）。
+     * SPI 侧 `removeTaskActor` 从第一天起就是必选方法、两仓都实现，只是没上门面 ⇒ 摘人只能靠
+     * `transfer`（摘 A **并**加 B），本 action 补的就是这一段（八栈同批）。
+     *
+     * 三个兄弟 action 的分工（混用是本 action 最大的风险）：
+     * ① `processTask/surrogate`／`addCandidate` ＝ **只加**；② `processTask/transfer` ＝ **换人**
+     * （摘 A 加 B，写 submitType=7 ＋ tf_transferHistory 留痕）；③ 本 action ＝ **只摘不加、零留痕**：
+     * 删掉 `actorIds` 在本任务的参与者行，不新建任务、不写任何任务变量、不覆写任务 actor_id/operator
+     * 列、**不 fire 事件**（issues/132 §11.3 定稿的事件集里没有"摘除参与人"这一码，码 7
+     * `TASK_TRANSFER` 的语义是"参与者被替换"，只摘不加却发码 7 等于把没发生的转办写进事件流）。
+     *
+     * 守卫次序逐栈一致（规范同节钉死，门禁按 msg 断言，不接受各栈自行排序）：
+     * `operator 必填` → `processTaskId/actorIds 缺失` → `任务不存在` → `无权限摘除该任务参与人`
+     * → `任务非进行中，不可摘除参与人` → `至少需保留一名参与人` → 落库。
+     *
+     * ⚠️ 与 `taskSurrogate`/`taskTransfer` 的两处**有意**不同，勿"顺手对齐"成本栈的旧形状：
+     *  - 缺参数档出跨栈统一文案 `processTaskId/actorIds 缺失`（规范语义 8「同族同文案」）。本栈两兄弟
+     *    现有的是分开的 `processTaskId 缺失或非法` ＋ `actorIds 缺失`，改它们的 msg 会破既有门禁格，
+     *    属另一件事（新增 action 一律按 spec 出合并档）。
+     *  - 只认 `processTaskId`，**不**像两兄弟那样兼容 `id` 别名：java 基准腿与 node 腿都只有这一个入参，
+     *    新增 action 不再扩大入参面。
+     */
+    private function taskRemoveActor(array $args): array
+    {
+        // 必填档先判：参数全缺时若先报主键缺失，会把鉴权缺口藏进"缺参数"报错里。
+        // 硬必填、严禁回落 user1（与 transfer/withdraw 同口径）；归一走 §2.11 那一枚单点，
+        // 判空只认 `=== ''`（'0' 是合法 actor id，empty()/无回调 array_filter 的假值判据会吃掉它）。
+        $operator = CcActorUtil::normalizeActor($args['operator'] ?? null);
+        if ($operator === '') return $this->error('operator 必填');
+        // 主键档 ＋ 归属值档同判"缺参数"：processTaskId 缺失/空串/纯空白，或 actorIds 过归一后为空
+        // （逗号串与数组两形同判据）。两条都不落库；归一丢掉的空串/纯空白元素也永远不会成为删除实参。
+        $taskId = CcActorUtil::normalizeActor($args[FlowConst::PROCESS_TASK_ID_KEY] ?? null);
+        $actorIds = CcActorUtil::normalizeActors($args['actorIds'] ?? []);
+        if ($taskId === '' || $actorIds === []) return $this->error('processTaskId/actorIds 缺失');
+        $task = $this->repository->findTaskById($taskId);
+        if ($task === null) return $this->error('任务不存在');
+        // 归属判据同 transfer（语义 3）：operator ∈ 被摘集合（两侧都取归一后的串，比较才咬得上），
+        // 或 flow.auto/flow.admin（isPrivilegedOperator 既有口径，strcasecmp 天然大小写不敏感）。
+        // transfer 能"摘 A 加 B"是因为 A 就是操作人本人，本 action 同理不得成为借道摘他人的口子。
+        if (!$this->isPrivilegedOperator($operator) && !in_array($operator, $actorIds, true)) {
+            return $this->error('无权限摘除该任务参与人');
+        }
+        // 语义 4：仅进行中（DOING=10）任务可摘人。已办结/废弃/撤回的历史参与人行是 approvalRecord 的
+        // 取证依据（它读全状态任务行），摘它等于改写审批历史。
+        if ($task->getTaskState() !== ProcessTaskState::DOING) {
+            return $this->error('任务非进行中，不可摘除参与人');
+        }
+        // 参与者以仓储读回的 wf_process_task_actor 行值为判据。
+        // ⚠️ 这里**故意不用** $this->actorIdsOf($task)：那个 helper 逐元素 trim，恰好把语义 6
+        // 要保住的东西抹掉——库里的行可能是修复前落下的未 trim 原值 `" leader "`。
+        $targets = $actorIds;
+        $toDelete = [];
+        $remaining = 0;
+        foreach ($task->getActorIds() as $row) {
+            // 语义 6「匹配取归一值、DELETE 取行上的原值」（§2.11 硬要求②的删除腿）：
+            // 匹配用归一形 ⇒ `" leader "` 行的归一值 'leader' 能被打中；喂给仓储的却是**那一行的原值**。
+            // 反面形状＝拿归一值去 DELETE：SQL 侧的删除腿是 `WHERE actor_id = ?`（列值精确比较），
+            // 归一值打不中未 trim 的原值 ⇒ "判成同一人却一条没删"，门面报成功而被摘的人待办还在，
+            // 是**假成功**（go 栈本轮实测到并已这样修）。
+            // ⚠️ 本栈还差半截、且**不在本轮范围内**（PDO 仓本轮不动）：`PdoProcessRepository::removeTaskActor`
+            // 自带 §9.2 那道入参归一，会把这里交出的原值再 trim 一次 ⇒ 真库上未 trim 的历史行仍删不掉。
+            // 门面交出原值是那一腿修复的先决条件；内存仓无此问题（比较两侧都 trim，两边都打得中）。
+            $normalized = CcActorUtil::normalizeActor($row);
+            if ($normalized === '') {
+                continue;   // 归一后为空的历史脏行（actor_id=''/纯空白）既不匹配，也不算"一个人"
+            }
+            if (in_array($normalized, $targets, true)) {
+                $toDelete[] = is_string($row) ? $row : (string) $row;
+            } else {
+                $remaining++;
+            }
+        }
+        // 语义 5「不得摘空」按**能办单的人数**判（脏行撑不起下限，否则"摘空"会伪装成成功）；
+        // 判据取集合差（上面的 $remaining），不是"入参条数"——actorIds 里混非参与者 id 也绕不过。
+        // 少了这一条就会造出无人可办、也无法撤回重派的死单，比"配错表达式落 NULL"更难恢复。
+        if ($toDelete !== [] && $remaining === 0) return $this->error('至少需保留一名参与人');
+        // 语义 7「幂等」：actorIds 里不属于本任务参与者的人静默忽略；一个都没命中 ⇒ 空操作、成功信封
+        // （前端双点、集成层重放第二次不再报错）。要"人不在任务里就报错"请用 transfer。
+        // 落库后即返回：**不 updateTask、不写变量、不置 submitType、不 ProcessPublisher::notify**。
+        if ($toDelete !== []) $this->repository->removeTaskActor($taskId, $toDelete);
         return $this->ok();
     }
 
