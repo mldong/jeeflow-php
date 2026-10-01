@@ -17,6 +17,7 @@ use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\Event\ProcessEvent;
 use Jeeflow\Core\Event\ProcessPublisher;
 use Jeeflow\Core\JeeflowEngine;
+use Jeeflow\Core\JeeflowException;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
 use Jeeflow\Core\Parser\ModelParser;
@@ -55,6 +56,9 @@ class JeeflowFacade
         'approver' => true, 'applicant' => true, 'node' => true,
         'stuckNode' => true, 'stuckApprover' => true, 'durationBucket' => true,
     ];
+
+    /** issues/137 §3-1：内部异常对外只说这一句（固定文案，其余七栈逐字复刻；spec 06 §2.12） */
+    public const INTERNAL_FAILURE_MSG = '流程处理失败';
 
     public function __construct(JeeflowEngine $engine, ProcessRepositoryInterface $repository,
                                 ?ProcessExtRepositoryInterface $extRepository = null)
@@ -160,8 +164,114 @@ class JeeflowFacade
             }
             return $result;
         } catch (\Throwable $e) {
-            return $this->error($e->getMessage() ?: (string) $e);
+            // issues/137 §3-1：判别式五条与理由见 isForeignDetail()——引擎写的中文契约文案照旧逐字透出
+            // （其余七栈、十三集成壳与前端 toast 都按原文对齐，不能在这条上收窄），只把**外来/内部异常**
+            // 的原文换成固定文案，原文只进日志与 previous 链（对齐 java log.log(SEVERE, …, e) 的 cause 分离）。
+            if (self::isForeignDetail($e::class, $e->getMessage(), $e->getPrevious(), $e->getTrace(), $e->getFile())) {
+                $this->logInternalFailure($action, new JeeflowException(self::INTERNAL_FAILURE_MSG, 99999999, $e));
+                return $this->error(self::INTERNAL_FAILURE_MSG);
+            }
+            return $this->error($e->getMessage());
         }
+    }
+
+    /**
+     * issues/137 §3-1：判「这条异常的 message 能不能原样进 msg」——抽成纯静态函数
+     * （java 参考实现 JeeflowFacade::isForeignDetail(type, message, cause, trace)，rust parse_error_message
+     * 同姿势），文案判据与副作用（{@see logInternalFailure()}）各自可测。
+     *
+     * **不能简单收窄成「只透 JeeflowException」**：本栈普查（2026-10-02，各 packages 包 src/ 下全部 29 处 throw）
+     * 证实契约文案存在**裸异常腿**——ProcessTask:81/84/100、ProcessInstance:429/434、
+     * ModelParser:70「读取流程定义 JSON 失败」、本门面 requireExt()「未接入 IProcessExtRepository…」与
+     * idListArgs()「id 缺失或非法」（\InvalidArgumentException），都是裸 \RuntimeException/\InvalidArgumentException
+     * 携带中文契约文案，其余栈与前端 toast 按原文逐字对齐 ⇒ 收窄会静默改写契约面且没人报警。
+     * 所以按「这段文案是谁写的」判，五条（顺序即优先级，true ⇒ 属内部信息 ⇒ 出口只给固定文案）：
+     *  1. message 为 null/空串 ⇒ 内部（旧形状 `?: (string) $e` 的兜底会吐类名＋文件＋栈，必是内部）；
+     *  2. 契约异常族（JeeflowException 及其子类）⇒ 逐字透出（本条返回 false）；
+     *  3. message 恰等于 cause 的原文/字符串化 ⇒ 内部（裸包装只是搬运下层原文，引擎没写过它）；
+     *  4. 运行时/反射/JSON 解析器/驱动自己抛的族（\Error 全族——含 \TypeError/\ValueError/
+     *     \DivisionByZeroError、\PDOException、\JsonException、\ReflectionException）⇒ 内部；
+     *     注意引擎拿来当契约载体的 \RuntimeException/\InvalidArgumentException **不在**这一族；
+     *  5. 抛出点不在引擎命名空间（Jeeflow\…，排除 Jeeflow\Tests\…）⇒ 内部（引擎没写过的一律不外透）。
+     *
+     * @param string      $type    异常类型（$e::class）
+     * @param ?string     $message 异常文案（可为 null/空串）
+     * @param ?\Throwable $cause   previous 链（可为 null）
+     * @param array       $trace   $e->getTrace()——trace[0]['class'] 即抛出点所在类（对应 java
+     *                             trace[0].getClassName()，继承方法也报**声明类**，实测）；
+     *                             ⚠️ trace[0]['file'] 是**调用方**文件，不能拿来判归属
+     * @param ?string     $file    抛出点文件（$e->getFile()，闭包/顶层抛出的兜底归属）
+     * @return bool true ⇒ 属内部信息，出口只给固定文案
+     */
+    public static function isForeignDetail(string $type, ?string $message, ?\Throwable $cause, array $trace, ?string $file = null): bool
+    {
+        if ($message === null || $message === '') {
+            return true;
+        }
+        if (is_a($type, JeeflowException::class, true)) {
+            return false;
+        }
+        if ($cause !== null && ($message === $cause->getMessage() || $message === (string) $cause)) {
+            return true;
+        }
+        if (self::runtimeInternal($type)) {
+            return true;
+        }
+        return !self::thrownInsideEngine($trace, $file);
+    }
+
+    /** 运行时/反射/JSON 解析器/驱动构造的异常族（java jvmInternal 的本栈等价类型；其 message 一律是内部信息） */
+    private static function runtimeInternal(string $type): bool
+    {
+        return is_a($type, \Error::class, true)                 // \TypeError/\ValueError/\DivisionByZeroError/「Call to a member function … on null」全在此族
+            || is_a($type, \PDOException::class, true)          // 驱动（java SQLException 族；注意它继承 \RuntimeException，必须单列）
+            || is_a($type, \JsonException::class, true)         // JSON 解析器（JSON_THROW_ON_ERROR）
+            || is_a($type, \ReflectionException::class, true);  // 反射（java ReflectiveOperationException 族）
+    }
+
+    /** 抛出点是否落在引擎命名空间（排除测试桩：Jeeflow\Tests\ 抛的不算引擎契约文案，对齐 java 排除 test 包） */
+    private static function thrownInsideEngine(array $trace, ?string $file): bool
+    {
+        if ($trace !== []) {
+            $symbol = $trace[0]['class'] ?? $trace[0]['function'] ?? null;
+            if (is_string($symbol) && $symbol !== '' && !str_contains($symbol, '{closure')) {
+                return str_starts_with($symbol, 'Jeeflow\\') && !str_starts_with($symbol, 'Jeeflow\\Tests\\');
+            }
+        }
+        // 闭包/顶层抛出兜底：按抛出点文件归属（trace[0]['file'] 是调用方文件，只能用 getFile()）
+        if (is_string($file) && $file !== '') {
+            foreach (self::engineSrcDirs() as $dir) {
+                if (str_starts_with($file, $dir)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 引擎各包 src/ 目录（锚点类推导真实路径，monorepo 与 composer 安装形态都成立） */
+    private static function engineSrcDirs(): array
+    {
+        static $dirs = null;
+        if ($dirs !== null) return $dirs;
+        $dirs = [];
+        $anchors = [JeeflowException::class, self::class, \Jeeflow\Persist\PdoDynamicTableWriter::class, \Jeeflow\RepositoryPDO\PdoProcessRepository::class];
+        foreach ($anchors as $anchor) {
+            if (!class_exists($anchor)) continue;
+            $f = (new \ReflectionClass($anchor))->getFileName();
+            if (is_string($f)) $dirs[] = dirname($f) . DIRECTORY_SEPARATOR;
+        }
+        return $dirs;
+    }
+
+    /**
+     * 内部失败的唯一副作用出口：原文只进**日志与异常对象的 previous 链**（$wrapped->getPrevious()
+     * 即原始异常），绝不进 msg 或任何其它对外字段。protected 供测试子类覆写捕获——
+     * 文案判据（isForeignDetail 纯函数）与副作用各自可测。
+     */
+    protected function logInternalFailure(string $action, JeeflowException $wrapped): void
+    {
+        error_log('[jeeflow-php] action 执行失败: action=' . $action . ' ' . $wrapped->getPrevious());
     }
 
     // ═══ 流程定义 ═══
@@ -888,7 +998,11 @@ class JeeflowFacade
             $result = $reader->readByProcessInstance($tableName, $instanceId);
             return $result === null ? $this->ok() : $this->ok($result);
         } catch (\Throwable $e) {
-            return $this->error('业务数据读取失败: ' . ($e->getMessage() ?: (string) $e));
+            // issues/137 §3-1：对齐 java（137-G）与 csharp（批二 dca1b33）——msg 只留契约固定文案
+            // 「业务数据读取失败」，reader/驱动原文只进日志与 previous 链（旧形状把原文拼进 msg 属泄漏；
+            // 前缀本体是跨栈契约文案，删拼接不删前缀）。
+            $this->logInternalFailure('processInstance/bizData', new JeeflowException('业务数据读取失败', 99999999, $e));
+            return $this->error('业务数据读取失败');
         }
     }
 
