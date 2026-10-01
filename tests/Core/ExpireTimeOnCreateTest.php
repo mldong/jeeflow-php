@@ -111,6 +111,62 @@ class ExpireTimeOnCreateTest extends TestCase
         $this->assertNull($fallthrough->getExpireTime(), '落穿后绝对档解析不出 ⇒ NULL');
     }
 
+    /**
+     * 负向③（issues/137 D，owner 2026-10-01 拍"判非负" · spec 04 §相对档前缀须非负整数）：
+     * 负数相对档不是合法偏移，四档 `s/m/h/d` 各自钉一格。
+     *
+     * 放行 `-5h` 会算出一个**过去**的时刻 ⇒ 新建的行当场即逾期，比"没配到期时间"更难发现；
+     * 判据是 NULL，**不是异常**（误配不该打断建单，issues/137 C 口径）、**不是当前时间**（issues/126
+     * 病灶）、也**不是回拨后的那个时刻**。`d` 档单独一格：它走 DateTime 日历加天而非乘 86400，
+     * 是"历日倒退"这条独立病灶（本栈四档共用 FlowUtil::tryInt 这一个前缀解析点，无旁路）。
+     *
+     * 判据形状照 jeeflow-java `ExpireTimeOnCreateTest::negativeRelativeExpressionStaysNull`（1649955）。
+     */
+    public function testNegativeRelativeExpressionStaysNull(): void
+    {
+        foreach (['-30s', '-5m', '-5h', '-5d'] as $expr) {
+            $task = $this->createOn($this->instance(), $expr);
+            // "行没读到"与"值为空"分开断：否则这条负向会拿"根本没建行"恒真通过
+            $this->assertNotNull($task->getCreateTime(), "对照：\"{$expr}\" 那行的 createTime 仍应有值");
+            $this->assertNull($task->getExpireTime(),
+                "负数前缀 \"{$expr}\" 必须算解析不出 ⇒ 落穿绝对档 ⇒ NULL；"
+                . '退化成当前时间等于静默造一个"建单即逾期"，放行负数则是真算出一个过去时刻');
+        }
+    }
+
+    /**
+     * 上一格的对照面：判非负**只**裁第 2 档的负前缀，其余四档一律照旧。
+     *
+     * ②加号档仍合法——"只裁负、不裁加号"：各栈整数解析（python `[+-]?`、node `[-+]?\d+`、java
+     *   Integer.parseInt）都收 '+'，正则里的 `+` 保留；这一格就是挡住顺手把加号也裁掉。
+     *   天档正数（`2d`/`+1d`）同时把"跨天/跨月的日历加天算术"用正方向补回覆盖。
+     * ③变量档与绝对档不变。
+     * ④坏前缀（小数/带字母）行为不变，本来就落穿。
+     */
+    public function testNegativeTierCheckKeepsOtherTiersWorking(): void
+    {
+        $plus = $this->createOn($this->instance(), '+2h');
+        $this->assertExpireAbout2HAfterCreate($plus->getExpireTime(), $plus->getCreateTime(), '正向对照（+2h 收加号）');
+
+        $this->assertExpireAboutDays($this->createOn($this->instance(), '2d'), 2, '天档 2d');
+        $this->assertExpireAboutDays($this->createOn($this->instance(), '+1d'), 1, '天档 +1d');
+
+        // 变量档：表达式是变量名 ⇒ 取变量值（第 1 档排在相对档之前，不受本次改动影响）
+        $byVar = $this->createOn($this->instance(['dueAt' => '2026-12-31 10:00:00']), 'dueAt');
+        $this->assertSame('2026-12-31 10:00:00', $byVar->getExpireTime(), '变量档照旧命中');
+
+        // 绝对档：表达式本身就是 "Y-m-d H:i:s"
+        $abs = $this->createOn($this->instance(), '2026-12-31 10:00:00');
+        $this->assertSame('2026-12-31 10:00:00', $abs->getExpireTime(), '第 3 档绝对时刻照旧成功');
+
+        foreach (['2.5h', 'xh', '-2.5h'] as $expr) {
+            $task = $this->createOn($this->instance(), $expr);
+            $this->assertNotNull($task->getCreateTime(), "对照：\"{$expr}\" 那行的 createTime 仍应有值");
+            $this->assertNull($task->getExpireTime(),
+                "\"{$expr}\" 前缀非整数 ⇒ 落穿绝对档 ⇒ NULL（issues/137 C 误配落穿口径不变）");
+        }
+    }
+
     // ═══ §1.8 串行会签两格（引擎级，走共享夹具） ═══
 
     /**
@@ -238,5 +294,24 @@ class ExpireTimeOnCreateTest extends TestCase
             "{$who} 的 expire − create 应≈2h（实得 {$delta}s）；占位写法会算出≈0 而把新建任务判成已逾期");
         $this->assertLessThanOrEqual(self::TWO_HOURS + 60, $delta,
             "{$who} 的 expire − create 应≈2h（实得 {$delta}s），不该超出偏移量");
+    }
+
+    /**
+     * 天档判据：同一行 `expire − create ≈ n 天`。带宽 ±1h 而不是紧贴 n*86400——本栈 `d` 档走
+     * DateTime **日历加天**（对齐 Java `Calendar.add(DAY_OF_MONTH)`，见 FlowUtil::processTime 的
+     * `%+d days` 一支），跨夏令时/月末的自然日不是恒定 86400 秒。
+     * 下界仍把"退回当前时间的占位写法算出≈0"夹在外面，不放宽成"非空"。
+     */
+    private function assertExpireAboutDays(ProcessTask $task, int $days, string $who): void
+    {
+        $expire = $task->getExpireTime();
+        $create = $task->getCreateTime();
+        $this->assertNotNull($expire, "{$who} 必须带到期时间");
+        $this->assertNotNull($create, "{$who} 的 createTime 应有值（内部对照）");
+        $delta = strtotime((string) $expire) - strtotime((string) $create);
+        $this->assertGreaterThanOrEqual($days * 86400 - 3600, $delta,
+            "{$who} 的 expire − create 应≈{$days} 天（日历加天），实得 {$delta}s；占位写法会算出≈0");
+        $this->assertLessThanOrEqual($days * 86400 + 3600, $delta,
+            "{$who} 的 expire − create 不该超出 {$days} 天偏移，实得 {$delta}s");
     }
 }
