@@ -426,6 +426,145 @@ class MysqlSmokeTest extends TestCase
             '精确作用域清空后，空 processName 的兜底委托应并入代理人（推进出的新单同样落真表）');
     }
 
+    /**
+     * M8 issues/137 A · 批二 §3-4（php 腿）—— **实例级** `expire_time` 打进真库那一列的必须是
+     * 「定义级表达式的求值结果」，不是原串。
+     *
+     * 为什么必须有一支真库腿：内存里 `$instance->getExpireTime()` 读到什么都是"一个字符串"，
+     * `"2h"` 与 `"2026-10-01 12:00:00"` 一样绿；而这一列在库上是 `DATETIME(3)`，160 那台 MySQL
+     * 实测 `@@sql_mode` 含 `STRICT_TRANS_TABLES` ⇒ 原串进列是**硬错 1292**（真值见下面
+     * {@see self::testM9RawRelativeStringIsRejectedByStrictDatetimeColumn} 的探针读数）。
+     * 也就是说改前的形状不是"读数难看"，而是**配了顶层到期表达式的流程在 php 栈根本发起不了**。
+     * 这一支也正是 §3-4 要的变异对照第二步的落点：把这一列的**落库绑定**摘掉 ⇒ 内存腿 293 格全绿、
+     * 只有这一格红（实测见交付报告）。
+     *
+     * 判据仍打在**值**上：同行 `expire − create ≈ 2h`，且那一列的字面量不等于 `"2h"`。
+     */
+    public function testM8InstanceExpireTimeLandsAsEvaluatedMoment(): void
+    {
+        $this->repo->addDefine($this->defineWithRootExpire('900080', '2h'));
+
+        $instance = $this->engine->startProcessInstanceById('900080', 'user1', FlowData::create());
+        $iid = (string) $instance->getInstanceId();
+
+        $stmt = self::$pdo->prepare(
+            'SELECT expire_time, create_time FROM wf_process_instance WHERE id = ?');
+        $stmt->execute([$iid]);
+        $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+        $this->assertNotFalse($row, '实例行必须真落库');
+        $expire = (string) ($row['expire_time'] ?? '');
+        $create = (string) ($row['create_time'] ?? '');
+
+        $this->assertNotSame('2h', $expire,
+            '真库 expire_time 读到的是表达式原串 ⇒ 求值被摘掉了（该列是 DATETIME(3)，原串根本进不去）');
+        $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?$/', $expire,
+            '真库那一列必须是时刻，实得: ' . var_export($row['expire_time'], true));
+        $delta = strtotime($expire) - strtotime(preg_replace('/\.\d+$/', '', $create));
+        $this->assertGreaterThanOrEqual(7200 - 5, $delta,
+            "真库同行 expire − create 应≈2h（实得 {$delta}s）；now() 占位会算出≈0");
+        $this->assertLessThanOrEqual(7200 + 60, $delta,
+            "真库同行 expire − create 应≈2h（实得 {$delta}s）");
+    }
+
+    /**
+     * M8 的负向腿：定义**没配**顶层 expireTime ⇒ 真库那一列必须是 SQL NULL。
+     *
+     * 判据打在库列上而不是聚合根上——"不兜底 now、不写空串"只有在真库上才分得清
+     * `NULL` / `'0000-00-00'` / `''` 三种错法（本库 `NO_ZERO_DATE` 也在 sql_mode 里）。
+     */
+    public function testM8bUnconfiguredDefinitionLeavesInstanceColumnNull(): void
+    {
+        foreach (['absent' => null, 'empty' => '', 'blank' => '   '] as $case => $expr) {
+            $id = '90008' . (['absent' => 1, 'empty' => 2, 'blank' => 3][$case]);
+            $this->repo->addDefine($this->defineWithRootExpire($id, $expr));
+            $instance = $this->engine->startProcessInstanceById($id, 'user1', FlowData::create());
+
+            $stmt = self::$pdo->prepare('SELECT expire_time, create_time FROM wf_process_instance WHERE id = ?');
+            $stmt->execute([(string) $instance->getInstanceId()]);
+            $row = $stmt->fetch(\PDO::FETCH_ASSOC);
+            $this->assertNotFalse($row, "真库实例行要读得到（{$case} 档）");
+            $this->assertNotFalse(strtotime((string) $row['create_time']),
+                "对照：{$case} 那行的 create_time 有值（NULL 不是整行没建）");
+            $this->assertNull($row['expire_time'],
+                "定义{$case} ⇒ 真库 expire_time 必须是 SQL NULL，实得: " . var_export($row['expire_time'], true));
+        }
+    }
+
+    /**
+     * 病灶探针（不是被测代码，是**为什么必须求值**的读数）：把 `"2h"` 原样塞进真库那一列。
+     *
+     * 这一格钉的是 M8 的因果链：原串进 `DATETIME` 列在 `STRICT_TRANS_TABLES` 下是硬错，
+     * 所以改前的形状在真库上不是"列里躺着个脏字符串"，而是**发起直接抛**。
+     * `sql_mode` 不含 STRICT 的环境（例如某些开发机把严格模式关了）会**显式跳过**而不是静默通过——
+     * 关掉严格模式时 MySQL 会把 `'2h'` 塞成 `0000-00-00`，那是另一种失真，不是本格的判据。
+     */
+    public function testM9RawRelativeStringIsRejectedByStrictDatetimeColumn(): void
+    {
+        $mode = (string) self::$pdo->query('SELECT @@sql_mode')->fetchColumn();
+        if (!str_contains($mode, 'STRICT')) {
+            $this->markTestSkipped('本环境 sql_mode 不含 STRICT_*（实得: ' . $mode
+                . '）⇒ 原串会被静默塞成零值而不是报错，本探针不适用');
+        }
+
+        $thrown = null;
+        try {
+            $stmt = self::$pdo->prepare('INSERT INTO wf_process_instance'
+                . ' (id, parent_id, process_define_id, state, parent_node_name, business_no, operator,'
+                . ' expire_time, variable, create_time, create_user, update_time, update_user)'
+                . " VALUES (999999999, NULL, 1, 10, NULL, NULL, 'user1', '2h', '{}',"
+                . " DATE_FORMAT(NOW(), '%Y-%m-%d %H:%i:%s'), 'user1', NULL, NULL)");
+            $stmt->execute();
+        } catch (\PDOException $e) {
+            $thrown = $e;
+        }
+        $this->assertNotNull($thrown,
+            '原串 "2h" 进 STRICT_TRANS_TABLES 下的 DATETIME 列必须抛——不抛说明本环境的判据失效，'
+            . '那 M8 的"不许写原串"就只剩内存层的说辞');
+        $this->assertStringContainsString('Incorrect datetime value', $thrown->getMessage(),
+            '实得: ' . $thrown->getMessage());
+        // 探针自己不留脏行
+        self::$pdo->exec('DELETE FROM wf_process_instance WHERE id = 999999999');
+    }
+
+    /**
+     * 一份只有 apply 一个任务节点的流程定义，顶层 `expireTime` 按档位给：
+     * `null` ⇒ **连键都不写**（issues/137 A 判据 3 的"缺键"档）。
+     *
+     * @return array<string,mixed>
+     */
+    private function defineWithRootExpire(string $id, ?string $rootExpire): array
+    {
+        // null ⇒ 顶层**不写** expireTime 这个键（编码时手工开窗，别写 `"expireTime":null` —— 那是
+        // 另一种形状，判据 3 的"缺键"档要钉的是 JSON 里根本没有这个键）
+        $encoded = $rootExpire === null ? null : json_encode(['expireTime' => $rootExpire], JSON_UNESCAPED_UNICODE);
+        $this->assertNotFalse($encoded, '夹具自身要能编码');
+        $root = $encoded === null ? '' : substr((string) $encoded, 1, -1) . ',';
+        $json = <<<JSON
+{
+  {$root}"name": "instance_expire_smoke_{$id}",
+  "displayName": "instance expire smoke",
+  "nodes": [
+    {"id":"start","type":"snaker:start","x":0,"y":0,"properties":{},"text":{"value":"开始"}},
+    {"id":"apply","type":"snaker:task","x":0,"y":0,"properties":{"assignee":"applicant"},"text":{"value":"申请"}},
+    {"id":"end","type":"snaker:end","x":0,"y":0,"properties":{},"text":{"value":"结束"}}
+  ],
+  "edges": [
+    {"id":"e0","sourceNodeId":"start","targetNodeId":"apply","properties":{}},
+    {"id":"e1","sourceNodeId":"apply","targetNodeId":"end","properties":{}}
+  ]
+}
+JSON;
+        return [
+            'id' => $id,
+            'name' => "instance_expire_smoke_{$id}",
+            'displayName' => 'instance expire smoke',
+            'type' => 'approval',
+            'state' => 1,
+            'content' => $json,
+            'version' => 1,
+        ];
+    }
+
     private function actorsOf(string $taskId): array
     {
         $stmt = self::$pdo->prepare('SELECT actor_id FROM wf_process_task_actor WHERE process_task_id = ? ORDER BY id');

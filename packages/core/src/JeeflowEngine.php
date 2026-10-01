@@ -118,10 +118,21 @@ class JeeflowEngine implements JeeflowEngineInterface
             FlowUtil::addUserInfoToArgs($operator, $args);
             FlowUtil::addAutoGenTitle($model->getDisplayName(), $args);
             $instance = ProcessInstance::create($define, $operator, $args, $parentId, $parentNodeName);
-            // 4. 计算到期时间
+            // 4. 计算到期时间（issues/137 A · 批二 §3-4：实例列＝**定义级表达式的求值结果**）
+            //    基准＝java `JeeflowEngineImpl.java:93-96`（＝boot2 `ProcessInstanceServiceImpl.java:157-160`
+            //    的"先判非空再写"形状），求值器复用本栈 issues/126 那一枚 {@see FlowUtil::processTime}，
+            //    **不新造第二把尺子**。变量源＝**发起参数**（上面刚注入完用户信息与 autoGenTitle 的那份
+            //    `$args`），与节点级表达式用的实例变量是两档。
+            //    三条口径边界，逐条与 java 同形：
+            //     - 定义没配顶层 expireTime ⇒ **不进** if ⇒ 这一列保持 create() 时的 NULL（不赋 now、不赋 ''）；
+            //     - 配了但算不出（误配／负数档）⇒ processTime 返回 null ⇒ 写 NULL，**不兜底 now**
+            //       （§3-2/§3-3 已定的落穿语义；兜底 now 等于静默造一个"发起即逾期"的实例）；
+            //     - 绝不能像改前那样把**原串**搬进这一列：它在库上是 DATETIME，160 那台 MySQL 实测
+            //       `@@sql_mode` 含 `STRICT_TRANS_TABLES` ⇒ `"2h"` 进列是硬错 1292，配了到期表达式的流程
+            //       在 php 栈根本发起不了（真库读数见 MysqlSmokeTest::testM8/M9）。
             $expireTime = $model->getExpireTime();
             if ($expireTime !== '') {
-                $instance->setExpireTime($expireTime); // 简化：不处理变量替换
+                $instance->setExpireTime(FlowUtil::processTime($expireTime, $args));
             }
             // 5. 持久化
             $this->repository->saveInstance($instance);

@@ -315,6 +315,71 @@ class ExpireTimeOnCreateTest extends TestCase
         $this->assertNull($second->getExpireTime(), '推进出的第二成员同样不该有到期时间');
     }
 
+    // ═══ issues/126 写点④两格（批二 §3-9 · 照 java 37535ce）═══
+
+    /**
+     * 写点④的**节点身份**判点：回退复活那条行的到期时间，取的是**被回退掉的那个节点**
+     * （boot2 `rejectTask` 里的 `model.getNode(currentTask.getTaskName())` ＝ current），
+     * **不是落地节点**（prev）。
+     *
+     * 夹具两节点各配各的：落地 task1 配 `1d`、被退掉的 task2 配 `3h` ⇒ 复活行该 ≈3h。
+     * ⚠️ 只有"两节点两份表达式"才有牙——只配一个节点时取错节点也照样绿（这正是
+     * issues/126 §5.4 记的 go/python 那一坑：判据退化成药夹具自己挡住的）。
+     * 判据打在**值**上（同行 `expire − create`），不打"非空"：算成 `1d` 就是取成了 prev。
+     */
+    public function testRollbackRowTakesExpireFromRolledBackNodeNotLandingNode(): void
+    {
+        $instanceId = $this->startUntilTask2('126-rollback-current-expire.json', '900171');
+        $t2 = $this->doingRowByName($instanceId, 'task2');
+        $this->assertNotNull($t2, '前置条件：应推进到 task2');
+        $this->engine->executeAndJumpTask((string) $t2->getTaskId(), 'manager',
+            FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::ROLLBACK]), null);
+
+        $revived = $this->doingRowByName($instanceId, 'task1');
+        $this->assertNotNull($revived,
+            '回退应在 task1 产生新待办（行必须存在，否则"值为空"是拿"根本没建行"混过去的）');
+        $expire = $revived->getExpireTime();
+        $create = $revived->getCreateTime();
+        $this->assertNotNull($expire, '被退掉的 task2 配了 3h ⇒ 复活行必须带到期时间');
+        $this->assertNotNull($create, '复活行的 createTime 应有值（内部对照）');
+        $delta = strtotime((string) $expire) - strtotime((string) $create);
+        $this->assertGreaterThanOrEqual(3 * 3600 - 5, $delta,
+            "复活行的 expire − create 应≈3h（实得 {$delta}s）；算成 1d＝取成了落地节点（prev），"
+            . '违反 boot2 的 current 口径');
+        $this->assertLessThanOrEqual(3 * 3600 + 60, $delta,
+            "复活行的 expire − create 应≈3h（实得 {$delta}s），不该超出被退掉那个节点的偏移");
+    }
+
+    /**
+     * 写点④的负向档：**被退掉的节点没配** ⇒ 复活行这一列必须保持 NULL，哪怕落地节点 task1 配着 `1d`。
+     *
+     * 这一档同时钉两件事：①不造默认值、不写 now()；②表达式来源是 current 而不是 prev——
+     * 实现若取错成落地节点，这里会算出 1d 而不是空（与上一格是两个方向的对撞，单配一档都能被
+     * "另一档也取错"蒙过去，所以两格必须成对）。
+     */
+    public function testRollbackRowStaysNullWhenRolledBackNodeUnconfigured(): void
+    {
+        $instanceId = $this->startUntilTask2('126-rollback-current-unconfigured.json', '900172', $task1);
+        $t2 = $this->doingRowByName($instanceId, 'task2');
+        $this->assertNotNull($t2, '前置条件：应推进到 task2');
+        // 对照：落地节点 task1 那份表达式是真配了的（首建那行带 ≈1d）——否则这条负向会拿
+        // "整个夹具都没配表达式"恒真通过，取错节点也测不出来。
+        $this->assertNotNull($task1, '前置条件：task1 那条首建行要读得到');
+        $this->assertExpireAboutDays($task1, 1, '对照：落地节点 task1 首建那行（配了 1d）');
+
+        $this->engine->executeAndJumpTask((string) $t2->getTaskId(), 'manager',
+            FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::ROLLBACK]), null);
+
+        $revived = $this->doingRowByName($instanceId, 'task1');
+        $this->assertNotNull($revived, '回退应照常建出 task1 的复活行');
+        $this->assertNotSame($task1?->getTaskId(), $revived->getTaskId(),
+            '复活应是新行，不是把原行改回进行中（否则下面的 NULL 判据是在测原 task1 那行）');
+        $this->assertNotNull($revived->getCreateTime(), '对照：复活行本身建出来了（createTime 有值）');
+        $this->assertNull($revived->getExpireTime(),
+            '当前节点（task2）未配到期表达式 ⇒ 复活行这一列必须留空；'
+            . '算出 1d 就是把表达式来源取成了落地节点');
+    }
+
     // ═══ 夹具与断言helper ═══
 
     /** 聚合根夹具（不走仓储，直接验写点行为） */
@@ -360,6 +425,57 @@ class ExpireTimeOnCreateTest extends TestCase
         $this->engine->executeProcessTask((string) $apply->getTaskId(), 'user1',
             FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::APPLY]));
         return $instanceId;
+    }
+
+    /**
+     * 写点④夹具：读**本仓 test 目录**下的流程定义（不进共享 `flows/`），发起并推进到 task2。
+     *
+     * 为什么不走 `jeeflow_flows_dir()`：那是 issues/126 七仓镜像的共享目录，往里加文件会牵动各仓
+     * 副本与漂移门禁的流程计数（issues/126 §5.4 副作用 1 就是这条）。java 侧同名放
+     * `src/test/resources/flows-local/`，本仓对应 `tests/Fixture/flows-local/`，两份夹具逐字同源
+     * （sha256 相同），保证两栈读数是同一份定义。
+     *
+     * @param ProcessTask|null $task1Row 出参：task1 那条**首建**行（负向格要用它做"落地节点确实配了"的对照）
+     */
+    private function startUntilTask2(string $flowFile, string $defineId, ?ProcessTask &$task1Row = null): string
+    {
+        $path = __DIR__ . '/../Fixture/flows-local/' . $flowFile;
+        $json = file_get_contents($path);
+        $this->assertNotFalse($json, "本仓 test 夹具读不到: {$path}");
+        $this->repo->addDefine([
+            'id' => $defineId,
+            'name' => pathinfo($flowFile, PATHINFO_FILENAME),
+            'displayName' => '写点④回退夹具',
+            'type' => 'approval',
+            'state' => 1,
+            'content' => (string) $json,
+            'version' => 1,
+        ]);
+
+        $instance = $this->engine->startProcessInstanceById($defineId, 'user1', FlowData::create());
+        $instanceId = (string) $instance->getInstanceId();
+
+        $apply = $this->doingRow($instanceId, 'user1');
+        $this->assertNotNull($apply, 'apply（首任务节点）行没读到');
+        $this->engine->executeProcessTask((string) $apply->getTaskId(), 'user1',
+            FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::APPLY]));
+
+        $task1Row = $this->doingRowByName($instanceId, 'task1');
+        $this->assertNotNull($task1Row, '前置条件：应推进到 task1');
+        $this->engine->executeProcessTask((string) $task1Row->getTaskId(), 'leader',
+            FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::AGREE]));
+        return $instanceId;
+    }
+
+    /** 按**节点名**取 DOING 行（回退后复活的 task1 参与者仍是 leader，按名字取更直白） */
+    private function doingRowByName(string $instanceId, string $taskName): ?ProcessTask
+    {
+        foreach ($this->repo->findDoingTasks($instanceId, null) as $task) {
+            if ($task->getTaskName() === $taskName) {
+                return $task;
+            }
+        }
+        return null;
     }
 
     /**
