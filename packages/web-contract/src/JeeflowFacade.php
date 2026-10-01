@@ -713,6 +713,13 @@ class JeeflowFacade
         $taskId = CcActorUtil::normalizeActor($args[FlowConst::PROCESS_TASK_ID_KEY] ?? null);
         $actorIds = CcActorUtil::normalizeActors($args['actorIds'] ?? []);
         if ($taskId === '' || $actorIds === []) return $this->error('processTaskId/actorIds 缺失');
+        // 0 与负数同样走**缺参数**档，而不是让它去仓储查一圈再报「任务不存在」（spec 语义 8）：
+        // 拿 0/负数当 id 去查、去落库，和没传 id 是同一种调用方错误。
+        // 非数字串**不在**统一之列——本栈没有 java `toLong` 那层"折成 null"的形状，它仍按
+        // 仓储查不到落「任务不存在」，spec 明文把那一档留作各栈既有形状、不作跨栈判据。
+        if (preg_match('/^-?\d+$/', $taskId) && (int)$taskId <= 0) {
+            return $this->error('processTaskId/actorIds 缺失');
+        }
         $task = $this->repository->findTaskById($taskId);
         if ($task === null) return $this->error('任务不存在');
         // 归属判据同 transfer（语义 3）：operator ∈ 被摘集合（两侧都取归一后的串，比较才咬得上），

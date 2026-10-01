@@ -298,6 +298,10 @@ class RemoveTaskActor115Test extends TestCase
             '缺省 operator ⇒ 必填档' => [$taskId, ['leader'], null, 'operator 必填'],
             '纯空白 operator 也不给过' => [$taskId, ['leader'], '   ', 'operator 必填'],
             '主键空串 ⇒ 兄弟 action 同文案' => ['', ['9001'], 'flow.admin', 'processTaskId/actorIds 缺失'],
+            '主键纯空白 ⇒ 同一档' => ['   ', ['9001'], 'flow.admin', 'processTaskId/actorIds 缺失'],
+            // spec 语义 8：缺参数档收齐 缺键/空串/纯空白/0/负数 —— 0 与负数不得改口成「任务不存在」
+            '主键 0 ⇒ 缺参数档（不拿 0 当 id 去查）' => ['0', ['9001'], 'flow.admin', 'processTaskId/actorIds 缺失'],
+            '主键负数 ⇒ 缺参数档' => ['-1', ['9001'], 'flow.admin', 'processTaskId/actorIds 缺失'],
             'actorIds 丢完为空 ⇒ 兄弟 action 同文案' => [$taskId, ['', '  ', null], 'flow.admin', 'processTaskId/actorIds 缺失'],
             '按 processTaskId 查不到任务' => ['424242', ['9001'], 'flow.admin', '任务不存在'],
         ];
@@ -308,7 +312,7 @@ class RemoveTaskActor115Test extends TestCase
             $this->assertNull($resp['data'], "{$case} 失败不得返回 data");
         }
 
-        $this->assertSame($before, $this->actors($taskId), '五个报错档一条都不许删');
+        $this->assertSame($before, $this->actors($taskId), '九个报错档一条都不许删');
     }
 
     /**
