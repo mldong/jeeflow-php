@@ -10,7 +10,8 @@ namespace Jeeflow\Core\Util;
  * 把同一判据搬到**任务参与者侧**（spec 06-facade.md §2.11）。
  *
  * 类名沿用 `CcActorUtil` 不改（改名会动到第三方 import 面，与"接口成员零增加"同一本账）；
- * 通用入口叫 {@see self::normalizeActors()} / {@see self::normalizeActor()}。
+ * 通用入口叫 {@see self::normalizeActors()} / {@see self::normalizeActor()}，
+ * 删除腿另有一支 {@see self::deleteForms()}（两形并集，与写侧义务不同）。
  *
  * 立法逐字依据：三条入口（发起 `f_ccActors`／办理 `tf_ccActors`／门面手动
  * `processInstance/createCCInstance`）解析抄送人集合时，**空串、纯空白、数组里的空元素一律丢弃**；
@@ -56,6 +57,14 @@ namespace Jeeflow\Core\Util;
  *
  * 仓储写侧（两仓 `addTaskActor` 与 cc 的两个写入口）继续用元素级那一支 {@see self::normalizeList()}。
  *
+ * ── issues/137 §3-6（spec 06-facade.md §processTask/removeTaskActor 语义 6）：**删除腿另有一支** ──
+ *
+ * 两仓 `removeTaskActor` 走的**不是**上面那几支，而是 {@see self::deleteForms()}——
+ * 「原值 ∪ trim 值」两形并集（owner 2026-10-02 裁定，取代此前"只取 trim 形"的本栈旧形状）。
+ * 它复用同一枚元素级判据 {@see self::toActorId()}（不抄第二份 trim/判空），只多加"原值也进集合"这一层。
+ * 写侧与删除腿的义务**不同**，详见 {@see self::deleteForms()} 的 docblock 与
+ * {@see \Jeeflow\Core\Spi\ProcessRepositoryInterface::removeTaskActor()} 的接口注释。
+ *
  * 本类不依赖任何仓储/SPI 类型，也不挂到 `ProcessRepositoryInterface` 上：**接口成员一个都不加**
  * （PHP 接口不能有默认方法体，G2 那两个必选方法已经把"第三方自实现仓储升版致命"的账记进
  * changelog 了，本轮不再往接口上加深，见 spec 与本仓 `docs/` 待写 changelog）。
@@ -92,11 +101,23 @@ final class CcActorUtil
      */
     public static function normalizeActors(mixed $raw): array
     {
+        return self::normalizeList(self::itemsOf($raw));
+    }
+
+    /**
+     * 入参形态收敛（**唯一一处**，`normalizeActors` 与 {@see self::deleteForms()} 共用，不抄第二份）：
+     * 字符串按逗号拆（`explode(',', '')` 得到一个空元素那个坑交给元素级判据丢）、数组原样、
+     * 其它（`null`／int／bool／object）⇒ 空集。
+     *
+     * @return array<mixed>
+     */
+    private static function itemsOf(mixed $raw): array
+    {
         if (is_string($raw)) {
-            return self::normalizeList(explode(',', $raw));
+            return explode(',', $raw);
         }
         if (is_array($raw)) {
-            return self::normalizeList($raw);
+            return $raw;
         }
         return [];
     }
@@ -144,6 +165,69 @@ final class CcActorUtil
             }
         }
         return $actors;
+    }
+
+    /**
+     * **归属值删除腿展开**（issues/137 §3-6 · spec 06-facade.md §processTask/removeTaskActor 语义 6
+     * ＋ §2.11 写点表末行，owner 2026-10-02 拍「两形并集」）：把待删列表展开成
+     * `DELETE ... WHERE actor_id IN (...)` 真正要绑的值——**空值一律丢弃，非空值同时保留
+     * 「原值」与「trim 值」两形**（按字面去重、保序）。
+     *
+     * ⚠️ 这一支与写侧（{@see self::normalizeList()}／{@see self::normalizeActors()}）**不同**，
+     * 别照抄：写侧落库只取 trim 后的值（同一人不落两行），删除腿必须多带一份原值。
+     *
+     * 为什么必须两形、只取一头各有一种**假成功**（1.8.36 之前八栈正好分成这两派，没有一处两全）：
+     *
+     *  - 只取 **trim 值**（本栈两仓 `removeTaskActor` 的旧形状，csharp/rust/moon 同派）⇒ 门面按语义 6
+     *    交出的是**行上的原值**，历史脏行 `" 9101 "` 被削成 `9101`，真库（MySQL 8.0 NO PAD 排序规则）
+     *    下 `actor_id = '9101'` 打不中 `' 9101 '` 那一行，删不掉而门面报成功——**被摘的人待办还在**；
+     *  - 只取 **原值**（go/node/python/java 四栈的旧形状）⇒ 第三方**绕过门面直连仓储**传 `" 8601 "` 时
+     *    删不掉写侧归一后落库的规范行 `8601`（issues/142 §9.2 那一路）；且空值照喂 `DELETE`，
+     *    会把历史 `actor_id=''` 脏行批量误删（那是替脏数据做掉唯一痕迹）。
+     *
+     * 两形并集同时满足两侧：脏行按原值形命中、规范行按 trim 形命中。按 §2.11 归一口径
+     * `" 9101 "` 与 `9101` 本就是**同一个人**，两行都删掉才是"摘掉这个人"的正确结果，不构成误删。
+     * 也正因**并集包含 trim 形**，issues/142 B 批"删除位 trim"的既有测试无需反向改
+     * （本栈 `PdoSqliteTaskActorBlankTest`／`TaskActorBlankDroppedTest` 那几格照绿）。
+     *
+     * trim 与判空的判据本体**仍是 {@see self::toActorId()} 那一枚**（本方法只加"原值也进集合"这一层，
+     * **不抄第二份 trim/判空代码**——spec §2.11 尾注明令，两份判据迟早分叉）：判空一律
+     * `trim((string) $x) === ''`，**严禁**用 PHP 的假值判据、**严禁无回调 `array_filter`**
+     * （它会吃掉 `'0'`；`'0'` 是合法 id，且 `'0'` 与 `'00'` 是两个不同的人）。去重一律
+     * `in_array(..., true)` **严格**比较——松散比较在 PHP 8 把数字串按数值比，`'0' == '00'`
+     * 会把第二个人静默丢掉（issues/141 G2 在本栈的实测踩点）。
+     *
+     * 去重按**字面**做，不按"trim 后相同"折叠原值形：`" 9101 "`（一个空格）与 `"  9101  "`
+     * （两个空格）是两种不同的原值形，都要保留——库里可能正是其中任一种脏法，少带一种就删不掉那一行。
+     *
+     * @param mixed $raw 待删归属值（数组／逗号串／`null`，与 {@see self::normalizeActors()} 同形收敛）；
+     *                   元素可为 `null`（丢弃，**不得**串化成 `"null"` 再去匹配）
+     * @return string[] 展开后的删除值（保序、按字面去重、无空值）；入参为 `null` 或全为空值时返回
+     *                  **空数组**——调用方（仓储删除侧）据此**早退，一条 `DELETE` 都不发**
+     *                  （不得退化成"清空该任务全部参与者"）
+     */
+    public static function deleteForms(mixed $raw): array
+    {
+        $forms = [];
+        foreach (self::itemsOf($raw) as $value) {
+            // ① 空值一律丢弃，不喂 DELETE（判据本体走既有那一枚单点：null／空串／纯空白／数组／
+            //    无 __toString 的 object 全部得到 null）
+            $trimmed = self::toActorId($value);
+            if ($trimmed === null) {
+                continue;
+            }
+            // ② 原值形：保住修复前落下的未 trim 历史脏行。
+            //    走到这里 $value 必然是标量或可 __toString 的对象（toActorId 已挡掉其余），强转安全。
+            $original = (string) $value;
+            if (!in_array($original, $forms, true)) {
+                $forms[] = $original;
+            }
+            // ② trim 形：保住写侧归一后落库的规范行（与原值形相同时自然折叠成一份）
+            if (!in_array($trimmed, $forms, true)) {
+                $forms[] = $trimmed;
+            }
+        }
+        return $forms;
     }
 
     /**

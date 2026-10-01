@@ -104,7 +104,39 @@ interface ProcessRepositoryInterface
      * （会签节点转办摘的是"自己那一票"）。全量重置参与者请用 removeTaskActor + addTaskActor 组合，
      * addTaskActor 本身永远是追加语义。
      *
-     * @param string[] $actorIds
+     * **归属值删除腿义务（issues/137 §3-6 · spec 06-facade.md §processTask/removeTaskActor 语义 6，
+     * owner 2026-10-02 拍「两形并集」）——这条义务每个实现方都要自带，且与上面
+     * {@see self::addTaskActor()} 的写侧义务不同，别照抄**（写侧是"落库取 trim 后的值"，
+     * 删除腿是"两形并集"；把写侧那一支搬过来正是本栈 1.8.36 之前的形状，见下第 2 条）：
+     *
+     *  1. **空值一律丢弃、不喂 `DELETE`**：`null`／`''`／纯空白都不得进匹配集合，否则历史
+     *     `actor_id=''` 脏行会被批量误删（那是替脏数据做掉唯一痕迹）。
+     *  2. **非空值同时以「原值」与「trim 值」两形匹配**（按字面去重、保序）。只取一头各有一种**假成功**：
+     *     只取 **trim 形** ⇒ 门面按语义 6 交出的是**行上的原值**，历史脏行 `" 9101 "` 被削成 `9101`，
+     *     真库（MySQL 8.0 NO PAD 排序规则）下 `actor_id = '9101'` 打不中 `' 9101 '` 那一行，
+     *     删不掉而门面报成功——被摘的人待办还在；只取 **原值** ⇒ 第三方绕过门面直连仓储传
+     *     `" 8601 "` 时删不掉写侧归一后落库的规范行 `8601`（issues/142 §9.2 那一路）。
+     *     两形并集同时满足两侧，且按 §2.11 归一口径 `" 9101 "` 与 `9101` 本就是**同一个人**，
+     *     两行都删才是"摘掉这个人"的正确结果，不构成误删。
+     *  3. **展开后为空 ⇒ 早退，一条 `DELETE` 都不发**——空列表不得退化成"清空该任务全部参与者"
+     *     （那是语义 5「至少需保留一名参与人」的仓储侧对偶）。
+     *
+     * 判据本体只有一枚＝{@see \Jeeflow\Core\Util\CcActorUtil::deleteForms()}（各语言栈有同名对应件：
+     * java `StringUtils.actorDeleteForms`／go `spi.ActorDeleteForms`／node `spi.actorDeleteForms`／
+     * py `spi.actor_delete_forms`／rs `model::actor_delete_forms`／moon `@model.actor_delete_forms`／
+     * c# `PageQuery.ActorDeleteForms`）；trim 与判空的规则仍复用 `CcActorUtil` 那一枚，
+     * **不要在仓储里抄第二份**（spec §2.11 尾注明令）。判空一律 `trim((string) $x) === ''`——
+     * `'0'` 这类"看起来像空"的正常 id **不得**被丢掉，且 `'0'` 与 `'00'` 是两个不同的人；
+     * 严禁无回调 `array_filter`／`empty()` 的假值判据，去重与比较一律**严格**
+     * （`in_array(..., true)`；松散比较把 `'0' == '00'` 判同人，issues/141 G2 本栈实测踩点）。
+     *
+     * ⚠️ 库值那一侧**按字面精确比、不要再 trim**：并集已在入参侧覆盖两形，库值再 trim 会让
+     * "删未 trim 历史脏行"这件事照不出来（脏行被 trim 形命中 ⇒ 假绿），也会让内存仓与 SQL 仓分叉。
+     * 同一栈的 SQL 仓与内存仓在这条判据上**必须给同一个答案**（issues/117 场景 27），只修一边不算修完。
+     *
+     * `taskId` 仍是**主键**不是归属值，同 {@see self::addTaskActor()} 末段那一档。
+     *
+     * @param string[] $actorIds 待摘除的参与人（空值元素由实现方丢弃，一行都不删）
      */
     public function removeTaskActor(int|string $taskId, array $actorIds): void;
 

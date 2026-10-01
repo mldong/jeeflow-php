@@ -740,14 +740,16 @@ class JeeflowFacade
         $toDelete = [];
         $remaining = 0;
         foreach ($task->getActorIds() as $row) {
-            // 语义 6「匹配取归一值、DELETE 取行上的原值」（§2.11 硬要求②的删除腿）：
-            // 匹配用归一形 ⇒ `" leader "` 行的归一值 'leader' 能被打中；喂给仓储的却是**那一行的原值**。
-            // 反面形状＝拿归一值去 DELETE：SQL 侧的删除腿是 `WHERE actor_id = ?`（列值精确比较），
-            // 归一值打不中未 trim 的原值 ⇒ "判成同一人却一条没删"，门面报成功而被摘的人待办还在，
-            // 是**假成功**（go 栈本轮实测到并已这样修）。
-            // ⚠️ 本栈还差半截、且**不在本轮范围内**（PDO 仓本轮不动）：`PdoProcessRepository::removeTaskActor`
-            // 自带 §9.2 那道入参归一，会把这里交出的原值再 trim 一次 ⇒ 真库上未 trim 的历史行仍删不掉。
-            // 门面交出原值是那一腿修复的先决条件；内存仓无此问题（比较两侧都 trim，两边都打得中）。
+            // 语义 6「匹配取归一值、`DELETE` 取「原值 ∪ trim 值」两形并集」（§2.11 硬要求②的删除腿，
+            // owner 2026-10-02 裁定）：门面这一层**匹配**用归一形 ⇒ `" leader "` 行的归一值 'leader'
+            // 能被打中；**交给仓储的却是那一行的原值**——它是仓储删除腿并集里的「原值形」那一份，
+            // 用来命中修复前落下的未 trim 历史脏行（SQL 侧是 `WHERE actor_id = ?` 列值精确比较，
+            // 归一值打不中未 trim 的原值；只交归一值就是"判成同一人却一条没删"的**假成功**，
+            // 门面报成功而被摘的人待办还在）。
+            // 并集的另一份「trim 形」由仓储自己补：两仓 `removeTaskActor` 都过
+            // `CcActorUtil::deleteForms()`，把门面交出的原值展开成 原值 ∪ trim 值 两形
+            // （第三方绕过门面直连仓储传 `" 8601 "` 时，靠 trim 形才删得掉写侧归一后的规范行 `8601`，
+            // issues/142 §9.2 那一路）。门面只管"交出原值"，不要在门面侧先 trim 掉。
             $normalized = CcActorUtil::normalizeActor($row);
             if ($normalized === '') {
                 continue;   // 归一后为空的历史脏行（actor_id=''/纯空白）既不匹配，也不算"一个人"

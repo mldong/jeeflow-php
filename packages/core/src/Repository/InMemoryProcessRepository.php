@@ -220,20 +220,39 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
     /**
      * issues/115：按人摘行——只剔掉传入的那几个人，其余参与人原样保留。
      * 与 addTaskActor 同为**增量**语义（不是全量重置），转办摘原人依赖它。
+     *
+     * **归属值删除腿义务**（issues/137 §3-6 · spec 06-facade.md §processTask/removeTaskActor 语义 6，
+     * owner 2026-10-02 拍「两形并集」）——**与上面 `addTaskActor` 的写侧义务不同，别照抄**：
+     *
+     *  1. **空值一律丢弃、不参与匹配**：`null`／`''`／纯空白都不得进删除集合，否则历史 `actor_id=''`
+     *     脏行会被批量误删（那是替脏数据做掉唯一痕迹）；
+     *  2. **非空值同时以「原值」与「trim 值」两形匹配**（按字面去重、保序）。只取 trim 形（本方法
+     *     issues/142 §9.2 那批的旧形状）⇒ 门面按语义 6 交出的历史脏行原值 `" 9101 "` 被削成 `9101`，
+     *     真库 NO PAD 排序规则下那一行删不掉而门面报成功（**假成功**：被摘的人待办还在）；只取原值
+     *     ⇒ 绕过门面直连仓储传 `" 8601 "` 时删不掉写侧归一后落库的规范行 `8601`（§9.2 那一路，
+     *     **这一半旧形状是对的，并集里继续保住**）；
+     *  3. **并集为空 ⇒ 早退**，一行都不删（不得退化成"清空该任务全部参与者"）。
+     *
+     * 判据本体只有一枚＝{@see CcActorUtil::deleteForms()}（trim／判空仍复用 `CcActorUtil` 那一支，
+     * 不在仓储里抄第二份）。判空一律 `trim((string) $x) === ''`——`'0'` 是合法 id 必须留下，
+     * 且 `'0'` 与 `'00'` 是两个人；比较一律**严格**（`in_array(..., true)`），松散比较在 PHP 8
+     * 把数字串按数值比（issues/141 G2 本栈实测踩点）。
+     *
+     * ⚠️ **库值那一侧按字面精确比、不再 trim**：并集已经在入参侧覆盖了两形（原值形打脏行、
+     * trim 形打规范行），库值再 trim 会让"删未 trim 历史脏行"这件事在内存仓照不出来
+     * （脏行 `' 9101 '` trim 后被 trim 形命中 ⇒ 假绿），也会让内存仓与 PDO 仓
+     * （`actor_id = ?` 列值精确比较）两把尺子分叉。与 PDO 仓必须同判据同答案（issues/117 场景 27）。
      */
     public function removeTaskActor(int|string $taskId, array $actorIds): void
     {
+        // 义务③：并集为空 ⇒ 早退，一次删除都不发生（含任务不存在那一档，同样是零操作不抛异常）
+        $forms = CcActorUtil::deleteForms($actorIds);
+        if ($forms === []) return;
         $task = $this->tasks[(string) $taskId] ?? null;
         if ($task === null) return;
-        // issues/142 B 批 §9.2 第二批收口（同一条尺子）：删除位也按**归一后的值**比较——
-        // 入参不 trim 就删不掉规范行（【 8601 】删不掉 8601），而空串入参在历史脏行上会**误删**
-        // 别人的 actor_id=空串 行。归一后为空 ⇒ 什么都不删（早退）。
-        $remove = CcActorUtil::normalizeActors($actorIds);
-        if ($remove === []) return;
-        $known = array_map(strval(...), $task->getActorIds());
         $kept = array_values(array_filter(
             $task->getActorIds(),
-            fn($aid) => !in_array(trim((string) $aid), $remove, true)
+            static fn($aid): bool => !in_array((string) $aid, $forms, true)
         ));
         $task->setActorIds($kept);
     }

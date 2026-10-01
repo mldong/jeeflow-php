@@ -376,21 +376,39 @@ class PdoProcessRepository implements ProcessRepositoryInterface
      * issues/115：按人摘行——WHERE 同时限定 process_task_id 与 actor_id，
      * 只删传入这几人在**该任务**下的参与者行，同任务其余参与人（会签其他成员、加签来的人）一行不动。
      * 传空列表直接返回，避免退化成"清空该任务全部参与者"。
+     *
+     * **归属值删除腿义务**（issues/137 §3-6 · spec 06-facade.md §processTask/removeTaskActor 语义 6，
+     * owner 2026-10-02 拍「两形并集」）——**与上面 `addTaskActor` 的写侧义务不同，别照抄**：
+     *
+     *  1. **空值一律丢弃、不喂 `DELETE`**：`null`／`''`／纯空白都不得进绑定值，否则历史 `actor_id=''`
+     *     脏行会被批量误删（那是替脏数据做掉唯一痕迹）；
+     *  2. **非空值同时以「原值」与「trim 值」两形进 `WHERE`**（按字面去重、保序）。本腿的比较是
+     *     `actor_id = ?` **列值精确比较**，所以两形缺一不可：只取 trim 形（本方法 issues/142 §9.2
+     *     那批的旧形状）⇒ 门面按语义 6 交出的历史脏行原值 `" 9101 "` 被削成 `9101`，真库
+     *     （MySQL 8.0 NO PAD 排序规则）下 `actor_id = '9101'` 打不中 `' 9101 '` 那一行，
+     *     删不掉而门面报成功（**假成功**：被摘的人待办还在）；只取原值 ⇒ 第三方绕过门面直连仓储传
+     *     `" 8601 "` 时删不掉写侧归一后落库的规范行 `8601`（§9.2 那一路，**这一半旧形状是对的，
+     *     并集里继续保住**）；
+     *  3. **并集为空 ⇒ 早退，一条 `DELETE` 都不发**——不得退化成"清空该任务全部参与者"。
+     *
+     * 判据本体只有一枚＝{@see CcActorUtil::deleteForms()}（trim／判空仍复用 `CcActorUtil` 那一支，
+     * **不在仓储里抄第二份**）。判空一律 `trim((string) $x) === ''`——`'0'` 是合法 id 必须留下，
+     * 且 `'0'` 与 `'00'` 是两个人；去重一律**严格**（`in_array(..., true)`），松散比较在 PHP 8
+     * 把数字串按数值比（issues/141 G2 本栈实测踩点）。与内存仓必须同判据同答案（issues/117 场景 27）。
      */
     public function removeTaskActor(int|string $taskId, array $actorIds): void
     {
-        // issues/142 B 批 §9.2「第二批」里的一条，本轮随手同批收掉（同一枚尺子的比较位，留着就是分叉）：
-        // 删除位也按**归一后的值**比。旧形状把入参原样绑进 `actor_id = ?`，于是
-        // 【 8601 】删不掉规范行 8601（该人还留在待办里，用户面是【摘人没生效】）；
-        // 而空串/纯空白入参会去删历史 actor_id='' 的脏行——那是替脏数据做掉唯一痕迹。
-        // 归一后为空 ⇒ 一行都不删（早退，与内存仓同判据；上面 379 行那条注释说的        // 『传空列表直接返回，避免退化成清空该任务全部参与者』在这里仍然成立）。
-        $remove = CcActorUtil::normalizeActors($actorIds);
-        if ($remove === []) return;
+        // 义务③：并集为空 ⇒ 早退，一条 DELETE 都不发（与内存仓同判据；上面那条 docblock 说的
+        // 『传空列表直接返回，避免退化成清空该任务全部参与者』在这里仍然成立）
+        $forms = CcActorUtil::deleteForms($actorIds);
+        if ($forms === []) return;
         $stmt = $this->pdo->prepare(
             'DELETE FROM wf_process_task_actor WHERE process_task_id = ? AND actor_id = ?'
         );
-        foreach ($remove as $actorId) {
-            $stmt->execute([(string) $taskId, (string) $actorId]);
+        // 义务②：两形各绑一次（`actor_id = ?` 是列值精确比较，原值形打未 trim 历史脏行、
+        // trim 形打写侧归一后的规范行）。命中 0 行是正常档（非参与者静默忽略，语义 7 幂等）。
+        foreach ($forms as $form) {
+            $stmt->execute([(string) $taskId, $form]);
         }
     }
 
