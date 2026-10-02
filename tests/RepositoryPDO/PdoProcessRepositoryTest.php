@@ -74,7 +74,7 @@ class PdoProcessRepositoryTest extends TestCase
     public function testDefineCrud(): void
     {
         $this->repo->addDefine([
-            'id' => 'def-1',
+            'id' => '910001',
             'name' => 'test-flow',
             'displayName' => '测试流程',
             'type' => 'approval',
@@ -83,7 +83,7 @@ class PdoProcessRepositoryTest extends TestCase
             'version' => 1,
         ]);
 
-        $define = $this->repo->findDefineById('def-1');
+        $define = $this->repo->findDefineById('910001');
         $this->assertNotNull($define);
         $this->assertSame('test-flow', $define['name']);
         $this->assertSame('测试流程', $define['displayName']);
@@ -99,18 +99,18 @@ class PdoProcessRepositoryTest extends TestCase
     public function testInstanceCrud(): void
     {
         $instance = ProcessInstance::create(
-            ['id' => 'def-1', 'name' => 'test', 'displayName' => 'Test', 'type' => 'approval', 'state' => 1, 'content' => '{}', 'version' => 1],
+            ['id' => '910001', 'name' => 'test', 'displayName' => 'Test', 'type' => 'approval', 'state' => 1, 'content' => '{}', 'version' => 1],
             'user1',
             FlowData::of(['key1' => 'val1'])
         );
-        $instance->setInstanceId('inst-1');
+        $instance->setInstanceId('910011');
 
         $this->repo->saveInstance($instance);
 
-        $loaded = $this->repo->findInstanceById('inst-1');
+        $loaded = $this->repo->findInstanceById('910011');
         $this->assertNotNull($loaded);
-        $this->assertSame('inst-1', $loaded->getInstanceId());
-        $this->assertSame('def-1', $loaded->getDefineId());
+        $this->assertSame('910011', $loaded->getInstanceId());
+        $this->assertSame('910001', $loaded->getDefineId());
         $this->assertSame('user1', $loaded->getOperator());
         $this->assertSame(ProcessInstanceState::DOING, $loaded->getState());
         $this->assertSame('val1', $loaded->getVariables()->get('key1'));
@@ -120,7 +120,7 @@ class PdoProcessRepositoryTest extends TestCase
         $loaded->addVariable(FlowData::of(['key2' => 'val2']));
         $this->repo->updateInstance($loaded);
 
-        $reloaded = $this->repo->findInstanceById('inst-1');
+        $reloaded = $this->repo->findInstanceById('910011');
         $this->assertSame(ProcessInstanceState::FINISHED, $reloaded->getState());
         $this->assertSame('val2', $reloaded->getVariables()->get('key2'));
     }
@@ -131,19 +131,19 @@ class PdoProcessRepositoryTest extends TestCase
     {
         // 先创建实例
         $instance = ProcessInstance::create(
-            ['id' => 'def-1', 'name' => 'test', 'displayName' => 'Test', 'type' => 'approval', 'state' => 1, 'content' => '{}', 'version' => 1],
+            ['id' => '910001', 'name' => 'test', 'displayName' => 'Test', 'type' => 'approval', 'state' => 1, 'content' => '{}', 'version' => 1],
             'user1'
         );
-        $instance->setInstanceId('inst-2');
+        $instance->setInstanceId('910012');
         $this->repo->saveInstance($instance);
 
         // 创建任务
-        $task = ProcessTask::create('inst-2', 'task1', '审批任务', 0, 0, 'form1', ['userA', 'userB'], 'user1', null, false);
-        $task->setTaskId('task-1');
+        $task = ProcessTask::create('910012', 'task1', '审批任务', 0, 0, 'form1', ['userA', 'userB'], 'user1', null, false);
+        $task->setTaskId('910021');
         $this->repo->saveTask($task);
 
         // 查找
-        $loaded = $this->repo->findTaskById('task-1');
+        $loaded = $this->repo->findTaskById('910021');
         $this->assertNotNull($loaded);
         $this->assertSame('task1', $loaded->getTaskName());
         $this->assertSame('审批任务', $loaded->getDisplayName());
@@ -154,7 +154,7 @@ class PdoProcessRepositoryTest extends TestCase
         $loaded->finish('userA', FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::AGREE]));
         $this->repo->updateTask($loaded);
 
-        $reloaded = $this->repo->findTaskById('task-1');
+        $reloaded = $this->repo->findTaskById('910021');
         $this->assertSame(ProcessTaskState::FINISHED, $reloaded->getTaskState());
         $this->assertSame('userA', $reloaded->getActorId());
         $this->assertNotNull($reloaded->getFinishTime());
@@ -164,9 +164,9 @@ class PdoProcessRepositoryTest extends TestCase
 
     public function testCcInstance(): void
     {
-        $this->repo->createCcInstance('inst-1', 'user1', ['cc1', 'cc2', 'cc3']);
+        $this->repo->createCcInstance('910011', 'user1', ['cc1', 'cc2', 'cc3']);
 
-        $stmt = self::$pdo->query('SELECT COUNT(*) as cnt FROM wf_process_cc_instance WHERE process_instance_id = \'inst-1\'');
+        $stmt = self::$pdo->query('SELECT COUNT(*) as cnt FROM wf_process_cc_instance WHERE process_instance_id = \'910011\'');
         $row = $stmt->fetch(\PDO::FETCH_ASSOC);
         $this->assertSame(3, (int) $row['cnt']);
     }

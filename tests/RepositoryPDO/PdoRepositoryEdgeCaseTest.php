@@ -56,11 +56,11 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     public function testDefineWithNullOptionalFields(): void
     {
         $this->repo->addDefine([
-            'id' => 'd-null',
+            'id' => '920001',
             'name' => 'null-test',
             'displayName' => '空值测试',
         ]);
-        $d = $this->repo->findDefineById('d-null');
+        $d = $this->repo->findDefineById('920001');
         $this->assertNotNull($d);
         $this->assertSame('null-test', $d['name']);
         $this->assertNull($d['type']);
@@ -70,12 +70,12 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     {
         $largeContent = str_repeat('x', 10000);
         $this->repo->addDefine([
-            'id' => 'd-large',
+            'id' => '920002',
             'name' => 'large',
             'displayName' => '大内容',
             'content' => $largeContent,
         ]);
-        $d = $this->repo->findDefineById('d-large');
+        $d = $this->repo->findDefineById('920002');
         $this->assertSame($largeContent, $d['content']);
     }
 
@@ -83,12 +83,12 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     {
         $unicode = '{"name":"测试流程","displayName":"日本語テスト","emoji":"🎉"}';
         $this->repo->addDefine([
-            'id' => 'd-uni',
+            'id' => '920003',
             'name' => 'unicode',
             'displayName' => 'Unicode',
             'content' => $unicode,
         ]);
-        $d = $this->repo->findDefineById('d-uni');
+        $d = $this->repo->findDefineById('920003');
         $this->assertSame($unicode, $d['content']);
     }
 
@@ -102,14 +102,14 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     public function testInstanceWithEmptyVariables(): void
     {
         $inst = ProcessInstance::create(
-            ['id' => 'd1', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
+            ['id' => '920004', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
             'user1',
             FlowData::create()
         );
-        $inst->setInstanceId('i-empty-vars');
+        $inst->setInstanceId('920011');
         $this->repo->saveInstance($inst);
 
-        $loaded = $this->repo->findInstanceById('i-empty-vars');
+        $loaded = $this->repo->findInstanceById('920011');
         $this->assertTrue($loaded->getVariables()->isEmpty());
     }
 
@@ -125,14 +125,14 @@ class PdoRepositoryEdgeCaseTest extends TestCase
             'nested' => ['a' => ['b' => 'c']],
         ]);
         $inst = ProcessInstance::create(
-            ['id' => 'd1', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
+            ['id' => '920004', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
             'user1',
             $vars
         );
-        $inst->setInstanceId('i-complex');
+        $inst->setInstanceId('920012');
         $this->repo->saveInstance($inst);
 
-        $loaded = $this->repo->findInstanceById('i-complex');
+        $loaded = $this->repo->findInstanceById('920012');
         $this->assertSame('hello', $loaded->getVariables()->get('string'));
         $this->assertSame(42, $loaded->getVariables()->get('int'));
         $this->assertSame(3.14, $loaded->getVariables()->get('float'));
@@ -154,14 +154,14 @@ class PdoRepositoryEdgeCaseTest extends TestCase
         ];
         foreach ($states as $i => $state) {
             $inst = ProcessInstance::create(
-                ['id' => 'd1', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
+                ['id' => '920004', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
                 'user1'
             );
-            $inst->setInstanceId("i-state-{$i}");
+            $inst->setInstanceId((string)(920160 + $i));
             $inst->setState($state);
             $this->repo->saveInstance($inst);
 
-            $loaded = $this->repo->findInstanceById("i-state-{$i}");
+            $loaded = $this->repo->findInstanceById((string)(920160 + $i));
             $this->assertSame($state, $loaded->getState(), "状态 {$state} 应正确持久化");
         }
     }
@@ -169,17 +169,17 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     public function testInstanceWithParentInfo(): void
     {
         $inst = ProcessInstance::create(
-            ['id' => 'd1', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
+            ['id' => '920004', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
             'user1',
             null,
-            'parent-123',
+            '920099',
             'subProcess1'
         );
-        $inst->setInstanceId('i-child');
+        $inst->setInstanceId('920013');
         $this->repo->saveInstance($inst);
 
-        $loaded = $this->repo->findInstanceById('i-child');
-        $this->assertSame('parent-123', $loaded->getParentId());
+        $loaded = $this->repo->findInstanceById('920013');
+        $this->assertSame('920099', $loaded->getParentId());
         $this->assertSame('subProcess1', $loaded->getParentNodeName());
     }
 
@@ -192,21 +192,21 @@ class PdoRepositoryEdgeCaseTest extends TestCase
 
     public function testTaskWithMultipleActors(): void
     {
-        $task = ProcessTask::create('i1', 'task1', '审批', 0, 0, 'form1', ['a', 'b', 'c', 'd', 'e'], 'op', null, false);
-        $task->setTaskId('t-multi-actor');
+        $task = ProcessTask::create('920031', 'task1', '审批', 0, 0, 'form1', ['a', 'b', 'c', 'd', 'e'], 'op', null, false);
+        $task->setTaskId('920021');
         $this->repo->saveTask($task);
 
-        $loaded = $this->repo->findTaskById('t-multi-actor');
+        $loaded = $this->repo->findTaskById('920021');
         $this->assertSame(['a', 'b', 'c', 'd', 'e'], $loaded->getActorIds());
     }
 
     public function testTaskWithNoActors(): void
     {
-        $task = ProcessTask::create('i1', 'task1', '无人任务', 0, 0, null, [], 'op', null, false);
-        $task->setTaskId('t-no-actor');
+        $task = ProcessTask::create('920031', 'task1', '无人任务', 0, 0, null, [], 'op', null, false);
+        $task->setTaskId('920022');
         $this->repo->saveTask($task);
 
-        $loaded = $this->repo->findTaskById('t-no-actor');
+        $loaded = $this->repo->findTaskById('920022');
         $this->assertEmpty($loaded->getActorIds());
     }
 
@@ -221,41 +221,41 @@ class PdoRepositoryEdgeCaseTest extends TestCase
             ProcessTaskState::ABANDON,
         ];
         foreach ($states as $i => $state) {
-            $task = ProcessTask::create('i1', "task{$i}", "任务{$i}", 0, 0, null, ['user1'], 'op', null, false);
-            $task->setTaskId("t-state-{$i}");
+            $task = ProcessTask::create('920031', "task{$i}", "任务{$i}", 0, 0, null, ['user1'], 'op', null, false);
+            $task->setTaskId((string)(920170 + $i));
             $task->setTaskState($state);
             $this->repo->saveTask($task);
 
-            $loaded = $this->repo->findTaskById("t-state-{$i}");
+            $loaded = $this->repo->findTaskById((string)(920170 + $i));
             $this->assertSame($state, $loaded->getTaskState(), "任务状态 {$state} 应正确持久化");
         }
     }
 
     public function testTaskWithVariables(): void
     {
-        $task = ProcessTask::create('i1', 'task1', '有变量任务', 0, 0, null, ['user1'], 'op', null, false);
-        $task->setTaskId('t-vars');
+        $task = ProcessTask::create('920031', 'task1', '有变量任务', 0, 0, null, ['user1'], 'op', null, false);
+        $task->setTaskId('920023');
         $task->setVariables(FlowData::of(['key1' => 'val1', 'key2' => 42]));
         $this->repo->saveTask($task);
 
-        $loaded = $this->repo->findTaskById('t-vars');
+        $loaded = $this->repo->findTaskById('920023');
         $this->assertSame('val1', $loaded->getVariables()->get('key1'));
         $this->assertSame(42, $loaded->getVariables()->get('key2'));
     }
 
     public function testTaskUpdateState(): void
     {
-        $task = ProcessTask::create('i1', 'task1', '状态变更', 0, 0, null, ['user1'], 'op', null, false);
-        $task->setTaskId('t-update');
+        $task = ProcessTask::create('920031', 'task1', '状态变更', 0, 0, null, ['user1'], 'op', null, false);
+        $task->setTaskId('920024');
         $this->repo->saveTask($task);
 
-        $loaded = $this->repo->findTaskById('t-update');
+        $loaded = $this->repo->findTaskById('920024');
         $this->assertSame(ProcessTaskState::DOING, $loaded->getTaskState());
 
         $loaded->finish('user1', FlowData::of(['result' => 'done']));
         $this->repo->updateTask($loaded);
 
-        $reloaded = $this->repo->findTaskById('t-update');
+        $reloaded = $this->repo->findTaskById('920024');
         $this->assertSame(ProcessTaskState::FINISHED, $reloaded->getTaskState());
         $this->assertSame('user1', $reloaded->getActorId());
         $this->assertNotNull($reloaded->getFinishTime());
@@ -266,21 +266,21 @@ class PdoRepositoryEdgeCaseTest extends TestCase
 
     public function testCcWithEmptyActors(): void
     {
-        $this->repo->createCcInstance('i1', 'user1', []);
+        $this->repo->createCcInstance('920031', 'user1', []);
         $stmt = self::$pdo->query('SELECT COUNT(*) as cnt FROM wf_process_cc_instance');
         $this->assertSame(0, (int) $stmt->fetch(\PDO::FETCH_ASSOC)['cnt']);
     }
 
     public function testCcWithSingleActor(): void
     {
-        $this->repo->createCcInstance('i1', 'user1', ['cc1']);
+        $this->repo->createCcInstance('920031', 'user1', ['cc1']);
         $stmt = self::$pdo->query('SELECT COUNT(*) as cnt FROM wf_process_cc_instance');
         $this->assertSame(1, (int) $stmt->fetch(\PDO::FETCH_ASSOC)['cnt']);
     }
 
     public function testCcWithMultipleActors(): void
     {
-        $this->repo->createCcInstance('i1', 'user1', ['cc1', 'cc2', 'cc3', 'cc4', 'cc5']);
+        $this->repo->createCcInstance('920031', 'user1', ['cc1', 'cc2', 'cc3', 'cc4', 'cc5']);
         $stmt = self::$pdo->query('SELECT COUNT(*) as cnt FROM wf_process_cc_instance');
         $this->assertSame(5, (int) $stmt->fetch(\PDO::FETCH_ASSOC)['cnt']);
     }
@@ -291,7 +291,7 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     {
         for ($i = 0; $i < 50; $i++) {
             $this->repo->addDefine([
-                'id' => "bulk-d-{$i}",
+                'id' => (string)(920100 + $i),
                 'name' => "flow-{$i}",
                 'displayName' => "流程{$i}",
                 'state' => 1,
@@ -302,16 +302,16 @@ class PdoRepositoryEdgeCaseTest extends TestCase
         $this->assertSame(50, (int) $stmt->fetch(\PDO::FETCH_ASSOC)['cnt']);
 
         // 随机抽查
-        $d = $this->repo->findDefineById('bulk-d-25');
+        $d = $this->repo->findDefineById('920125');
         $this->assertSame('flow-25', $d['name']);
     }
 
     public function testBulkInstanceInsert(): void
     {
-        $define = ['id' => 'd1', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1];
+        $define = ['id' => '920004', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1];
         for ($i = 0; $i < 20; $i++) {
             $inst = ProcessInstance::create($define, "user{$i}");
-            $inst->setInstanceId("bulk-i-{$i}");
+            $inst->setInstanceId((string)(920180 + $i));
             $this->repo->saveInstance($inst);
         }
         $stmt = self::$pdo->query('SELECT COUNT(*) as cnt FROM wf_process_instance');
@@ -321,8 +321,8 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     public function testBulkTaskInsert(): void
     {
         for ($i = 0; $i < 30; $i++) {
-            $task = ProcessTask::create('i1', "task{$i}", "任务{$i}", 0, 0, null, ["user{$i}"], 'op', null, false);
-            $task->setTaskId("bulk-t-{$i}");
+            $task = ProcessTask::create('920031', "task{$i}", "任务{$i}", 0, 0, null, ["user{$i}"], 'op', null, false);
+            $task->setTaskId((string)(920210 + $i));
             $this->repo->saveTask($task);
         }
         $stmt = self::$pdo->query('SELECT COUNT(*) as cnt FROM wf_process_task');
@@ -337,21 +337,21 @@ class PdoRepositoryEdgeCaseTest extends TestCase
     public function testInstanceLoadsAssociatedTasks(): void
     {
         $inst = ProcessInstance::create(
-            ['id' => 'd1', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
+            ['id' => '920004', 'name' => 't', 'displayName' => 'T', 'type' => 'a', 'state' => 1, 'content' => '{}', 'version' => 1],
             'user1'
         );
-        $inst->setInstanceId('i-with-tasks');
+        $inst->setInstanceId('920014');
         $this->repo->saveInstance($inst);
 
         // 添加 5 个任务
         for ($i = 0; $i < 5; $i++) {
-            $task = ProcessTask::create('i-with-tasks', "task{$i}", "任务{$i}", 0, 0, null, ["user{$i}"], 'op', null, false);
-            $task->setTaskId("t-linked-{$i}");
+            $task = ProcessTask::create('920014', "task{$i}", "任务{$i}", 0, 0, null, ["user{$i}"], 'op', null, false);
+            $task->setTaskId((string)(920250 + $i));
             $this->repo->saveTask($task);
         }
 
         // 加载实例应包含所有任务
-        $loaded = $this->repo->findInstanceById('i-with-tasks');
+        $loaded = $this->repo->findInstanceById('920014');
         $this->assertCount(5, $loaded->getTasks());
         $this->assertCount(5, $loaded->getDoingTasks());
     }
