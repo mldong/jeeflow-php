@@ -1,0 +1,5 @@
+# 建表 SQL 副本由 jeeflow-hub/scripts/sync-schema.sh 分发：blob 与工作树一律 LF，
+# 否则维护机 core.autocrlf=true 会把副本检出成 CRLF，每次分发后都被报"已修改"
+# （本仓此前没有 .gitattributes，2026-10-02 §3-10 纳入分发列表时随补，与 rust/csharp 同形）。
+# blob 现读已是 LF（两份 .sql 的 CR 字节数均为 0），加这条不触发重规范化、零行尾漂移。
+*.sql text eol=lf
