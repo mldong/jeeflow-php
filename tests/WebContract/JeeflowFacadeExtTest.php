@@ -877,6 +877,49 @@ class JeeflowFacadeExtTest extends TestCase
         return (int) ($r['data']['state'] ?? -1);
     }
 
+    /**
+     * issues/152 ②（案 A · spec 06 §2.5 口径表 + §4.5「归属不变式」）：
+     * processSurrogate/page 的归属列 t.operator 由**门面**注入，与 instancePage 同形。
+     *
+     * 三档空入参（缺键 / 空串 / 全空白）一律走 §2.5 归一 ⇒ 只出缺省 user1 授出的行，
+     * **绝不允许**退化成全库台账（旧行为，靠集成壳注入 operator 才成立）。
+     */
+    public function testSurrogatePageOwnershipInvariant(): void
+    {
+        foreach ([['user1', 'agent-mine'], ['op-other', 'agent-theirs']] as [$op, $agent]) {
+            $save = $this->facade->flow('processSurrogate/save', [
+                'operator' => $op, 'processName' => 'leave', 'surrogate' => $agent, 'enabled' => 1,
+            ]);
+            $this->assertEquals(0, $save['code'], json_encode($save, JSON_UNESCAPED_UNICODE));
+        }
+
+        $rowsOf = function (array $args): array {
+            $r = $this->facade->flow('processSurrogate/page', array_merge(['pageSize' => 100], $args));
+            $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+            return $r['data']['rows'];
+        };
+
+        // 带 operator ⇒ 只见自己授出的行
+        $own = $rowsOf(['operator' => 'user1']);
+        $this->assertCount(1, $own, '带 operator 只见自己授出的行');
+        $this->assertSame('user1', $own[0]['operator']);
+        $other = $rowsOf(['operator' => 'op-other']);
+        $this->assertCount(1, $other, '对照：他人档照常只出他自己的那一行');
+        $this->assertSame('op-other', $other[0]['operator']);
+
+        // 缺键 / 空串 / 全空白 ⇒ 归一到 user1 那一档，不是全库 2 行
+        foreach ([['缺键', []], ['空串', ['operator' => '']], ['全空白', ['operator' => " \t "]]] as [$label, $args]) {
+            $rows = $rowsOf($args);
+            $this->assertCount(1, $rows, "{$label} 档应只剩 user1 那一行，实得 " . json_encode($rows, JSON_UNESCAPED_UNICODE));
+            $this->assertSame('user1', $rows[0]['operator'], "{$label} 档归一到 user1");
+            $this->assertNotSame('op-other', $rows[0]['operator'], "{$label} 档不得漏出他人的委托行");
+        }
+        // 夹具自证：全库确实是 2 行（否则上面的"1 行"没有鉴别力）
+        $this->assertCount(2, $this->extRepo->pageSurrogates(new PageQuery(1, 100))->getRows(),
+            '夹具：两条委托分属两个授权人');
+        $this->assertCount(0, $rowsOf(['operator' => 'op-nobody']), '对照：谁都没有 ⇒ 0 行（过滤真生效）');
+    }
+
     public function testSurrogateRemove(): void
     {
         $save = $this->facade->flow('processSurrogate/save', [

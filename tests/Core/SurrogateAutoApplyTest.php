@@ -774,7 +774,9 @@ class SurrogateAutoApplyTest extends TestCase
         $this->assertSame(['leader'], $doing[0]->getActorIds(), '关闭后不得追加代理人');
 
         // 台账侧不受影响：仍能查到那条委托（"仅台账"语义）
-        $page = $facade->flow('processSurrogate/page', ['m_EQ_operator' => 'leader']);
+        // issues/152 ②：page 的归属列由门面注入（t.operator EQ operatorOf），查 leader 名下
+        // 台账要显式带 operator=leader；m_EQ_operator 保留，两档同值不互相抵消
+        $page = $facade->flow('processSurrogate/page', ['operator' => 'leader', 'm_EQ_operator' => 'leader']);
         $this->assertSame(0, $page['code'], json_encode($page, JSON_UNESCAPED_UNICODE));
         $this->assertSame(1, $page['data']['recordCount'], '关闭只关运行期应用，台账不关');
     }
@@ -868,6 +870,142 @@ class SurrogateAutoApplyTest extends TestCase
         // 台账默认 enabled=1（契约 processSurrogate/save 缺省）
         $detail = $this->facade->flow('processSurrogate/detail', ['id' => $save['data']['id']]);
         $this->assertSame(1, $detail['data']['enabled']);
+    }
+
+    // ═══ issues/152 ①档 1 · 同授权人并存「全流程」＋「精确」且都窗内 ⇒ 精确接管 ═══
+
+    /**
+     * issues/152 §7 档 1：同一授权人同时配了「全部流程」（process_name 空）与「精确流程」两条、
+     * 且都在窗内 ⇒ **精确那条接管**。内置 boot2 版是反的（先扫空 process_name，命中即 return，
+     * 精确那段根本走不到），引擎不得复活它（spec 06 §4.5 条款 1.4 + §「与内置版的三条方向差异」）。
+     *
+     * ⚠️ 夹具刻意把**兜底那条的 id 做得更大**：这样"跨作用域取 id 最新"与"全流程优先"两种错写
+     *    都会答成 sGlobal，只有条款 1.4 的"精确作用域先裁决"才答对。
+     *    本轮①的语义不动（owner 拍 A：八栈保持现状），这条用例是 §7 要的**门禁判据**，
+     *    防的就是哪天有人按内置版方向"顺手修正"优先级。
+     */
+    public function testExactScopeWinsOverGlobalScopeWhenBothInWindow(): void
+    {
+        $defineId = $this->deploy('02-multi-task.json');
+        $this->surrogate('user1', 'sGlobal', '', id: '5302');          // 全流程、窗内、id 更大
+        $this->surrogate('user1', 'sExact', 'multi-task', id: '5301');     // 精确、窗内、id 较小 ⇒ 正解
+
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        // 参与者取 apply 那一单：02-multi-task 的 apply=applicant ⇒ 授权人正是 user1。
+        // 01-simple 发起后停在 leader 的 task1，往 user1 名下配委托＝给非参与者配，判据永不命中。
+        $instanceId = (string) $start['data']['processInstanceId'];
+        $apply = $this->taskOf(null, $instanceId, 'apply');
+        $this->assertNotNull($apply, '前置：apply 任务应已落库');
+        $actors = $this->actorsOf((string) $apply->getTaskId());
+        $this->assertContains('sExact', $actors, '精确作用域那条必须接管（实际=' . json_encode($actors) . '）');
+        $this->assertNotContains('sGlobal', $actors,
+            '内置版是「全流程优先」盖住精确，引擎不得复活它（实际=' . json_encode($actors) . '）');
+    }
+
+    /**
+     * issues/152 §7 档 1 的另一腿（阳性对照）：精确那条**判否**（这里窗外）⇒ 仍由生效的全流程兜底接管，
+     * 不得"判否即止"。既有 `testNewestInExactScopeFallsBackToGlobalRow`（精确最新一条**停用**⇒ 兜底）
+     * 是同族另一档，本条补的是"窗外"这一判否原因。
+     */
+    public function testGlobalScopeStillAppliesWhenExactScopeJudgedNoByWindow(): void
+    {
+        $defineId = $this->deploy('02-multi-task.json');
+        $this->surrogate('user1', 'sGlobal', '', id: '5311');                            // 全流程、窗内
+        $this->surrogate('user1', 'sExact', 'multi-task', ['startTime' => '2099-01-01 00:00:00',
+            'endTime' => '2099-06-01 00:00:00'], '5312');                                // 精确但窗外（id 最大）
+
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        // 参与者取 apply 那一单：02-multi-task 的 apply=applicant ⇒ 授权人正是 user1。
+        // 01-simple 发起后停在 leader 的 task1，往 user1 名下配委托＝给非参与者配，判据永不命中。
+        $instanceId = (string) $start['data']['processInstanceId'];
+        $apply = $this->taskOf(null, $instanceId, 'apply');
+        $this->assertNotNull($apply, '前置：apply 任务应已落库');
+        $actors = $this->actorsOf((string) $apply->getTaskId());
+        $this->assertContains('sGlobal', $actors, '精确判否后应兜底全流程（实际=' . json_encode($actors) . '）');
+        $this->assertNotContains('sExact', $actors, '窗外那条不得并入');
+    }
+
+    // ═══ issues/152 ③档 4 · save 的授权人三档一律归一，不落空串死行 ═══
+
+    /**
+     * issues/152 ③（spec 06 §processSurrogate/save 注）：`processSurrogate/save` 的 operator
+     * **三档入参**（缺键 / 空串 / 全空白）一律走 §2.5 归一 ⇒ 行落在 demo 缺省 `user1` 上。
+     *
+     * 空串行是**死行**不是报错行：`getSurrogate` 的 `WHERE operator = ?` 永不命中它，
+     * 台账里看得见、待办永远不并人（比报错更难查）。故正面判据也一并钉住：
+     * 以归一后的授权人（user1）建单，代理人**真并进参与者表**。
+     */
+    public function testSaveWithoutEffectiveOperatorLandsOnNormalizedUser1(): void
+    {
+        $cases = [
+            ['缺键（不带 operator）', null],
+            ['显式空串', ''],
+            ['全空白', '   '],
+        ];
+        foreach ($cases as $i => [$label, $operator]) {
+            $this->newHarness();      // 每轮重建台账，上一轮的委托不许串味
+            $defineId = $this->deploy('02-multi-task.json');
+            $body = ['processName' => 'multi-task', 'surrogate' => 'd4Agent',
+                'startTime' => '2020-01-01 00:00:00', 'endTime' => '2099-12-31 23:59:59'];
+            if ($operator !== null) {
+                $body['operator'] = $operator;
+            }
+            $save = $this->facade->flow('processSurrogate/save', $body);
+            $this->assertSame(0, $save['code'], "{$label}: " . json_encode($save, JSON_UNESCAPED_UNICODE));
+            $id = (string) $save['data']['id'];
+
+            $detail = $this->facade->flow('processSurrogate/detail', ['id' => $id]);
+            $this->assertSame(0, $detail['code'], json_encode($detail, JSON_UNESCAPED_UNICODE));
+            $this->assertSame('user1', (string) $detail['data']['operator'],
+                "{$label}：不得落空串（空串＝死行），实得 " . var_export($detail['data']['operator'], true));
+            // 种子自证：行真落库（否则下面的并入是空转）
+            $this->assertNotNull($this->extRepo->findSurrogateById($id), "{$label}：行未落库");
+
+            $start = $this->facade->flow('processDefine/startAndExecute', [
+                'processDefineId' => $defineId, 'operator' => 'user1',
+            ]);
+            $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+            // 参与者取 apply 那一单：02-multi-task 的 apply=applicant ⇒ 授权人正是 user1。
+            // 01-simple 发起后停在 leader 的 task1，往 user1 名下配委托＝给非参与者配，判据永不命中。
+            $instanceId = (string) $start['data']['processInstanceId'];
+            $apply = $this->taskOf(null, $instanceId, 'apply');
+            $this->assertNotNull($apply, '前置：apply 任务应已落库');
+            $actors = $this->actorsOf((string) $apply->getTaskId());
+            $this->assertSame(['user1', 'd4Agent'], $actors,
+                "{$label}：该行必须能被归一缺省用户 user1 的后续待办命中（实际=" . json_encode($actors) . '）');
+        }
+    }
+
+    /**
+     * 档 4 的阳性对照（防止归一被写成"三档焊死成 user1"）：
+     * - save 带**真实** operator ⇒ 授权人就是那个值；
+     * - update 带空白 operator ⇒ **保留原授权人**（spec 06 §processSurrogate/update），
+     *   既不清空也不改成 user1。
+     */
+    public function testExplicitOperatorWinsAndBlankUpdateKeepsOriginalOperator(): void
+    {
+        $defineId = $this->deploy('01-simple.json');
+        $save = $this->facade->flow('processSurrogate/save', [
+            'operator' => 'opExplicit', 'processName' => 'simple', 'surrogate' => 'd4Keep',
+            'startTime' => '2020-01-01 00:00:00', 'endTime' => '2099-12-31 23:59:59',
+        ]);
+        $this->assertSame(0, $save['code'], json_encode($save, JSON_UNESCAPED_UNICODE));
+        $id = (string) $save['data']['id'];
+        $this->assertSame('opExplicit', (string) $this->facade->flow('processSurrogate/detail', ['id' => $id])['data']['operator'],
+            '显式非空 operator 仍以显式值为授权人');
+
+        $upd = $this->facade->flow('processSurrogate/update', [
+            'id' => $id, 'operator' => '  ', 'processName' => 'simple', 'surrogate' => 'd4Keep', 'enabled' => 1,
+        ]);
+        $this->assertSame(0, $upd['code'], json_encode($upd, JSON_UNESCAPED_UNICODE));
+        $this->assertSame('opExplicit', (string) $this->facade->flow('processSurrogate/detail', ['id' => $id])['data']['operator'],
+            'update 的空白档保留原授权人，既不清空也不改成缺省 user1');
     }
 
     // ── 辅助 ──

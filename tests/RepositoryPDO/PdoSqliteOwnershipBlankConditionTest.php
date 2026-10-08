@@ -14,21 +14,23 @@ use PHPUnit\Framework\TestCase;
 /**
  * issues/129 第二层取证 · 本栈 SQL 构造里「归属列遇空值」的形状（SQLite 内存库，不依赖 160 MySQL）
  *
- * 结论：**php 没有"空值 ⇒ 这条条件不加"的通用放行**，所以第二层对本栈不适用、不改。
- * 读到的代码（写本件时逐字核对）：
+ * issues/129 当时的结论：**php 的四个实例/任务归属出口没有"空值 ⇒ 这条条件不加"的通用放行**，
+ * 所以第二层对那四条不适用、不改。读到的代码（写本件时逐字核对）：
  *   - PdoProcessRepository::buildConditions()（四张归属出口共用：pageInstances /
  *     pageTodoTasks·pageDoneTasks 经 pagedTaskQuery / pageCcInstances）对每条条件无条件
  *     拼 `AND <col> = ?` 并绑定原值，match 的 default 分支只吞**未知操作符**、不吞空值；
  *   - PageQuery::add() 也不判空（core/src/Spi/PageQuery.php）；
- *   - 对照：唯一的通用放行在 PdoProcessExtRepository::buildSurrogateConditions() 里
- *     `if ($val === null || $val === '') continue;` —— 那是**委托台账的可选过滤**
- *     （m_t_EQ_processName 之类"没填即不过滤"），t.operator 在那里是「授权人」业务列，
- *     门面从不往这条路上注入归属谓词，故它不是归属谓词列，按红线**保持原样**
- *     （见 testOptionalFilterBlankIsStillIgnored 的哨兵格）。
+ *   - 于是空串进本栈仓储只会得到 0 行（拿 "" 当值比对），绝不是全库 —— 门面那一层
+ *     （JeeflowFacade::operatorOf）才是洞；这两件把"仓储不丢条件"钉成回归位，
+ *     一旦哪天 buildConditions 被加上"空值跳过"（= 另外五栈的读全库症状），这里立刻红。
  *
- * 于是空串进本栈仓储只会得到 0 行（拿 "" 当值比对），绝不是全库 —— 门面那一层
- * （JeeflowFacade::operatorOf）才是洞；这两件把"仓储不丢条件"钉成回归位，
- * 一旦哪天 buildConditions 被加上"空值跳过"（= 另外五栈的读全库症状），这里立刻红。
+ * ⚠️ 但"唯一的通用放行"那一半在 issues/152 ②（案 A）之后**收窄了**：
+ *   PdoProcessExtRepository::buildSurrogateConditions() 里那句 `if ($val === null || $val === '')
+ *   continue;` 对**可选过滤列**（process_name / surrogate / enabled）照旧放行，
+ *   对**归属列 t.operator** 不再放行 —— 委托分页的"我的委托"语义与那四条出口同一把尺子
+ *   （spec 06 §2.5 口径表 ＋ §4.5「归属不变式」），空值 ⇒ `AND 1=0` 空页。
+ *   旧文案把 t.operator 说成"门面从不往这条路上注入归属谓词"，随案 A 作废；
+ *   见 {@see self::testOptionalFilterBlankIsStillIgnored()} 里逐字交代的期望值改动。
  */
 final class PdoSqliteOwnershipBlankConditionTest extends TestCase
 {
@@ -165,10 +167,22 @@ SQL);
     /**
      * 红线哨兵：动态 where 的**通用空值放行**只属于可选过滤，不许被"归属列空值即空页"带偏。
      *
-     * 委托台账（processSurrogate/page）的 m_ 条件是纯可选过滤：`m_t_EQ_processName=''`
-     * 语义是"没填 ⇒ 不过滤"，PdoProcessExtRepository::buildSurrogateConditions 里那句
-     * `if ($val === null || $val === '') continue;` 是对的，本栈不改成 1=0。
-     * 若有人把"归属列空值即空页"从归属谓词推广到整条 buildWhere，这一格必红。
+     * 委托台账（processSurrogate/page）的 m_ 条件里，`process_name` / `surrogate` / `enabled`
+     * 仍是纯可选过滤：`m_t_EQ_processName=''` 语义是"没填 ⇒ 不过滤"，
+     * PdoProcessExtRepository::buildSurrogateConditions 里那句 `if ($val === null || $val === '') continue;`
+     * 对这些列保持原样。若有人把"归属列空值即空页"从归属谓词推广到整条 WHERE，这一格必红。
+     *
+     * ⚠️ **本用例的 t.operator 那一档在 issues/152 ②（案 A）逐字改过期望值**，交代如下：
+     *   改前（本案立案时的读数）：`$null->add('t.operator','EQ',null)` ⇒ 断言 **2 行（全库）**，
+     *     理由写在本文件旧注释里——"t.operator 在委托台账里是『授权人』业务列，门面从不往这条
+     *     路上注入归属谓词，故它不是归属谓词列，按红线保持原样"。
+     *   改后：同一档断言 **空页（0 行）**。依据 spec 06 §2.5 口径表新增行
+     *     「processSurrogate/page | t.operator EQ operator」＋ §4.5「归属不变式」仓储层条款
+     *     ——「绕过门面直调 pageSurrogates 时，落在归属列上的 EQ 条件值为空 ⇒ 返回空页」。
+     *   即 t.operator 在委托分页上**就是归属列**（与实例/待办/已办/抄送同一把尺子），
+     *     旧期望把"归属靠集成壳注入"钉成了契约，owner 选 A（引擎侧立法）后该期望作废。
+     *     同一条数据上的真值档（下面的 process_name='leave'）与非归属列空值档仍照常放行，
+     *     证明收紧只落在归属列上，不是把整条 WHERE 判废。
      */
     public function testOptionalFilterBlankIsStillIgnored(): void
     {
@@ -177,14 +191,27 @@ SQL);
         $this->assertCount(2, $this->extRepo->pageSurrogates($blank)->getRows(),
             '可选过滤空串须仍按"没填"处理（本栈唯一存在的通用放行，保持原样）');
 
-        $null = new PageQuery(1, 50);
-        $null->add('t.operator', 'EQ', null);
-        $this->assertCount(2, $this->extRepo->pageSurrogates($null)->getRows(),
-            '可选过滤 null 同样按"没填"处理，不得改成空页');
+        // issues/152 ②：t.operator 是归属列 ⇒ 空值三形一律空页（不是"这条条件不加"读全库）
+        foreach ([['null', null], ['空串', ''], ['全空白', "  \t "]] as [$label, $value]) {
+            $ownership = new PageQuery(1, 50);
+            $ownership->add('t.operator', 'EQ', $value);
+            $this->assertSame([], $this->extRepo->pageSurrogates($ownership)->getRows(),
+                "归属列 t.operator 遇 {$label} 须空页（spec 06 §4.5 归属不变式第二层），不得退化成全库台账");
+        }
 
         $filled = new PageQuery(1, 50);
         $filled->add('t.process_name', 'EQ', 'leave');
         $this->assertCount(1, $this->extRepo->pageSurrogates($filled)->getRows(),
             '对照：非空可选过滤确实生效（否则上面的 2 行是恒真空）');
+
+        // 对照：归属列给真实值照常过滤 ⇒ 证明上面的空页不是把整条 WHERE 判废
+        $own = new PageQuery(1, 50);
+        $own->add('t.operator', 'EQ', 'user1');
+        $this->assertCount(2, $this->extRepo->pageSurrogates($own)->getRows(),
+            '对照：t.operator = user1 照常出该授权人的两条');
+        $nobody = new PageQuery(1, 50);
+        $nobody->add('t.operator', 'EQ', 'nobody-at-all');
+        $this->assertCount(0, $this->extRepo->pageSurrogates($nobody)->getRows(),
+            '对照：谁都没有的授权人 ⇒ 0 行（过滤真生效，不是恒放行）');
     }
 }

@@ -9,6 +9,7 @@ use Jeeflow\Core\Repository\InMemoryProcessExtRepository;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\BuiltinJsonProvider;
 use Jeeflow\Core\Spi\JsonProviderInterface;
+use Jeeflow\Core\Spi\PageQuery;
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
 use Jeeflow\RepositoryPDO\PdoProcessExtRepository;
 use Jeeflow\RepositoryPDO\PdoProcessRepository;
@@ -330,7 +331,9 @@ class PdoSqliteSurrogateTest extends TestCase
         }
 
         // 台账侧不受影响：委托仍查得到、门面 detail 仍读得出
-        $page = $facade->flow('processSurrogate/page', ['m_EQ_operator' => 'leader']);
+        // issues/152 ②：page 的归属列由门面注入（t.operator EQ operatorOf），查 leader 名下
+        // 台账要显式带 operator=leader；m_EQ_operator 保留，两档同值不互相抵消
+        $page = $facade->flow('processSurrogate/page', ['operator' => 'leader', 'm_EQ_operator' => 'leader']);
         $this->assertSame(0, $page['code'], json_encode($page, JSON_UNESCAPED_UNICODE));
         $this->assertSame(1, $page['data']['recordCount'], '关闭只关运行期应用，台账不关');
     }
@@ -424,6 +427,57 @@ class PdoSqliteSurrogateTest extends TestCase
         $mem = $this->memExt->getSurrogate('opStr', 'flowStr', self::AT);
         $this->assertNotNull($mem, '双仓同答案：内存仓该档同样命中');
         $this->assertSame((string) $hit['surrogate'], (string) $mem['surrogate']);
+    }
+
+    // ═══ issues/152 ② · 委托分页归属不变式的第二层（绕过门面直调仓储，双仓同答案）═══
+
+    /**
+     * issues/152 ②（spec 06 §4.5「归属不变式」仓储层 + 条款 6「内存仓与 SQL 仓同答案」）：
+     * 绕过门面直接调 `pageSurrogates`，落在归属列 `t.operator` 上的 EQ 条件值为空
+     * （null / 空串 / 全空白）⇒ **空页**，绝不允许"这条条件不加"退化成全库台账。
+     *
+     * 两仓共用这一条用例：PDO 仓出 `AND 1=0`（SQLite 内存库，不依赖 160 MySQL），
+     * 内存仓判该行不命中——同一份数据两个答案即缺陷（issues/117 场景 27 立过法的形状）。
+     * 哨兵：非归属列（t.process_name）的空值仍按"没填"放行，收紧只落在归属列上。
+     */
+    public function testBlankOwnershipOnSurrogatePageIsEmptyPageInBothRepositories(): void
+    {
+        $this->seed('4501', 'flowOwn', 'opOwn', 'sOwn');
+        $this->seed('4502', 'flowOwn', 'opOther', 'sOther');
+
+        $blankOwnership = function (mixed $value): PageQuery {
+            $q = new PageQuery(1, 50);
+            $q->add('t.operator', 'EQ', $value);
+            return $q;
+        };
+
+        // 对照：真实归属值照常过滤（两仓各 1 行）——否则下面的 0 行是恒真空
+        $this->assertCount(1, $this->pdoExt->pageSurrogates($blankOwnership('opOwn'))->getRows(),
+            'SQL 仓对照：真实归属列必须出行');
+        $this->assertCount(1, $this->memExt->pageSurrogates($blankOwnership('opOwn'))->getRows(),
+            '内存仓对照：真实归属列必须出行（与 SQL 仓同答案）');
+
+        foreach ([['null', null], ['空串', ''], ['全空白', "  \t "]] as [$label, $value]) {
+            $sqlPage = $this->pdoExt->pageSurrogates($blankOwnership($value));
+            $memPage = $this->memExt->pageSurrogates($blankOwnership($value));
+            $this->assertSame([], $sqlPage->getRows(), "SQL 仓：t.operator 遇 {$label} ⇒ 空页，不得全库");
+            $this->assertSame(0, $sqlPage->getRecordCount(), "SQL 仓：{$label} 档 total 也要归 0");
+            $this->assertSame([], $memPage->getRows(), "内存仓：t.operator 遇 {$label} ⇒ 空页（与 SQL 仓同答案，条款 6）");
+            $this->assertSame(0, $memPage->getRecordCount(), "内存仓：{$label} 档 total 也要归 0");
+        }
+
+        // 哨兵：可选过滤列的空值放行不动（两仓同样仍放行 ⇒ 2 行）
+        $optional = new PageQuery(1, 50);
+        $optional->add('t.process_name', 'EQ', '');
+        $this->assertCount(2, $this->pdoExt->pageSurrogates($optional)->getRows(),
+            '哨兵：t.process_name（非归属）传空串仍按"没填"处理');
+        $this->assertCount(2, $this->memExt->pageSurrogates($optional)->getRows(),
+            '哨兵：内存仓同答案——可选过滤没被一起收进空页');
+        // 哨兵：只收 EQ，归属列 NE + 空值不收紧（对齐 java 那句只判 "EQ"）
+        $ne = new PageQuery(1, 50);
+        $ne->add('t.operator', 'NE', '');
+        $this->assertCount(2, $this->pdoExt->pageSurrogates($ne)->getRows(),
+            '哨兵：归属列 NE + 空值不收紧（本次只收 EQ）');
     }
 
     // ── 辅助 ──

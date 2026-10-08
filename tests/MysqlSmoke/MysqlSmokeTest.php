@@ -409,7 +409,9 @@ class MysqlSmokeTest extends TestCase
         $this->assertSame(['leader'], $this->actorsOf($this->taskIdsByName($inst2, 'task1')[0]),
             '关闭后回到"仅台账"行为');
         // 台账不关：processSurrogate/page 仍查得到
-        $page = $offFacade->flow('processSurrogate/page', ['m_EQ_operator' => 'leader']);
+        // issues/152 ②：page 由门面注入归属列 t.operator EQ operatorOf(args)，故查 leader 名下
+        // 三条台账要显式带 operator=leader（m_EQ_operator 那条可选过滤保留，二者同值不冲突）
+        $page = $offFacade->flow('processSurrogate/page', ['operator' => 'leader', 'm_EQ_operator' => 'leader']);
         $this->assertSame(0, $page['code'], json_encode($page, JSON_UNESCAPED_UNICODE));
         $this->assertSame(3, $page['data']['recordCount'], 'leader 名下三条台账（含停用/窗外）');
 

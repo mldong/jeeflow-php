@@ -230,6 +230,15 @@ class PdoProcessExtRepository implements ProcessExtRepositoryInterface
             }
             $op = $cond['op'];
             $val = $cond['value'];
+            // issues/152 ②（案 A · spec 06 §4.5「归属不变式」第二层，§2.5 双层尺子）：
+            // 归属列 t.operator 上的 EQ 遇空值 ⇒ **空页**（AND 1=0），绝不折叠成"这条条件不加"读全库。
+            // 门面已恒定下发归一后的归属值，这一道专防绕过门面直调本仓的调用方。
+            // ⚠️ 只收归属列 + EQ：下面那句「空值当作没填」是 m_LIKE_* 等**可选过滤**的通用放行，
+            //    一起收会把可选过滤改坏（spec 06 §2.5 ⚠️／本文件 testOptionalFilterBlankIsStillIgnored）。
+            if ($col === 't.operator' && $op === 'EQ' && ($val === null || (is_string($val) && trim($val) === ''))) {
+                $sql .= ' AND 1=0';
+                continue;
+            }
             if ($val === null || $val === '') {
                 continue;
             }

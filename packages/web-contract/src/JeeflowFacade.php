@@ -2090,6 +2090,12 @@ class JeeflowFacade
     {
         $ext = $this->requireExt();
         $query = $this->queryParser->parse($args);
+        // issues/152 ②（案 A · 引擎侧立法）：t.operator 是归属列，与 instancePage() 同形注入
+        // §2.5 归一后的 operator（缺键/空串/全空白 ⇒ demo 缺省 user1），spec 06 §2.5 口径表
+        // ＋ §4.5「归属不变式」。修前这里是契约空白："只看自己授出的委托"全靠集成壳注入
+        // operator（mldong-boot2-jeeflow WfFlowController），换宿主／直调门面就退化成全库台账
+        // （vben5 前端本来不传 operator）。仓储那一层的第二道兜底见两处 pageSurrogates。
+        $query->add('t.operator', 'EQ', $this->operatorOf($args));
         $page = $ext->pageSurrogates($query);
         $result = $page->toArray();
         // issues/77：行走 surrogateRowToMap（时间格式化 + 键归一），与 detail 同构
@@ -2211,12 +2217,20 @@ class JeeflowFacade
         return $operator !== '' ? $operator : 'user1';
     }
 
-    /** 委托写入公共字段。授权人（operator）仅在显式传入时覆盖，避免 update 时清空原授权人 */
+    /** 委托写入公共字段。授权人（operator）仅在**显式且非空白**时覆盖：
+     *  - update 缺省档（不带键 / 空串 / 全空白）⇒ 保留原授权人，不得清空（spec 06 §processSurrogate/update）
+     *  - save 缺省档 ⇒ 保留调用点已归一的 $operator（{@see self::operatorOf}，缺省 user1）
+     *  issues/152 ③：空串/全空白**绝不落进** operator——那种行是「死行」，getSurrogate 的
+     *  `WHERE operator = ?` 永不命中它，台账看得见、待办永远不并人（比报错更难查）。
+     *  三档入参一律走 §2.5 归一，与 java `applySurrogateFields` 同形。 */
     private function applySurrogateFields(array $s, array $args, string $operator): array
     {
         $s['processName'] = $this->toStr($args['processName'] ?? '');
         if (array_key_exists('operator', $args)) {
-            $s['operator'] = $this->toStr($args['operator']); // 授权人 = 操作人
+            $explicit = $this->toStr($args['operator']);
+            if (trim($explicit) !== '') {
+                $s['operator'] = $explicit; // 授权人 = 操作人（只认非空的显式值；原值入库，不 trim，与 java 同形）
+            }
         }
         $s['surrogate'] = $this->toStr($args['surrogate'] ?? '');
         $s['startTime'] = $this->parseSurrogateTime($args['startTime'] ?? null);

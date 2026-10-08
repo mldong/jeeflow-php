@@ -162,6 +162,14 @@ class InMemoryProcessExtRepository implements ProcessExtRepositoryInterface
             }
             $actual = $fields[$col];
             $value = $cond['value'];
+            // issues/152 ②（案 A · spec 06 §4.5「归属不变式」第二层，条款 6「内存仓与 SQL 仓同答案」）：
+            // 归属列 t.operator 上的 EQ 遇空值 ⇒ 该行判不命中（空页），绝不折叠成"这条条件不加"读全库，
+            // 与 PdoProcessExtRepository::buildSurrogateConditions 的 `AND 1=0` 同判据。
+            // 只收归属列 + EQ，下面那句「空值当作没填」仍是可选过滤的通用放行。
+            if ($col === 't.operator' && $cond['op'] === 'EQ'
+                && ($value === null || (is_string($value) && trim($value) === ''))) {
+                return false;
+            }
             if ($actual === null || $value === null || $value === '') {
                 continue;
             }

@@ -168,7 +168,9 @@ function seed_finished_rows(): array
 }
 
 /**
- * 委托 8 条：processSurrogate/page 无 operator 过滤 → 8 用户委托菜单全非空。
+ * 委托 8 条（八栈同表同值）：issues/152 ② 起 processSurrogate/page 的归属列 t.operator 由**引擎门面**
+ * 注入（§2.5 归一后的 operator：调用方不传 ⇒ 落到缺省 user1）。集成方义务不变——从登录上下文注入
+ * 当前用户 id（spec 06 §2.5），注入谁就只看谁授出的委托。种子数据不因此改动。
  * @return array<int, array{0:string,1:string}>
  */
 function seed_surrogate_rows(): array
