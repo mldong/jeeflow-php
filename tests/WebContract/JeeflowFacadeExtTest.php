@@ -914,9 +914,16 @@ class JeeflowFacadeExtTest extends TestCase
             $this->assertSame('user1', $rows[0]['operator'], "{$label} 档归一到 user1");
             $this->assertNotSame('op-other', $rows[0]['operator'], "{$label} 档不得漏出他人的委托行");
         }
-        // 夹具自证：全库确实是 2 行（否则上面的"1 行"没有鉴别力）
-        $this->assertCount(2, $this->extRepo->pageSurrogates(new PageQuery(1, 100))->getRows(),
-            '夹具：两条委托分属两个授权人');
+        // 夹具自证：两个授权人各一行（归属不变式收到"缺失档也空页"之后，
+        // "整表读"不再是合法通道，鉴别力由两条**归属有效**的读法给）
+        $ownA = new PageQuery(1, 100);
+        $ownA->add('t.operator', 'EQ', 'user1');
+        $ownB = new PageQuery(1, 100);
+        $ownB->add('t.operator', 'EQ', 'op-other');
+        $this->assertCount(1, $this->extRepo->pageSurrogates($ownA)->getRows(), '夹具：user1 名下一行');
+        $this->assertCount(1, $this->extRepo->pageSurrogates($ownB)->getRows(), '夹具：op-other 名下一行');
+        $this->assertCount(0, $this->extRepo->pageSurrogates(new PageQuery(1, 100))->getRows(),
+            '缺失档同判空页（spec 06 §2.5 与 §4.5：条件缺失或为空值都不得读全库）');
         $this->assertCount(0, $rowsOf(['operator' => 'op-nobody']), '对照：谁都没有 ⇒ 0 行（过滤真生效）');
     }
 

@@ -225,11 +225,15 @@ SQL);
         }
 
         // 无过滤：3 条
-        $p0 = $this->extRepo->pageSurrogates(new PageQuery(1, 10));
+        $q0 = new PageQuery(1, 10);
+        $q0->add('t.operator', 'EQ', 'zhangsan');
+        $p0 = $this->extRepo->pageSurrogates($q0);
         $this->assertSame(3, $p0->getRecordCount());
 
         // m_IN_processName：IN 列表命中 2 条
         $qIn = new PageQuery(1, 10);
+
+        $qIn->add('t.operator', 'EQ', 'zhangsan');
         $qIn->add('t.process_name', 'IN', ['leave', 'overtime']);
         $pIn = $this->extRepo->pageSurrogates($qIn);
         $this->assertSame(2, $pIn->getRecordCount());
@@ -239,12 +243,16 @@ SQL);
 
         // m_EQ_enabled：启用过滤命中 2 条
         $qEq = new PageQuery(1, 10);
+
+        $qEq->add('t.operator', 'EQ', 'zhangsan');
         $qEq->add('t.enabled', 'EQ', 1);
         $pEq = $this->extRepo->pageSurrogates($qEq);
         $this->assertSame(2, $pEq->getRecordCount());
 
         // m_IN + m_EQ 组合：sick/overtime 中仅启用 → 1 条
         $qCombo = new PageQuery(1, 10);
+
+        $qCombo->add('t.operator', 'EQ', 'zhangsan');
         $qCombo->add('t.process_name', 'IN', ['sick', 'overtime']);
         $qCombo->add('t.enabled', 'EQ', 1);
         $pCombo = $this->extRepo->pageSurrogates($qCombo);
@@ -253,12 +261,18 @@ SQL);
 
         // 负向：IN 全不命中 / EQ 无匹配 / 白名单外列忽略
         $qNone = new PageQuery(1, 10);
+
+        $qNone->add('t.operator', 'EQ', 'zhangsan');
         $qNone->add('t.process_name', 'IN', ['none1', 'none2']);
         $this->assertSame(0, $this->extRepo->pageSurrogates($qNone)->getRecordCount());
         $qEq2 = new PageQuery(1, 10);
+
+        $qEq2->add('t.operator', 'EQ', 'zhangsan');
         $qEq2->add('t.enabled', 'EQ', 2);
         $this->assertSame(0, $this->extRepo->pageSurrogates($qEq2)->getRecordCount());
         $qBadCol = new PageQuery(1, 10);
+
+        $qBadCol->add('t.operator', 'EQ', 'zhangsan');
         $qBadCol->add('t.nonexistent_col', 'EQ', 'x'); // 白名单外 → 忽略，仍 3 条
         $this->assertSame(3, $this->extRepo->pageSurrogates($qBadCol)->getRecordCount());
     }

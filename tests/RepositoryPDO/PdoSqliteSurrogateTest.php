@@ -467,16 +467,26 @@ class PdoSqliteSurrogateTest extends TestCase
         }
 
         // 哨兵：可选过滤列的空值放行不动（两仓同样仍放行 ⇒ 2 行）
+        // 缺失档同判之后，可选过滤的哨兵要挂在**归属有效**那一形上
+        // （两仓同样：process_name 传空串仍按"没填"，opOwn 名下 1 行照出；
+        //  若有人把"归属空值即空页"推广到整条 WHERE，这里就从 1 变 0）。
         $optional = new PageQuery(1, 50);
         $optional->add('t.process_name', 'EQ', '');
-        $this->assertCount(2, $this->pdoExt->pageSurrogates($optional)->getRows(),
+        $optional->add('t.operator', 'EQ', 'opOwn');
+        $this->assertCount(1, $this->pdoExt->pageSurrogates($optional)->getRows(),
             '哨兵：t.process_name（非归属）传空串仍按"没填"处理');
-        $this->assertCount(2, $this->memExt->pageSurrogates($optional)->getRows(),
+        $this->assertCount(1, $this->memExt->pageSurrogates($optional)->getRows(),
             '哨兵：内存仓同答案——可选过滤没被一起收进空页');
+        // 缺失档：整条归属条件都没给 ⇒ 空页（spec 06 §2.5 归属条件必填，缺失与空值同判）
+        $this->assertCount(0, $this->pdoExt->pageSurrogates(new PageQuery(1, 50))->getRows(),
+            'SQL 仓缺失档 ⇒ 空页，不得读全库两条');
+        $this->assertCount(0, $this->memExt->pageSurrogates(new PageQuery(1, 50))->getRows(),
+            '内存仓缺失档同答案');
         // 哨兵：只收 EQ，归属列 NE + 空值不收紧（对齐 java 那句只判 "EQ"）
         $ne = new PageQuery(1, 50);
         $ne->add('t.operator', 'NE', '');
-        $this->assertCount(2, $this->pdoExt->pageSurrogates($ne)->getRows(),
+        $ne->add('t.operator', 'EQ', 'opOwn');   // 缺归属会被缺失档拦掉 ⇒ 这格必须给有效归属才照得见 NE 那半
+        $this->assertCount(1, $this->pdoExt->pageSurrogates($ne)->getRows(),
             '哨兵：归属列 NE + 空值不收紧（本次只收 EQ）');
     }
 

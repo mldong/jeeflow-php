@@ -188,6 +188,7 @@ SQL);
     {
         $blank = new PageQuery(1, 50);
         $blank->add('t.process_name', 'EQ', '');
+        $blank->add('t.operator', 'EQ', 'user1');   // 归属有效值（缺失档已按 §4.5 判空页，哨兵要挂在这一形上）
         $this->assertCount(2, $this->extRepo->pageSurrogates($blank)->getRows(),
             '可选过滤空串须仍按"没填"处理（本栈唯一存在的通用放行，保持原样）');
 
@@ -201,6 +202,7 @@ SQL);
 
         $filled = new PageQuery(1, 50);
         $filled->add('t.process_name', 'EQ', 'leave');
+        $filled->add('t.operator', 'EQ', 'user1');
         $this->assertCount(1, $this->extRepo->pageSurrogates($filled)->getRows(),
             '对照：非空可选过滤确实生效（否则上面的 2 行是恒真空）');
 

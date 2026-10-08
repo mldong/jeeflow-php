@@ -121,8 +121,33 @@ class InMemoryProcessExtRepository implements ProcessExtRepositoryInterface
 
     // ── 委托 ──
 
+    /**
+     * 委托分页归属列 t.operator 有没有给出**有效**值（issues/152 ② · spec 06 §4.5 归属不变式第二层）。
+     * 缺失档（整条归属条件都没给）与空值档（空串／全空白／null）**同判** ⇒ 空页，
+     * 与 §2.5 抄送侧"归属条件必填——条件缺失或为空值时返回空页"一条尺子；
+     * 判据与 InMemoryProcessExtRepository::surrogateOwnershipGiven 逐字相同（条款 6 双仓同答案）。
+     */
+    private static function surrogateOwnershipGiven(PageQuery $query): bool
+    {
+        foreach ($query->getConditions() as $cond) {
+            if (($cond['column'] ?? '') !== 't.operator') {
+                continue;
+            }
+            if (strtoupper((string) ($cond['op'] ?? 'EQ')) !== 'EQ') {
+                continue;
+            }
+            $val = $cond['value'] ?? null;
+            return !($val === null || (is_string($val) && trim($val) === ''));
+        }
+        return false;
+    }
+
     public function pageSurrogates(PageQuery $query): PageResult
     {
+        // issues/152 ②：归属条件缺失或为空值 ⇒ 空页（与 PdoProcessExtRepository 逐字同判据，条款 6）
+        if (!$this->surrogateOwnershipGiven($query)) {
+            return new PageResult($query->getPageNum(), $query->getPageSize(), 0, []);
+        }
         // m_ 条件（issues/82-7 委托搜索，对齐 Java/Go/Python/Node）
         $conditions = $query->getConditions();
         $all = array_values($this->surrogates);
