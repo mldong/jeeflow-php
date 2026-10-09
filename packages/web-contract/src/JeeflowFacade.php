@@ -18,10 +18,14 @@ use Jeeflow\Core\Event\ProcessEvent;
 use Jeeflow\Core\Event\ProcessPublisher;
 use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\JeeflowException;
+use Jeeflow\Core\Model\DecisionModel;
+use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\TaskModel;
+use Jeeflow\Core\Model\TransitionModel;
 use Jeeflow\Core\Parser\ModelParser;
 use Jeeflow\Core\ServiceContext;
+use Jeeflow\Core\Spi\ExpressionEvaluatorInterface;
 use Jeeflow\Core\Spi\PageQuery;
 use Jeeflow\Core\Spi\PageResult;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
@@ -1052,7 +1056,7 @@ class JeeflowFacade
             }
         }
 
-        // 历史节点 = 已完成任务
+        // 历史节点 = 已完成任务（第一条腿；第二条腿「模型路径补全」在下面 collectPath 里并进来）
         $history = $this->repository->findHistoryTasks($instanceId);
         foreach ($history as $t) {
             if (!in_array($t->getTaskName(), $activeNodeNames, true) &&
@@ -1061,13 +1065,27 @@ class JeeflowFacade
             }
         }
 
-        // nodeProgress
+        // nodeProgress ＋ 模型路径补全（issues/153①②，spec 06 §4.6「三条义务」第 1/2 条）。
+        // 模型解析**复用本方法既有那一条** ModelParser::parse 路径（与 buildNodeProgress 同一
+        // ProcessModel 实例），不新写解析器、不二次 parse。
+        // 本栈旧形状：$historyEdgeNames 声明成空数组后原样出口（中间没有任何写入），
+        // historyNodeNames 只有任务行这一腿 ⇒ 不产生任务行的网关/结束节点全丢。
         $nodeProgress = [];
         $def = $this->repository->findDefineById($inst->getDefineId());
         if ($def !== null) {
             try {
                 $model = ModelParser::parse((string) ($def['content'] ?? ''));
                 $nodeProgress = $this->buildNodeProgress($model, $history);
+                // 从 start 沿 getOutputs() 递归：可达节点并进 historyNodeNames、走过的边名并进
+                // historyEdgeNames；遇活跃节点停止深入（活跃分支还没走，它的下游不高亮）。
+                // visited 走引用传递，与 java 那枚跨分支共享的 HashSet 同语义（防环＋不重复展开）。
+                // ⚠ visited 必须是**变量**而非字面量 []：形参按引用接收，传字面量会在调用点抛
+                //   catchable Error（"Argument #N ($visited) could not be passed by reference"），
+                //   被下面那句 catch (\Throwable) 吞掉 ⇒ 模型补全腿静默不执行，而同一 try 里已经
+                //   跑完的 buildNodeProgress 照常出口，读起来像"只有边腿坏了"。本轮实测踩过。
+                $visited = [];
+                $this->collectPath($model->getStart(), $activeNodeNames, $historyNodeNames,
+                    $historyEdgeNames, $visited, $inst->getVariables(), $history);
             } catch (\Throwable $ignored) {}
         }
 
@@ -1079,15 +1097,111 @@ class JeeflowFacade
         ]);
     }
 
+    /**
+     * 模型路径补全（issues/153①②；基准＝java `JeeflowFacade.collectPath`、go
+     * `facade.go:1231-1263 collectPath`）：沿输出边递归，补全历史节点与历史边，遇活跃节点停止深入。
+     *
+     * 决策节点的**带表达式出边先求值**（spec 06 §4.6 义务 2）：求值为 false 的分支没有实际执行，
+     * 边名与目标节点都不收、也不继续深入——否则未走的分支会被整条高亮出来。
+     * 「把带 expr 的边整条丢弃」与「不求值全量收集」两种实现都违反该义务。
+     *
+     * @param string[]      $active   活跃节点名（只读）
+     * @param string[]      $history  历史节点名（任务行腿已填，本方法就地补全）
+     * @param string[]      $edges    历史边名（就地收集）
+     * @param string[]      $visited  防环/防重复展开集合，跨分支共享（引用传递＝java 那枚 HashSet）
+     * @param FlowData      $instanceVars 实例变量（求值 args 的底）
+     * @param ProcessTask[] $historyTasks  实例全部任务行（取决策节点前置任务变量用）
+     */
+    private function collectPath(?NodeModel $node, array $active, array &$history, array &$edges,
+                                 array &$visited, FlowData $instanceVars, array $historyTasks): void
+    {
+        if ($node === null) return;
+        if (in_array($node->getName(), $visited, true)) return;
+        $visited[] = $node->getName();
+
+        foreach ($node->getOutputs() as $tm) {
+            if ($node instanceof DecisionModel && $tm->getExpr() !== ''
+                && !$this->evalDecisionExpr($node, $tm, $instanceVars, $historyTasks)) {
+                continue;
+            }
+            $edgeName = $tm->getName();
+            if ($edgeName !== '' && !in_array($edgeName, $edges, true)) {
+                $edges[] = $edgeName;
+            }
+            $next = $tm->getTarget();
+            if ($next === null) continue; // 出边目标节点未建档（解析期跳过），与 TransitionModel.execute 的落穿同档
+            if (!in_array($next->getName(), $active, true) &&
+                !in_array($next->getName(), $history, true)) {
+                $history[] = $next->getName();
+            }
+            if (in_array($next->getName(), $active, true)) continue; // 遇活跃节点停止深入
+            $this->collectPath($next, $active, $history, $edges, $visited, $instanceVars, $historyTasks);
+        }
+    }
+
+    /**
+     * 决策出边表达式求值（issues/153②；基准＝java `evalDecisionExpr`、go `evalDecisionExpr:1266+`）：
+     * args ＝ 实例变量 ∪ 决策节点**前置任务**（输入边第一个源节点）的任务变量，与引擎运行期
+     * `DecisionModel.exec` 同源（packages/core/src/Model/DecisionModel.php:40 那一句 SPI 调用口，
+     * facade 不另立第二套求值通道）。变量覆盖方向与 java 一致：任务变量后灌、同名覆盖实例变量。
+     *
+     * ⚠️ **降级档**：`ExpressionEvaluatorInterface` **未注册**时整档判 false——带表达式的出边
+     * 一条都不收。这是 spec 06 §4.6 义务 2 唯一允许的 false 档（宿主没给求值器就没有真相可高亮），
+     * 不是求值失败；与 java（`evaluator == null ⇒ return false`）、go 逐字同形。
+     */
+    private function evalDecisionExpr(DecisionModel $decision, TransitionModel $tm,
+                                      FlowData $instanceVars, array $historyTasks): bool
+    {
+        $evaluator = ServiceContext::find(ExpressionEvaluatorInterface::class);
+        if ($evaluator === null) return false; // 降级档，见方法注释
+
+        $args = $instanceVars->copy();
+        $inputs = $decision->getInputs();
+        if ($inputs !== []) {
+            $src = $inputs[0]->getSource();
+            if ($src !== null && $src->getName() !== '') {
+                foreach ($historyTasks as $t) {
+                    if ($src->getName() === $t->getTaskName()) {
+                        $args->setAll($t->getVariables()->toArray());
+                        break;
+                    }
+                }
+            }
+        }
+        // 与 DecisionModel.exec 同一把尺子：只有字面 true 算命中（java 是 Boolean.TRUE.equals）
+        return $evaluator->eval($tm->getExpr(), $args) === true;
+    }
+
     private function approvalRecord(array $args): array
     {
         $instanceId = $this->toStr($args['id'] ?? '');
+        // spec 06 §4.6 approvalRecord 四条口径②（issues/154）：视图端点不因实例 id 不存在报错
+        // ⇒ 出空数组。⚠ 本轮只并 approvalRecord 这一条；上面 highLight 的「实例不存在 ⇒ 报错」
+        //   spec 未对它立这条，按现状保留不动。
         $inst = $this->repository->findInstanceById($instanceId);
-        if ($inst === null) return $this->error('流程实例不存在');
+        if ($inst === null) return $this->ok([]);
+
+        // 口径①：排序**必须** id ASC（雪花 id 单调，同秒并发插入时比 create_time/update_time 确定；
+        // java 基准侧 JdbcProcessRepository.findHistoryTasks 已是 `ORDER BY id ASC`）。
+        // 本栈这条腿读聚合根 getTasks()，两档仓储都不是 id ASC：
+        //   · 内存仓＝建单追加序（ProcessInstance.php:207/255/291/303 依次 append）；
+        //   · PDO 仓＝findInstanceById 加载关联任务时 `ORDER BY create_time`
+        //     （PdoProcessRepository.php:198）。
+        // 于是就地排序，且**只作用在 approvalRecord 这一条取数路径上**：getTasks()/setTasks() 是
+        // detail/stats/latest/会签等多处消费方共用的聚合根方法，改它们的序会把不相关的出口一起带偏。
+        // （usort 自 PHP 8 起稳定排序，等值 id 保持原相对序。）
+        $tasks = $inst->getTasks();
+        usort($tasks, fn(ProcessTask $a, ProcessTask $b)
+            => self::compareNumericId((string) $a->getTaskId(), (string) $b->getTaskId()));
 
         $rows = [];
-        foreach ($inst->getTasks() as $t) {
+        foreach ($tasks as $t) {
             $rows[] = [
+                // 口径④（九键）＋ issues/154「id 必须字符串化」：19 位雪花出 number 会被 JS 截精度。
+                // 本栈 flow() 出口其实还有一道 issues/75 的全局 stringifyIds()（'id' 键入列），
+                // 但引擎侧不自依赖那道钩子——与 java 侧 String.valueOf(t.getTaskId()) 同形，
+                // 构造出的行本身就诚实（绕过 flow() 直取行构造、或宿主没有该钩子的场合仍正确）。
+                'id' => (string) $t->getTaskId(),
                 'taskName' => $t->getTaskName(),
                 'displayName' => $t->getDisplayName(),
                 'taskType' => $t->getTaskType(),
@@ -1095,10 +1209,25 @@ class JeeflowFacade
                 'taskState' => $t->getTaskState(),
                 'operator' => $t->getActorId(),
                 'finishTime' => $t->getFinishTime(),
+                // 口径③：任务变量为空时出空对象，**不**回落实例变量（现读即无回落，此处钉住并留注）。
                 'ext' => $t->getVariables()->toArray() ?: (object)[], // issues/124：variable 原串出口下线
             ];
         }
         return $this->ok($rows);
+    }
+
+    /**
+     * 雪花 id 升序比较：按**数字串**比，不 `(int)` 强转——19 位 id 撞上 PHP_INT_MAX
+     * (9223372036854775807) 边界会溢出成浮点，排序结果不可信。
+     * 等长时逐字符比较与数值序一致；非等长时位数多者大（前导零不在本栈 id 生成器产物里）。
+     */
+    private static function compareNumericId(string $a, string $b): int
+    {
+        if ($a === $b) return 0;
+        $lenA = strlen($a);
+        $lenB = strlen($b);
+        if ($lenA !== $lenB) return $lenA <=> $lenB;
+        return strcmp($a, $b);
     }
 
     private function getAssigneeTextData(array $args): array
@@ -1107,18 +1236,18 @@ class JeeflowFacade
         $includeNodeName = (bool) ($args['includeNodeName'] ?? true);
         $doing = $this->repository->findDoingTasks($instanceId);
         $result = [];
-        $userProvider = ServiceContext::find(UserProviderInterface::class);
         foreach ($doing as $t) {
             foreach ($t->getActorIds() as $actorId) {
-                $name = '';
-                if ($userProvider !== null) {
-                    $user = $userProvider->getUser($actorId);
-                    $name = $user['realName'] ?? '';
-                }
-                $label = $includeNodeName
-                    ? $t->getDisplayName() . ':' . ($name ?: $actorId)
-                    : ($name ?: $actorId);
-                $result[] = ['value' => $actorId, 'label' => $label];
+                // spec 06 §4.6 getAssigneeTextData 两条义务②（issues/155）：label 八栈严格
+                // `节点显示名:用户id`，includeNodeName=false 时只出用户 id。本栈旧实现经
+                // IUserProvider 取 realName ?: actorId ⇒ 出的是**姓名**，八栈里唯一异类，
+                // 已并派为其余七栈形状（java JeeflowFacade.getAssigneeTextData 同样不查用户）。
+                // 义务①：value 是参与者用户 id，本 action 只做文案，不得被当作节点定位键
+                // （画布按节点回显办理人走 highLight.nodeProgress）。
+                $result[] = [
+                    'value' => $actorId,
+                    'label' => $includeNodeName ? $t->getDisplayName() . ':' . $actorId : $actorId,
+                ];
             }
         }
         return $this->ok($result);
