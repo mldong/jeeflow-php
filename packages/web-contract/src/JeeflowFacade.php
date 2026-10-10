@@ -1086,7 +1086,14 @@ class JeeflowFacade
                 $visited = [];
                 $this->collectPath($model->getStart(), $activeNodeNames, $historyNodeNames,
                     $historyEdgeNames, $visited, $inst->getVariables(), $history);
-            } catch (\Throwable $ignored) {}
+            } catch (\Throwable $e) {
+                // issues/156：吞之前落一条可观测记录。行为不变（仍返回成功信封、仍不高亮），
+                // 但不再无声——本栈此前 `catch (\Throwable $ignored) {}` 把整条模型腿的
+                // TypeError 咽掉，集成方与用户都拿不到任何信号，13 栈门禁只在活栈上照出
+                // "nodeProgress 0 节点"这一句读数，根因得靠人肉拆开才看得见。
+                error_log('[jeeflow-php] highLight 模型补全腿失败（已降级为不高亮）: '
+                    . get_class($e) . ': ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
+            }
         }
 
         return $this->ok([
@@ -1413,7 +1420,10 @@ class JeeflowFacade
             // 全量办理人存于其变量——对齐 Go/Java buildNodeProgress），否则任务 actorIds 并集
             $csMembers = $this->readCountersignOperatorList($ts, $name);
             if (!empty($csMembers)) {
-                $members = $csMembers;
+                // issues/156：成员 id 出口必须是字符串——PHP 会把纯数字串的数组键折叠成 int，
+                // 而 SPI 签名是 getUser(string)（本文件 declare(strict_types=1)），
+                // 19 位雪花出 number 还会被 JS 截精度（issues/75/92 同族）。
+                $members = array_map('strval', $csMembers);
             } else {
                 $memberSet = [];
                 foreach ($ts as $t) {
@@ -1422,7 +1432,10 @@ class JeeflowFacade
                     }
                 }
                 if (empty($memberSet)) continue; // 动态参与人：无静态成员，不返回
-                $members = array_keys($memberSet);
+                // array_keys() 这里取回的是**被折叠过的键**（'1001' ⇒ int 1001），必须显式收回字符串：
+                // 否则 getUser(int) 当场 TypeError（被门面模型腿的 catch 吞掉 ⇒ nodeProgress 整体为空），
+                // 且下面 $mid === $activeActor 恒 false ⇒ active 标记一起丢。
+                $members = array_map('strval', array_keys($memberSet));
             }
             $doneSet = [];
             foreach ($ts as $t) {
