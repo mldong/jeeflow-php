@@ -14,8 +14,19 @@ declare(strict_types=1);
 use Jeeflow\WebContract\JeeflowFacade;
 
 /**
- * canonical 矩阵 defineId（文件名排序 1..15）→ 流程名。
- * PHP demo 的 define id 由部署自动生成（非 1..15），driver 用名字解析真实 id。
+ * canonical 矩阵 defineId（文件名排序 1..16）→ 流程名。
+ * PHP demo 的 define id 由部署自动生成（非 1..16），driver 用名字解析真实 id。
+ *
+ * issues/166 逐家现读照出的第二处漂移：本映射此前停在 **15 文件时代**
+ * （10→with-reject、12→assignee-vars、14/15 同步右移）——flows 目录加入
+ * 06-…-expire.json 后编号整体后移一位，canonical 矩阵按 16 文件编号。
+ * 另一处结构性死角：06 与 08、11 各有两份文件，其中两份 sequential 的
+ * `name`/`displayName` **逐字同名**，而本 demo 的部署按 name 幂等（demo-init）
+ * ⇒ 库里只有 15 个 define，expire 变体的内容占了 "countersign-sequential"
+ * 这个名字、plain 变体不可达。矩阵用到的 7 号（I6，串行会签冻结行）落到
+ * expire 内容那份上——同一流程＋节点到期配置，停住形状相同，读数无差；
+ * 其余各号按下表（16 文件序）落位。彻底解法（按文件名做部署幂等键）另立，
+ * 不在本轮夹带。
  */
 function seed_define_name(int $defineId): string
 {
@@ -25,13 +36,17 @@ function seed_define_name(int $defineId): string
         3 => 'decision-expr',
         4 => 'fork-join',
         5 => 'countersign-parallel',
-        6 => 'countersign-sequential',
-        7 => 'countersign-ratio',
-        8 => 'cs-seq-approve',
-        10 => 'with-reject',
-        12 => 'assignee-vars',
-        14 => 'candidate-flow',
-        15 => 'countersign-one-vote-veto',
+        6 => 'countersign-sequential',        // 06-…-expire 的内容（同名占位）
+        7 => 'countersign-sequential',        // plain 变体不可达 ⇒ 同名落 6 号那份
+        8 => 'countersign-ratio',
+        9 => 'cs-seq-approve',
+        10 => 'custom-node',                  // issues/166：原错指 with-reject（I15 卡住做不完）
+        11 => 'with-reject',
+        12 => 'mixed-mode',                   // issues/166：原错指 assignee-vars（F5/F8/F9 靠它歪打正着）
+        13 => 'assignee-vars',
+        14 => 'assignment-handler',           // issues/166：原错指 candidate-flow
+        15 => 'candidate-flow',               // issues/166：原错指 countersign-one-vote-veto
+        16 => 'countersign-one-vote-veto',
         default => 'simple',
     };
 }
@@ -150,6 +165,11 @@ function seed_in_progress_rows(): array
 }
 
 /**
+ * 已完成 9 条：advance 推到 state=20（分支无关）。
+ * issues/166 A（2026-10-11）：F5/F8/F9 补 finalAmount=8000——三行的 deptLeader 本是
+ * 15 文件编号时代 11-assignee-vars 的判定变量，flows 目录插入 06-…-expire.json 后
+ * define=12 已是 10-mixed-mode（八仓同序），决策边 finalAmount>5000/<=5000 没这把键
+ * 无路可走；补键走 e8→boss→end（与旧蒙臂 edges[0] 同形），矩阵"9 行已完成"原意复原。
  * @return array<int, array{0:int,1:string,2:array<string,mixed>,3:list<string>}>
  */
 function seed_finished_rows(): array
@@ -159,11 +179,11 @@ function seed_finished_rows(): array
         [8, 'userB', [], ['boss', 'manager']],
         [2, 'manager', [], ['boss']],
         [10, 'director', [], []],
-        [12, 'userC', ['deptLeader' => 'leader'], []],
+        [12, 'userC', ['deptLeader' => 'leader', 'finalAmount' => 8000], []],
         [1, 'director', [], []],
         [5, 'manager', [], []],
-        [12, 'userA', ['deptLeader' => 'director'], []],
-        [12, 'userB', ['deptLeader' => 'user1'], []],
+        [12, 'userA', ['deptLeader' => 'director', 'finalAmount' => 8000], []],
+        [12, 'userB', ['deptLeader' => 'user1', 'finalAmount' => 8000], []],
     ];
 }
 

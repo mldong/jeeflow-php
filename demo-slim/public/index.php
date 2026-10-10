@@ -59,6 +59,11 @@ if ($mode === RepositoryFactory::MODE_MEMORY) {
 // issues/124：注册用户 SPI——发起时注入 u_* 变量族与 autoGenTitle 真名
 ServiceContext::put(\Jeeflow\Core\Spi\UserProviderInterface::class, new \Jeeflow\Demo\DemoUserProvider());
 
+// issues/166 连带：决策节点需要求值器 SPI（种子 mixed-mode 决策边 finalAmount 档），
+// 形状对齐生产件 WfExpressionEvaluator——与 bin/demo-init.php 同一件
+ServiceContext::put(\Jeeflow\Core\Spi\ExpressionEvaluatorInterface::class,
+    new \Jeeflow\Demo\DemoExpressionEvaluator());
+
 // ── Slim App ──
 
 $app = AppFactory::create();

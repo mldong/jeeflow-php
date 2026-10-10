@@ -19,16 +19,16 @@ class SimpleExpressionEvaluator implements ExpressionEvaluatorInterface
     {
         $expr = trim($expression);
 
-        // 处理会签变量 #nrOfCompletedInstances / #nrOfInstances
-        foreach (['#nrOfCompletedInstances', '#nrOfInstances'] as $placeholder) {
-            if (str_contains($expr, $placeholder)) {
-                foreach ($variables->keys() as $key) {
-                    if (str_ends_with($key, ltrim($placeholder, '#'))) {
-                        $val = $variables->get($key);
-                        $expr = str_replace($placeholder, (string) ($val ?? 0), $expr);
-                        break;
-                    }
-                }
+        // issues/165：`#变量` 引用按**生产 WfExpressionEvaluator 形状**精确查表
+        // （`#key` ⇔ 变量表里的 `key`）。旧形状是 str_ends_with 后缀桥
+        // （`#nrOfCompletedInstances` 桥接到 `csv_<node>_nrOf*`），会签门控裸名没进
+        // 原料的单测也能绿——"测试绿生产红"由此而来，桥拆除后裸名格只有在
+        // handler 真挂了裸名才可能绿。
+        foreach ($variables->keys() as $key) {
+            $val = $variables->get($key);
+            $ref = '#' . $key;
+            if ($val !== null && str_contains($expr, $ref)) {
+                $expr = str_replace($ref, (string) $val, $expr);
             }
         }
 

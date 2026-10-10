@@ -67,6 +67,12 @@ $facade = new JeeflowFacade($engine, $repo, $extRepo);
 // issues/124：种子路径同样注册用户 SPI——种子的实例标题/变量也要带真名
 ServiceContext::put(UserProviderInterface::class, new \Jeeflow\Demo\DemoUserProvider());
 
+// issues/166 连带：决策节点第一次被种子真实走到（F5/F8/F9 补 finalAmount 后），
+// 本 demo 此前没注册表达式求值器 SPI ⇒ 决策一律抛「未注册表达式求值器 SPI」，
+// FINISHED 行靠逐条吞错苟活。形状对齐生产件 WfExpressionEvaluator。
+ServiceContext::put(\Jeeflow\Core\Spi\ExpressionEvaluatorInterface::class,
+    new \Jeeflow\Demo\DemoExpressionEvaluator());
+
 // 注入事务模板
 if ($mode === RepositoryFactory::MODE_MEMORY) {
     ServiceContext::put(TransactionTemplateInterface::class, new class implements TransactionTemplateInterface {

@@ -115,14 +115,32 @@ class ExpressionEvaluatorTest extends TestCase
 
     public function testCountersignVariable(): void
     {
-        $vars = FlowData::of(['task1_nrOfCompletedInstances' => 3]);
+        // issues/165：`#裸名` 按生产 WfExpressionEvaluator 形状**精确查表**——
+        // 旧断言喂的是 `task1_nrOfCompletedInstances` 靠夹具后缀桥桥接到裸名，
+        // "测试绿生产红"由此而来；桥拆除后此处喂的键必须是求值上下文里真实存在的
+        // （handler 修复后 buildCountersignVars 裸名+前缀键同挂，两形都能查到）。
+        $vars = FlowData::of(['nrOfCompletedInstances' => 3]);
         $this->assertTrue($this->eval->eval('#nrOfCompletedInstances >= 3', $vars));
         $this->assertFalse($this->eval->eval('#nrOfCompletedInstances >= 4', $vars));
     }
 
     public function testCountersignVariableEqual(): void
     {
-        $vars = FlowData::of(['cs_nrOfInstances' => 5]);
+        $vars = FlowData::of(['nrOfInstances' => 5]);
         $this->assertTrue($this->eval->eval('#nrOfInstances == 5', $vars));
+    }
+
+    public function testCountersignPrefixKeyStillResolves(): void
+    {
+        // 前缀键形状（引擎内部命名）保留兼容：`#csv_cs1_...` 精确查表
+        $vars = FlowData::of(['csv_cs1_nrOfCompletedInstances' => 2]);
+        $this->assertTrue($this->eval->eval('#csv_cs1_nrOfCompletedInstances >= 2', $vars));
+    }
+
+    public function testCountersignBareNameMissingNeverTrue(): void
+    {
+        // 165 病根本形：条件引用裸名、上下文只有前缀键 ⇒ 恒 false
+        $vars = FlowData::of(['csv_cs1_nrOfCompletedInstances' => 2]);
+        $this->assertFalse($this->eval->eval('#nrOfCompletedInstances >= 2', $vars));
     }
 }

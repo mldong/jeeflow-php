@@ -194,6 +194,15 @@ class CountersignHandler implements HandlerInterface
             count(array_filter($allTasks, fn(ProcessTask $t) => $t->isDoing())));
         $vars->set($prefix . FlowConst::NR_OF_COMPLETED_INSTANCES,
             count(array_filter($allTasks, fn(ProcessTask $t) => $t->isFinished())));
+        // issues/165 A（对齐 java CountersignHandler）：裸名与前缀键**同挂**——文档/设计器
+        // 形状 `#nrOfCompletedInstances>=2` 查的是裸名（生产 WfExpressionEvaluator 的
+        // `#` 臂做精确查表），只挂前缀键时裸名恒 false ⇒ 按文档配的会签永不按阈值放行。
+        // 前缀键保留（既有定义/测试兼容）；求值上下文里裸名以本节点为准（同名实例变量被覆盖）。
+        $vars->set(FlowConst::NR_OF_INSTANCES, count($allTasks));
+        $vars->set(FlowConst::NR_OF_ACTIVATE_INSTANCES,
+            count(array_filter($allTasks, fn(ProcessTask $t) => $t->isDoing())));
+        $vars->set(FlowConst::NR_OF_COMPLETED_INSTANCES,
+            count(array_filter($allTasks, fn(ProcessTask $t) => $t->isFinished())));
         return $vars;
     }
 }
