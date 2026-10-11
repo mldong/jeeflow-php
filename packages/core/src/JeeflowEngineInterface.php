@@ -18,6 +18,12 @@ interface JeeflowEngineInterface
 {
     public function getRepository(): ProcessRepositoryInterface;
 
+    /**
+     * 事务包裹（audit8 R9 145-7）——引擎五入口内部都过此方法；门面/宿主可复用它做
+     * 整次动作级包裹。嵌套调用并入最外层（模板实现 `inTransaction()` 探测时）。
+     */
+    public function inTx(callable $action): mixed;
+
     /** 启动流程实例 */
     public function startProcessInstanceById(string $defineId, string $operator, ?FlowData $args = null,
                                               ?string $parentId = null, ?string $parentNodeName = null): ProcessInstance;

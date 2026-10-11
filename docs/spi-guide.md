@@ -52,26 +52,40 @@ $repo = new PdoProcessRepository($pdo);
 
 ## 接入事务
 
+> ⚠ **连接必须同源**（spec/12 §12.1 覆盖面，audit8 R9 145-7）：模板 `beginTransaction()` 的那条
+> 连接，必须就是注入给 `PdoProcessRepository`（以及扩展仓 / persist writer）的**同一枚 `\PDO`**。
+> 模板里另开一条连接（例如 `getMyPdo()` 再 new 一个）会得到"模板 begin 一条、仓储写另一条"的
+> **空转事务**——引擎检不出来，回滚时写腿照样落库。`inTransaction()` 是引擎的**嵌套并入探测口**：
+> 引擎五入口与门面 `flow()` 都经它判断（有活动事务则并入最外层，不二次 begin、不提前提交）。
+
 ```php
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
 use Jeeflow\Core\ServiceContext;
 
-ServiceContext::put(TransactionTemplateInterface::class, new class implements TransactionTemplateInterface {
+// $pdo 就是上面接入 MySQL 时创建、注入给 PdoProcessRepository 的那一枚
+ServiceContext::put(TransactionTemplateInterface::class, new class($pdo) implements TransactionTemplateInterface {
+    public function __construct(private \PDO $pdo) {}
+
     public function required(callable $action): mixed {
-        // 包装到数据库事务中
-        $pdo = getMyPdo();
-        $pdo->beginTransaction();
+        $this->pdo->beginTransaction();
         try {
             $result = $action();
-            $pdo->commit();
+            $this->pdo->commit();
             return $result;
         } catch (\Throwable $e) {
-            $pdo->rollBack();
+            $this->pdo->rollBack();
             throw $e;
         }
     }
+
+    // 不实现则嵌套回落 required（同一 PDO 二次 beginTransaction 会抛"已有活动事务"）
+    public function inTransaction(): bool { return $this->pdo->inTransaction(); }
 });
 ```
+
+> Laravel 集成形态（连接池自管）：`DB::connection('mysql')->getPdo()` 交给仓储/扩展仓/writer，
+> 模板用 `DB::connection('mysql')->transaction(...)` ＋ `transactionLevel() > 0`——同一枚连接，
+> 嵌套由 Laravel 事务层级计数兜底。参见 `mldong-laravel-jeeflow` 的 `WfTransactionTemplate`。
 
 ## 接入用户体系
 

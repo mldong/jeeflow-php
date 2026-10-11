@@ -104,7 +104,7 @@ class JeeflowEngine implements JeeflowEngineInterface
     public function startProcessInstanceById(string $defineId, string $operator, ?FlowData $args = null,
                                               ?string $parentId = null, ?string $parentNodeName = null): ProcessInstance
     {
-        return $this->runInTx(function () use ($defineId, $operator, $args, $parentId, $parentNodeName) {
+        return $this->inTx(function () use ($defineId, $operator, $args, $parentId, $parentNodeName) {
             // 1. 查流程定义
             $define = $this->repository->findDefineById($defineId);
             if ($define === null) {
@@ -166,7 +166,7 @@ class JeeflowEngine implements JeeflowEngineInterface
 
     public function executeProcessTask(string $taskId, string $operator, ?FlowData $args = null): array
     {
-        return $this->runInTx(function () use ($taskId, $operator, $args) {
+        return $this->inTx(function () use ($taskId, $operator, $args) {
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
@@ -189,7 +189,7 @@ class JeeflowEngine implements JeeflowEngineInterface
 
     public function executeAndJumpTask(string $taskId, string $operator, ?FlowData $args = null, ?string $nodeName = null): array
     {
-        return $this->runInTx(function () use ($taskId, $operator, $args, $nodeName) {
+        return $this->inTx(function () use ($taskId, $operator, $args, $nodeName) {
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
@@ -223,7 +223,7 @@ class JeeflowEngine implements JeeflowEngineInterface
 
     public function executeAndJumpToEnd(string $taskId, string $operator, ?FlowData $args = null): array
     {
-        return $this->runInTx(function () use ($taskId, $operator, $args) {
+        return $this->inTx(function () use ($taskId, $operator, $args) {
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
@@ -240,7 +240,7 @@ class JeeflowEngine implements JeeflowEngineInterface
 
     public function executeAndJumpToFirstTaskNode(string $taskId, string $operator, ?FlowData $args = null): array
     {
-        return $this->runInTx(function () use ($taskId, $operator, $args) {
+        return $this->inTx(function () use ($taskId, $operator, $args) {
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
@@ -488,7 +488,7 @@ class JeeflowEngine implements JeeflowEngineInterface
             // 办理 tf_ccActors / 门面手动 createCCInstance）共用 ProcessPublisher::notifyCcCreate
             // 这一把收口（§11.7「发起与办理走同一个 notifyCcCreate」）。
             // sourceId=instanceId，ccActorId=抄送人 id（监听器直接取用免反查 cc 表）。
-            // fire 在 runInTx 事务内，监听器同连接反查可见本事务写入（与 Java 同事务一致）。
+            // fire 在 inTx 事务内，监听器同连接反查可见本事务写入（与 Java 同事务一致）。
             // 入参＝实际新建的子集而不是原始 ccArr（issues/141 G2）：spec §11.2 原则 1「码=事实」
             // ⇒ 重复抄送没发生"创建"就不该发这个事件；子集为空整支不 fire（不空转、也不照旧全量 fire）。
             if ($created !== []) {
@@ -497,13 +497,25 @@ class JeeflowEngine implements JeeflowEngineInterface
         }
     }
 
-    private function runInTx(callable $action): mixed
+    /**
+     * 事务包裹（audit8 R9 145-7，spec/12 §12.2 原子面）——引擎五入口与门面整次 dispatch 都过这里。
+     *
+     * - 无模板注册：裸跑＝§12.1 条 4 显式降级（与修前一致）；
+     * - 模板实现 `inTransaction()` 且当前已在外层事务中：**join 支**并入最外层——
+     *   不二次 begin、不提前提交，提交/回滚归最外层 owner（嵌套复用，零-4 档）；
+     * - 未实现 `inTransaction()` 探测的模板：回落 `required()`（宿主模板自管嵌套，
+     *   如 Laravel `DB::transaction` 天然按事务层级计数，二次调用不会重复 begin）。
+     */
+    public function inTx(callable $action): mixed
     {
         $tx = ServiceContext::find(TransactionTemplateInterface::class);
-        if ($tx !== null) {
-            return $tx->required($action);
+        if ($tx === null) {
+            return $action();
         }
-        return $action();
+        if (method_exists($tx, 'inTransaction') && $tx->inTransaction()) {
+            return $action();
+        }
+        return $tx->required($action);
     }
 
     /**

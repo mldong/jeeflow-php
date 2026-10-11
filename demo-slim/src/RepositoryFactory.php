@@ -27,6 +27,12 @@ class RepositoryFactory
     public const MODE_SQLITE = 'sqlite';
     public const MODE_MYSQL = 'mysql';
 
+    /**
+     * 进程内共享 PDO（audit8 R9 145-7 约束说明）：
+     * - FPM 一进程同一时刻只服务一个请求 ⇒ 本槽事实等价请求作用域，与事务模板共库连接；
+     * - 常驻运行时（Swoole / RoadRunner / FrankenPHP 等）本槽是进程级、跨请求存活 ⇒
+     *   必须在请求边界重置（或改由请求级容器持有），否则上一请求未提交/回滚的事务状态会串台。
+     */
     private static ?\PDO $sharedPdo = null;
     private static ?IdGeneratorInterface $sharedIdGenerator = null;
 

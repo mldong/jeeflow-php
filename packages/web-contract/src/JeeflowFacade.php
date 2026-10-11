@@ -104,63 +104,9 @@ class JeeflowFacade
     {
         try {
             if ($args === null) $args = [];
-            $result = match ($action) {
-                // ── 流程定义 ──
-                'processDefine/page' => $this->definePage($args),
-                'processDefine/detail' => $this->defineDetail($args),
-                'processDefine/startAndExecute' => $this->startAndExecute($args),
-                'processDefine/deploy' => $this->deploy($args),
-                'processDefine/redeploy' => $this->redeploy($args),
-                'processDefine/remove' => $this->defineRemove($args),
-                'processDefine/upAndDown' => $this->defineUpAndDown($args),
-                // ── 流程实例 ──
-                'processInstance/page' => $this->instancePage($args),
-                'processInstance/detail' => $this->instanceDetail($args),
-                'processInstance/startAndExecute' => $this->startAndExecute($args),
-                'processInstance/withdraw' => $this->withdraw($args),
-                // ── 统计（issues/103） ──
-                'processInstance/stats/overview' => $this->statsOverview($args),
-                'processInstance/stats/trend' => $this->statsTrend($args),
-                'processInstance/stats/group' => $this->statsGroup($args),
-                // ── 流程任务 ──
-                'processTask/todoList' => $this->todoList($args),
-                'processTask/doneList' => $this->doneList($args),
-                'processTask/execute' => $this->execute($args),
-                'processTask/detail' => $this->taskDetail($args),
-                'processTask/jumpAbleTaskNameList' => $this->jumpAbleTaskNameList($args),
-                'processTask/surrogate' => $this->taskSurrogate($args),
-                'processTask/addCandidate' => $this->taskSurrogate($args),
-                'processTask/transfer' => $this->taskTransfer($args),
-                'processTask/removeTaskActor' => $this->taskRemoveActor($args), // issues/115 残留：第 47 个 action
-                'processTask/latest' => $this->taskLatest($args),
-                'processTask/candidatePage' => $this->candidatePage($args),
-                // ── 视图端点 ──
-                'processDefine/getLastByName' => $this->getLastByName($args),
-                'processInstance/highLight' => $this->highLight($args),
-                'processInstance/approvalRecord' => $this->approvalRecord($args),
-                'processInstance/getAssigneeTextData' => $this->getAssigneeTextData($args),
-                'processInstance/createCCInstance' => $this->createCCInstance($args),
-                'processInstance/updateCCStatus' => $this->updateCCStatus($args),
-                'processInstance/ccList' => $this->ccList($args),
-                'processInstance/bizData' => $this->bizData($args),
-                // ── 流程设计（需扩展仓储）──
-                'processDesign/page' => $this->designPage($args),
-                'processDesign/detail' => $this->designDetail($args),
-                'processDesign/save' => $this->designSave($args),
-                'processDesign/update' => $this->designUpdate($args),
-                'processDesign/updateDefine' => $this->designUpdateDefine($args),
-                'processDesign/remove' => $this->designRemove($args),
-                'processDesign/deploy' => $this->designDeploy($args),
-                'processDesign/redeploy' => $this->designRedeploy($args),
-                'processDesign/listByType' => $this->designListByType($args),
-                // ── 委托代理（需扩展仓储）──
-                'processSurrogate/page' => $this->surrogatePage($args),
-                'processSurrogate/save' => $this->surrogateSave($args),
-                'processSurrogate/update' => $this->surrogateUpdate($args), // issues/77
-                'processSurrogate/detail' => $this->surrogateDetail($args), // issues/77
-                'processSurrogate/remove' => $this->surrogateRemove($args),
-                default => $this->error('未知 action: ' . $action),
-            };
+            // audit8 R9 145-7：整次 dispatch 收进一次事务（信封在事务外生成＝先整体回滚再转失败信封）；
+            // 引擎五入口的 inTx 经 join 支并入本层（模板实现 inTransaction() 探测时）。
+            $result = $this->engine->inTx(fn () => $this->dispatch($action, $args));
             // issues/75：所有响应出口统一 id 字符串化（对齐四语言全局 exit hook，
             // 覆盖 designDetail 单记录 + 嵌套 his 列表等此前漏掉的 int id 泄漏面）
             if (isset($result['data'])) {
@@ -177,6 +123,70 @@ class JeeflowFacade
             }
             return $this->error($e->getMessage());
         }
+    }
+
+    /**
+     * action 分派表（audit8 R9：自 flow() 原样抽出——整块包进引擎 inTx 动作级事务）。
+     */
+    private function dispatch(string $action, array $args): array
+    {
+        return match ($action) {
+            // ── 流程定义 ──
+            'processDefine/page' => $this->definePage($args),
+            'processDefine/detail' => $this->defineDetail($args),
+            'processDefine/startAndExecute' => $this->startAndExecute($args),
+            'processDefine/deploy' => $this->deploy($args),
+            'processDefine/redeploy' => $this->redeploy($args),
+            'processDefine/remove' => $this->defineRemove($args),
+            'processDefine/upAndDown' => $this->defineUpAndDown($args),
+            // ── 流程实例 ──
+            'processInstance/page' => $this->instancePage($args),
+            'processInstance/detail' => $this->instanceDetail($args),
+            'processInstance/startAndExecute' => $this->startAndExecute($args),
+            'processInstance/withdraw' => $this->withdraw($args),
+            // ── 统计（issues/103） ──
+            'processInstance/stats/overview' => $this->statsOverview($args),
+            'processInstance/stats/trend' => $this->statsTrend($args),
+            'processInstance/stats/group' => $this->statsGroup($args),
+            // ── 流程任务 ──
+            'processTask/todoList' => $this->todoList($args),
+            'processTask/doneList' => $this->doneList($args),
+            'processTask/execute' => $this->execute($args),
+            'processTask/detail' => $this->taskDetail($args),
+            'processTask/jumpAbleTaskNameList' => $this->jumpAbleTaskNameList($args),
+            'processTask/surrogate' => $this->taskSurrogate($args),
+            'processTask/addCandidate' => $this->taskSurrogate($args),
+            'processTask/transfer' => $this->taskTransfer($args),
+            'processTask/removeTaskActor' => $this->taskRemoveActor($args), // issues/115 残留：第 47 个 action
+            'processTask/latest' => $this->taskLatest($args),
+            'processTask/candidatePage' => $this->candidatePage($args),
+            // ── 视图端点 ──
+            'processDefine/getLastByName' => $this->getLastByName($args),
+            'processInstance/highLight' => $this->highLight($args),
+            'processInstance/approvalRecord' => $this->approvalRecord($args),
+            'processInstance/getAssigneeTextData' => $this->getAssigneeTextData($args),
+            'processInstance/createCCInstance' => $this->createCCInstance($args),
+            'processInstance/updateCCStatus' => $this->updateCCStatus($args),
+            'processInstance/ccList' => $this->ccList($args),
+            'processInstance/bizData' => $this->bizData($args),
+            // ── 流程设计（需扩展仓储）──
+            'processDesign/page' => $this->designPage($args),
+            'processDesign/detail' => $this->designDetail($args),
+            'processDesign/save' => $this->designSave($args),
+            'processDesign/update' => $this->designUpdate($args),
+            'processDesign/updateDefine' => $this->designUpdateDefine($args),
+            'processDesign/remove' => $this->designRemove($args),
+            'processDesign/deploy' => $this->designDeploy($args),
+            'processDesign/redeploy' => $this->designRedeploy($args),
+            'processDesign/listByType' => $this->designListByType($args),
+            // ── 委托代理（需扩展仓储）──
+            'processSurrogate/page' => $this->surrogatePage($args),
+            'processSurrogate/save' => $this->surrogateSave($args),
+            'processSurrogate/update' => $this->surrogateUpdate($args), // issues/77
+            'processSurrogate/detail' => $this->surrogateDetail($args), // issues/77
+            'processSurrogate/remove' => $this->surrogateRemove($args),
+            default => $this->error('未知 action: ' . $action),
+        };
     }
 
     /**

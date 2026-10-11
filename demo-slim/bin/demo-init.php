@@ -77,6 +77,7 @@ ServiceContext::put(\Jeeflow\Core\Spi\ExpressionEvaluatorInterface::class,
 if ($mode === RepositoryFactory::MODE_MEMORY) {
     ServiceContext::put(TransactionTemplateInterface::class, new class implements TransactionTemplateInterface {
         public function required(callable $action): mixed { return $action(); }
+        public function inTransaction(): bool { return false; }
     });
 } else {
     ServiceContext::put(TransactionTemplateInterface::class, new class($pdo) implements TransactionTemplateInterface {
@@ -87,6 +88,7 @@ if ($mode === RepositoryFactory::MODE_MEMORY) {
             try { $result = $action(); $this->pdo->commit(); return $result; }
             catch (\Throwable $e) { $this->pdo->rollBack(); throw $e; }
         }
+        public function inTransaction(): bool { return $this->pdo->inTransaction(); }
     });
 }
 
