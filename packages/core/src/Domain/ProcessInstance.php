@@ -82,11 +82,11 @@ class ProcessInstance
         }
     }
 
+    /** 废弃指定任务（仅任务级；不连带实例状态——spec 04 与 go/py/node 对齐，issues/180） */
     public function abandonTask(string $taskId, string $operator): void
     {
         $task = $this->findDoingTask($taskId);
         $task->abandon($operator);
-        $this->state = ProcessInstanceState::ABANDON;
         $this->updateTime = date('Y-m-d H:i:s');
         $this->updateUser = $operator;
     }
