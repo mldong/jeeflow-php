@@ -51,8 +51,11 @@ class TaskNodeParser extends AbstractNodeParser
             $csType = $p[self::EXT_FIELD_COUNTERSIGN_TYPE_KEY];
             $model->setCountersignType(CountersignType::from($csType));
         }
-        if (isset($p[self::EXT_FIELD_COUNTERSIGN_COMPLETION_CONDITION_KEY])) {
-            $model->setCountersignCompletionCondition((string) $p[self::EXT_FIELD_COUNTERSIGN_COMPLETION_CONDITION_KEY]);
+        // countersignCompletionCondition：顶层优先、field 子对象兜底（issues/177 R11，形状对齐 issues/163）
+        $csCondition = $p[self::EXT_FIELD_COUNTERSIGN_COMPLETION_CONDITION_KEY]
+            ?? (is_array($field) ? ($field[self::EXT_FIELD_COUNTERSIGN_COMPLETION_CONDITION_KEY] ?? null) : null);
+        if ($csCondition !== null) {
+            $model->setCountersignCompletionCondition((string) $csCondition);
         }
         $model->setExt($ext);
     }
