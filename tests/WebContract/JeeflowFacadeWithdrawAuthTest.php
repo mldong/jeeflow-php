@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Jeeflow\Tests\WebContract;
 
+use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\JeeflowEngine;
@@ -113,6 +114,9 @@ class JeeflowFacadeWithdrawAuthTest extends TestCase
         $this->assertNotNull($applyTask);
         $this->assertNotNull($task1);
         $this->assertSame(ProcessTaskState::FINISHED, $applyTask->getTaskState(), '前置：apply 应已办结(20)');
+        // R10（issues/176）：apply 腿由 flow.auto 代执行（spec 04:60-62）⇒ 已完成行的办理人列=flow.auto
+        $applyActorBefore = $applyTask->getActorId();
+        $this->assertSame(FlowConst::AUTO_ID, $applyActorBefore, 'apply 行办理人列应为 flow.auto');
 
         $r = $this->facade->flow('processInstance/withdraw', ['id' => $instanceId, 'operator' => 'user1']);
         $this->assertSame(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
@@ -131,7 +135,7 @@ class JeeflowFacadeWithdrawAuthTest extends TestCase
         // 已完成(20) 行不得被改写
         $applyAfter = $this->repo->findTaskById($applyTask->getTaskId());
         $this->assertSame(ProcessTaskState::FINISHED, $applyAfter->getTaskState(), '已完成(20) 任务行不得被撤回改写');
-        $this->assertSame('user1', $applyAfter->getActorId(), '已完成任务办理人列不得被撤回改写');
+        $this->assertSame($applyActorBefore, $applyAfter->getActorId(), '已完成任务办理人列不得被撤回改写（撤回前=撤回后）');
         $this->assertCount(0, $this->repo->findDoingTasks($instanceId));
     }
 

@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Jeeflow\Tests\WebContract;
 
+use Jeeflow\Core\Domain\FlowData;
+use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessInstanceState;
+use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\Repository\InMemoryProcessRepository;
 use Jeeflow\Core\ServiceContext;
@@ -72,15 +75,15 @@ final class JeeflowFacadeOperatorBlankTest extends TestCase
 
     public function testBlankOperatorEqualsMissingAndUser1OnPdoSqliteBackend(): void
     {
-        [$facade, $repo] = $this->pdoBackend();
-        $this->seed($facade, $repo);
+        [$facade, $repo, $engine] = $this->pdoBackend();
+        $this->seed($facade, $repo, $engine);
         $this->assertBlankMatrix($facade, $repo, 'PDO/SQLite');
     }
 
     public function testBlankOperatorEqualsMissingAndUser1OnInMemoryBackend(): void
     {
-        [$facade, $repo] = $this->inMemoryBackend();
-        $this->seed($facade, $repo);
+        [$facade, $repo, $engine] = $this->inMemoryBackend();
+        $this->seed($facade, $repo, $engine);
         $this->assertBlankMatrix($facade, $repo, 'InMemory');
     }
 
@@ -195,7 +198,7 @@ final class JeeflowFacadeOperatorBlankTest extends TestCase
 
     // ── 后端装配 ──
 
-    /** @return array{0:JeeflowFacade,1:ProcessRepositoryInterface} */
+    /** @return array{0:JeeflowFacade,1:ProcessRepositoryInterface,2:JeeflowEngine} */
     private function pdoBackend(): array
     {
         $pdo = new \PDO('sqlite::memory:');
@@ -225,14 +228,16 @@ CREATE TABLE wf_process_cc_instance (
   update_time TEXT NULL, update_user TEXT NULL);
 SQL);
         $repo = new PdoProcessRepository($pdo);
-        return [new JeeflowFacade(new JeeflowEngine($repo), $repo), $repo];
+        $engine = new JeeflowEngine($repo);
+        return [new JeeflowFacade($engine, $repo), $repo, $engine];
     }
 
-    /** @return array{0:JeeflowFacade,1:ProcessRepositoryInterface} */
+    /** @return array{0:JeeflowFacade,1:ProcessRepositoryInterface,2:JeeflowEngine} */
     private function inMemoryBackend(): array
     {
         $repo = new InMemoryProcessRepository();
-        return [new JeeflowFacade(new JeeflowEngine($repo), $repo), $repo];
+        $engine = new JeeflowEngine($repo);
+        return [new JeeflowFacade($engine, $repo), $repo, $engine];
     }
 
     // ── 造数据 ──
@@ -248,23 +253,29 @@ SQL);
     }
 
     /**
-     * 01-simple：start → apply(applicant，由发起人自动办结) → task1(assignee=leader，进行中)。
-     * 于是每起一单天然产出一行"发起人已办" + 一行"leader 待办"；待办再挂上发起人自己，
-     * 抄送也发给发起人 —— 四张出口在 user1/user2 两档上各有非空行集，且两档行数不相等。
+     * 01-simple：start → apply(applicant) → task1(assignee=leader，进行中)。
+     * R10（issues/176）起 startAndExecute 的 apply 行 operator=flow.auto（不再天然产出"发起人已办"）
+     * ⇒ 改为引擎两拍：真人发起 + 真人办结 apply（operator=$user，已办行=发起人），task1 落进行中；
+     * 待办再挂上发起人自己，抄送也发给发起人 —— 四张出口在 user1/user2 两档上各有非空行集，
+     * 且两档行数不相等（读数与旧口径逐格相同：inst 2/1、todo 2/1、done 2/1、cc 2/1）。
      */
-    private function seed(JeeflowFacade $facade, ProcessRepositoryInterface $repo): void
+    private function seed(JeeflowFacade $facade, ProcessRepositoryInterface $repo, JeeflowEngine $engine): void
     {
         $defineId = $this->deploy($facade);
         foreach ([['user1', self::USER1_ROWS], ['user2', self::USER2_ROWS]] as [$user, $times]) {
             for ($i = 0; $i < $times; $i++) {
-                $start = $facade->flow('processDefine/startAndExecute', [
-                    'processDefineId' => $defineId, 'operator' => $user,
-                ]);
-                $this->assertSame(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
-                $instanceId = (string) $start['data']['processInstanceId'];
+                $inst = $engine->startProcessInstanceById($defineId, $user);
+                $instanceId = (string) $inst->getInstanceId();
                 $doing = $repo->findDoingTasks($instanceId);
                 $this->assertNotEmpty($doing, "前置：{$user} 第 {$i} 单应有进行中任务");
                 $repo->addTaskActor((string) $doing[0]->getTaskId(), [$user]);
+                $flowArgs = new FlowData();
+                $flowArgs->set(FlowConst::SUBMIT_TYPE, SubmitType::APPLY);
+                $engine->executeProcessTask((string) $doing[0]->getTaskId(), $user, $flowArgs);
+                // apply 办结 → task1 进行中，再挂上发起人自己，保证待办出口非空
+                $doing2 = $repo->findDoingTasks($instanceId);
+                $this->assertNotEmpty($doing2, "前置：{$user} 第 {$i} 单 apply 办结后应有 task1 待办");
+                $repo->addTaskActor((string) $doing2[0]->getTaskId(), [$user]);
                 $repo->createCcInstance($instanceId, $user, [$user]);
             }
         }
