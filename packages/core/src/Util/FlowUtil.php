@@ -190,7 +190,8 @@ final class FlowUtil
      */
     public static function addUserInfoToArgs(string $operator, FlowData $args): void
     {
-        if (FlowConst::AUTO_ID === $operator || FlowConst::ADMIN_ID === $operator) {
+        // issues/194：spec 04:55-56「忽略大小写」——与自家 ProcessTask::isAllowed 的 strcasecmp 同口径
+        if (strcasecmp($operator, FlowConst::AUTO_ID) === 0 || strcasecmp($operator, FlowConst::ADMIN_ID) === 0) {
             return;
         }
         $userProvider = ServiceContext::find(UserProviderInterface::class);

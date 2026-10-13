@@ -55,6 +55,36 @@ class FlowUtilUserInfoTest extends TestCase
         $this->assertNull($args->get(FlowConst::USER_USER_ID));
     }
 
+    // issues/194：spec 04:55-56「忽略大小写」——混合大小写哨兵同样跳过注入（java FlowUtil 同口径）
+    public function testAddUserInfoToArgs_mixedCaseSentinelSkipped(): void
+    {
+        $provider = $this->createMock(UserProviderInterface::class);
+        $provider->expects($this->never())->method('getUser');
+        ServiceContext::put(UserProviderInterface::class, $provider);
+
+        $args = FlowData::create();
+        FlowUtil::addUserInfoToArgs('FLOW.AUTO', $args);
+        $this->assertNull($args->get(FlowConst::USER_USER_ID), 'FLOW.AUTO 不得调用 UserProvider');
+
+        FlowUtil::addUserInfoToArgs('Flow.Admin', $args);
+        $this->assertNull($args->get(FlowConst::USER_USER_ID), 'Flow.Admin 不得调用 UserProvider');
+    }
+
+    // issues/194 正向对照：前缀相似的真实用户仍须注入（判据不许靠前缀匹配过度宽松）
+    public function testAddUserInfoToArgs_sentinelLikeUserStillInjected(): void
+    {
+        $provider = $this->createMock(UserProviderInterface::class);
+        $provider->method('getUser')->with('flow.autox')->willReturn([
+            'userId' => 'flow.autox', 'realName' => '小明', 'deptId' => 'd09',
+            'deptName' => '测试部', 'postId' => 'p09', 'postName' => '岗位',
+        ]);
+        ServiceContext::put(UserProviderInterface::class, $provider);
+
+        $args = FlowData::create();
+        FlowUtil::addUserInfoToArgs('flow.autox', $args);
+        $this->assertSame('flow.autox', $args->get(FlowConst::USER_USER_ID));
+    }
+
     public function testAddUserInfoToArgs_noProviderSkipped(): void
     {
         $args = FlowData::create();
