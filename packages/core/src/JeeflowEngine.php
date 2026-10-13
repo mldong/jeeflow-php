@@ -488,7 +488,8 @@ class JeeflowEngine implements JeeflowEngineInterface
             // 办理 tf_ccActors / 门面手动 createCCInstance）共用 ProcessPublisher::notifyCcCreate
             // 这一把收口（§11.7「发起与办理走同一个 notifyCcCreate」）。
             // sourceId=instanceId，ccActorId=抄送人 id（监听器直接取用免反查 cc 表）。
-            // fire 在 inTx 事务内，监听器同连接反查可见本事务写入（与 Java 同事务一致）。
+            // issues/191：fire 在 inTx 事务内"发起"，但有模板 afterCommit 腿时派发已挪到 COMMIT 之后
+            // （spec11 §11.3.1 派发时序＝提交之后）；无该能力的模板回落事务内即时播（与修前一致）。
             // 入参＝实际新建的子集而不是原始 ccArr（issues/141 G2）：spec §11.2 原则 1「码=事实」
             // ⇒ 重复抄送没发生"创建"就不该发这个事件；子集为空整支不 fire（不空转、也不照旧全量 fire）。
             if ($created !== []) {

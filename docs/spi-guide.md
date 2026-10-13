@@ -57,6 +57,11 @@ $repo = new PdoProcessRepository($pdo);
 > 模板里另开一条连接（例如 `getMyPdo()` 再 new 一个）会得到"模板 begin 一条、仓储写另一条"的
 > **空转事务**——引擎检不出来，回滚时写腿照样落库。`inTransaction()` 是引擎的**嵌套并入探测口**：
 > 引擎五入口与门面 `flow()` 都经它判断（有活动事务则并入最外层，不二次 begin、不提前提交）。
+>
+> ⚠ **派发时序**（spec/11 §11.3.1／spec/12 §12.3.1，audit8 R25）：模板接在门面上之后，流程事件
+> 的派发必须排在 **COMMIT 之后**（否则回滚场景站内信/通知已经发出去了）。引擎用 `afterCommit()`
+> 探测（method_exists，**可选实现**）——实现了它，事务内 fire 的事件会挪到提交后广播、回滚自动
+> 丢弃；不实现则保持"落库后即时广播"旧行为。**生产接入请实现它**：
 
 ```php
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
@@ -64,6 +69,9 @@ use Jeeflow\Core\ServiceContext;
 
 // $pdo 就是上面接入 MySQL 时创建、注入给 PdoProcessRepository 的那一枚
 ServiceContext::put(TransactionTemplateInterface::class, new class($pdo) implements TransactionTemplateInterface {
+    /** @var callable[] 提交后派发队列（issues/191） */
+    private array $afterCommitCallbacks = [];
+
     public function __construct(private \PDO $pdo) {}
 
     public function required(callable $action): mixed {
@@ -71,21 +79,33 @@ ServiceContext::put(TransactionTemplateInterface::class, new class($pdo) impleme
         try {
             $result = $action();
             $this->pdo->commit();
-            return $result;
         } catch (\Throwable $e) {
+            $this->afterCommitCallbacks = [];   // 回滚：丢弃待派发
             $this->pdo->rollBack();
             throw $e;
         }
+        $callbacks = $this->afterCommitCallbacks;
+        $this->afterCommitCallbacks = [];
+        foreach ($callbacks as $callback) { $callback(); }
+        return $result;
     }
 
     // 不实现则嵌套回落 required（同一 PDO 二次 beginTransaction 会抛"已有活动事务"）
     public function inTransaction(): bool { return $this->pdo->inTransaction(); }
+
+    // 派发时序腿（spec/11 §11.3.1）：提交后执行、回滚丢弃、无事务立即执行
+    public function afterCommit(callable $callback): void {
+        if ($this->pdo->inTransaction()) { $this->afterCommitCallbacks[] = $callback; return; }
+        $callback();
+    }
 });
 ```
 
 > Laravel 集成形态（连接池自管）：`DB::connection('mysql')->getPdo()` 交给仓储/扩展仓/writer，
 > 模板用 `DB::connection('mysql')->transaction(...)` ＋ `transactionLevel() > 0`——同一枚连接，
-> 嵌套由 Laravel 事务层级计数兜底。参见 `mldong-laravel-jeeflow` 的 `WfTransactionTemplate`。
+> 嵌套由 Laravel 事务层级计数兜底；`afterCommit()` 直接委托 Laravel 原生
+> `DB::connection('mysql')->afterCommit($callback)`（root 提交后执行、回滚丢弃）。
+> 参见 `mldong-laravel-jeeflow` 的 `WfTransactionTemplate`。
 
 ## 接入用户体系
 

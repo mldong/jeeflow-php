@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Jeeflow\Core\Event;
 
 use Jeeflow\Core\Enum\ProcessEventTypeEnum;
+use Jeeflow\Core\ServiceContext;
+use Jeeflow\Core\Spi\TransactionTemplateInterface;
 
 /**
  * 流程事件发布者 —— 对齐 Java ProcessPublisher
@@ -47,6 +49,30 @@ final class ProcessPublisher
     }
 
     public static function notify(ProcessEvent $event): void
+    {
+        // issues/191（audit8 R25）：派发时序＝落库之后、**对外承诺为"提交之后"**
+        // （spec11 §11.3.1／spec12 §12.3.1「哪一栈把模板接到门面上，那一栈的 fire 点必须同步后移」）——
+        // php 的整轮模板已接在门面上（R9），故有活动事务且模板实现可选 afterCommit(callable) 时，
+        // 把广播委托给模板（**提交后执行、回滚丢弃**由模板兑现；method_exists 探测先例＝
+        // TransactionTemplateInterface 的 inTransaction）；否则回落立即广播（无该能力的模板＝
+        // "落库后"与"提交后"等价或无法感知，行为与修复前一致，兼容不破坏）。
+        $tx = ServiceContext::find(TransactionTemplateInterface::class);
+        if ($tx !== null
+            && method_exists($tx, 'inTransaction') && $tx->inTransaction()
+            && method_exists($tx, 'afterCommit')) {
+            try {
+                $tx->afterCommit(static fn () => self::broadcast($event));
+                return;
+            } catch (\Throwable $e) {
+                // fire 是通知：派发通道故障不打断主流程（与 §11.5 逐监听器兜底同哲学），回落立即广播
+                error_log('[jeeflow-php] ProcessPublisher afterCommit 注册失败，回落立即派发: ' . $e->getMessage());
+            }
+        }
+        self::broadcast($event);
+    }
+
+    /** 逐监听器广播（§11.5：单个监听器抛错只记日志，不回滚主流程、不中断后续）——issues/191 起为 notify 的落点。 */
+    private static function broadcast(ProcessEvent $event): void
     {
         $listeners = ProcessEventListenerRegistry::listeners();
         foreach ($listeners as $listener) {

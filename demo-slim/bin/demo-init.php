@@ -82,13 +82,24 @@ if ($mode === RepositoryFactory::MODE_MEMORY) {
 } else {
     ServiceContext::put(TransactionTemplateInterface::class, new class($pdo) implements TransactionTemplateInterface {
         private \PDO $pdo;
+        /** @var callable[] issues/191：提交后派发队列 */
+        private array $afterCommitCallbacks = [];
         public function __construct(\PDO $pdo) { $this->pdo = $pdo; }
         public function required(callable $action): mixed {
             $this->pdo->beginTransaction();
-            try { $result = $action(); $this->pdo->commit(); return $result; }
-            catch (\Throwable $e) { $this->pdo->rollBack(); throw $e; }
+            try { $result = $action(); $this->pdo->commit(); }
+            catch (\Throwable $e) { $this->afterCommitCallbacks = []; $this->pdo->rollBack(); throw $e; }
+            $callbacks = $this->afterCommitCallbacks;
+            $this->afterCommitCallbacks = [];
+            foreach ($callbacks as $callback) { $callback(); }
+            return $result;
         }
         public function inTransaction(): bool { return $this->pdo->inTransaction(); }
+        /** issues/191：提交后执行、回滚丢弃、无事务立即执行（spec11 §11.3.1 派发时序＝提交之后）。 */
+        public function afterCommit(callable $callback): void {
+            if ($this->pdo->inTransaction()) { $this->afterCommitCallbacks[] = $callback; return; }
+            $callback();
+        }
     });
 }
 
