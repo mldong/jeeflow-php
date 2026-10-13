@@ -6,6 +6,7 @@ namespace Jeeflow\Core\Repository;
 
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
+use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Spi\IdGeneratorInterface;
 use Jeeflow\Core\Spi\InMemoryIdGenerator;
@@ -13,6 +14,7 @@ use Jeeflow\Core\Spi\PageQuery;
 use Jeeflow\Core\Spi\PageResult;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
 use Jeeflow\Core\Util\CcActorUtil;
+use Jeeflow\Core\Util\FormDataUtil;
 
 /**
  * 内存仓储实现 —— 用于单元测试
@@ -568,7 +570,7 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
             'taskActorIdList' => $task->getActorIds(),
             'ext' => $ext ?: (object)[], // issues/124：variable 原串出口下线
             'instanceExt' => $instanceExt ?: (object)[],
-            'taskFormData' => (object)[],
+            'taskFormData' => FormDataUtil::of($task->getVariables()->toArray(), FlowConst::TASK_FORM_DATA_PREFIX),
             'finishTime' => $task->getFinishTime(),
             'expireTime' => $task->getExpireTime(),
             'createTime' => $task->getCreateTime(),

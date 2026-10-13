@@ -200,6 +200,40 @@ SQL);
         }
     }
 
+    /**
+     * issues/189：列表行 taskFormData 真算（修前本仓行字面恒 `(object)[]`，detail 腿却真在算
+     * ——同一栈同一个键两种真相，C6-L2 乙-1 第六派）。判据与内存腿
+     * TaskFormData189Test 同源：无 tf_ 任务变量 ⇒ 空对象；transfer 写入后 ⇒
+     * 「带前缀 + 去前缀副本」两键，且与 detail 同值。
+     */
+    public function testTaskFormDataRealOnListRows(): void
+    {
+        [, $taskId] = $this->startSimple();
+
+        $before = $this->rowOf('processTask/todoList', 'leader', $taskId);
+        $this->assertInstanceOf(\stdClass::class, $before['taskFormData'],
+            '无 tf_ 任务变量时列表行 taskFormData 应出空对象: '
+            . json_encode($before['taskFormData'], JSON_UNESCAPED_UNICODE));
+        $this->assertSame([], get_object_vars($before['taskFormData']), 'taskFormData 应为空对象');
+
+        $tr = $this->facade->flow('processTask/transfer', [
+            'processTaskId' => $taskId, 'fromActor' => 'leader', 'toActor' => 'lisi',
+            'reason' => 'taskFormData 用', 'operator' => 'leader',
+        ]);
+        $this->assertSame(0, $tr['code'], json_encode($tr, JSON_UNESCAPED_UNICODE));
+
+        $after = $this->rowOf('processTask/todoList', 'lisi', $taskId);
+        $fd = $this->asArr($after['taskFormData']);
+        $this->assertSame('lisi', $fd['tf_transferTo'] ?? null,
+            '列表行 taskFormData 应含带前缀键: ' . json_encode($after['taskFormData'], JSON_UNESCAPED_UNICODE));
+        $this->assertSame('lisi', $fd['transferTo'] ?? null, '列表行 taskFormData 应含去前缀副本');
+
+        $det = $this->facade->flow('processTask/detail', ['id' => $taskId, 'operator' => 'lisi']);
+        $this->assertSame(0, $det['code'], json_encode($det, JSON_UNESCAPED_UNICODE));
+        $this->assertSame($fd, $this->asArr($det['data']['taskFormData']),
+            '同一任务：todoList 行与 detail 行 taskFormData 必须同值');
+    }
+
     // ── 辅助 ──
 
     /**

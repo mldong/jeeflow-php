@@ -33,6 +33,7 @@ use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
 use Jeeflow\Core\Spi\UserSearchProviderInterface;
 use Jeeflow\Core\Util\CcActorUtil;
+use Jeeflow\Core\Util\FormDataUtil;
 use Jeeflow\Core\Util\JeeflowQueryParser;
 use Jeeflow\Core\Util\SurrogateRule;
 
@@ -454,7 +455,7 @@ class JeeflowFacade
             'operator' => $inst->getOperator(),
             // issues/124：变量唯一对外出口是 ext，variables 全集不进契约；空变量出 {} 而非 null
             'ext' => $inst->getVariables()->toArray() ?: (object)[],
-            'formData' => $this->formDataOf($inst->getVariables()->toArray(), FlowConst::FORM_DATA_PREFIX),
+            'formData' => FormDataUtil::of($inst->getVariables()->toArray(), FlowConst::FORM_DATA_PREFIX),
             'createTime' => $inst->getCreateTime(),
             'createUser' => $inst->getCreateUser(),
             'displayName' => $def['displayName'] ?? null,
@@ -1355,7 +1356,7 @@ class JeeflowFacade
             'formKey' => $task->getFormKey(),
             'taskParentId' => $task->getParentTaskId(),
             'taskActorIdList' => $task->getActorIds(),
-            'taskFormData' => $this->formDataOf($task->getVariables()->toArray(), FlowConst::TASK_FORM_DATA_PREFIX),
+            'taskFormData' => FormDataUtil::of($task->getVariables()->toArray(), FlowConst::TASK_FORM_DATA_PREFIX),
             'createTime' => $task->getCreateTime(),
         ];
     }
@@ -1391,20 +1392,6 @@ class JeeflowFacade
             }
         }
         return null;
-    }
-
-    private function formDataOf(array $variables, string $prefix): array|\stdClass
-    {
-        $result = [];
-        foreach ($variables as $k => $v) {
-            if (str_starts_with($k, $prefix)) {
-                $result[$k] = $v;
-                // 去前缀副本
-                $stripped = substr($k, strlen($prefix));
-                $result[$stripped] = $v;
-            }
-        }
-        return $result ?: (object)[];
     }
 
     /** 节点成员进度（issues/41/82-10，对齐 Java/Go/Python）：按任务状态组装 nodeProgress——
