@@ -67,4 +67,29 @@ class HandlerRegistryTest extends TestCase
         $handlers = $registry->listHandlers('AssignmentHandler');
         $this->assertCount(8, $handlers); // 7 内置 + 1 自定义
     }
+
+    public function testListHandlerTypes(): void
+    {
+        $registry = new HandlerRegistry();
+        $this->assertSame(['AssignmentHandler'], $registry->listHandlerTypes(), '内置 7 条同型 ⇒ 去重后单类型（首次注册序）');
+
+        $registry->register(new HandlerMeta('CandidateHandler', 'com.example.CandidateProvider', '候选人提供者', 1));
+        $this->assertSame(
+            ['AssignmentHandler', 'CandidateHandler'],
+            $registry->listHandlerTypes(),
+            '显式注册类型入场（对齐 Java 参考口径）'
+        );
+
+        $registry->register(new HandlerMeta('AssignmentHandler', 'com.custom.MyHandler', '自定义处理器', 100));
+        $this->assertSame(
+            ['AssignmentHandler', 'CandidateHandler'],
+            $registry->listHandlerTypes(),
+            '同类型多枚 ⇒ 去重不重复'
+        );
+        $this->assertCount(
+            1,
+            $registry->listHandlers('CandidateHandler'),
+            '与 listHandlers 同口径：类型在场 ⟺ 该类型下有清单项'
+        );
+    }
 }

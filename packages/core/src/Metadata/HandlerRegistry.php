@@ -54,4 +54,19 @@ final class HandlerRegistry
         }
         return $out;
     }
+
+    /**
+     * 已注册的处理器类型清单（去重，首次注册序；issues/186 R20 第四能力补齐，
+     * 对齐 Java listHandlerTypes() 的注册表 keySet 口径）
+     *
+     * @return string[]
+     */
+    public function listHandlerTypes(): array
+    {
+        $types = [];
+        foreach ($this->items as $item) {
+            $types[$item->type] = true;
+        }
+        return array_keys($types);
+    }
 }
