@@ -38,6 +38,8 @@ final class HandlerRegistry
     }
 
     /**
+     * 按类型/分组列出（order 升序；spec 08 场景 22；issues/188 R21）
+     *
      * @return HandlerMeta[]
      */
     public function listHandlers(?string $type = null, ?string $group = null): array
@@ -52,6 +54,7 @@ final class HandlerRegistry
             }
             $out[] = $item;
         }
+        usort($out, fn(HandlerMeta $a, HandlerMeta $b) => $a->order <=> $b->order);
         return $out;
     }
 

@@ -92,4 +92,30 @@ class HandlerRegistryTest extends TestCase
             '与 listHandlers 同口径：类型在场 ⟺ 该类型下有清单项'
         );
     }
+
+    public function testListHandlersSortedByOrder(): void
+    {
+        $registry = new HandlerRegistry();
+        $registry->register(new HandlerMeta('AssignmentHandler', 'com.custom.EarlyBird', '插队处理器', 5));
+        $handlers = $registry->listHandlers('AssignmentHandler');
+        $this->assertSame(
+            [-9999, 5, 10, 20, 30, 40, 50, 60],
+            array_map(fn(HandlerMeta $m) => $m->order, $handlers),
+            '注册序 ≠ order 序时仍按 order 升序返回（spec 08 场景 22）'
+        );
+        $this->assertSame('com.custom.EarlyBird', $handlers[1]->className);
+    }
+
+    public function testListHandlersGroupSortedByOrder(): void
+    {
+        $registry = new HandlerRegistry();
+        $registry->register(new HandlerMeta('FlowInterceptor', 'com.custom.PreB', 'pre-B', 20, 'pre'));
+        $registry->register(new HandlerMeta('FlowInterceptor', 'com.custom.PreA', 'pre-A', 10, 'pre'));
+        $pre = $registry->listHandlers('FlowInterceptor', 'pre');
+        $this->assertSame(
+            ['com.custom.PreA', 'com.custom.PreB'],
+            array_map(fn(HandlerMeta $m) => $m->className, $pre),
+            '按类型 + 分组列出同样 order 升序（spec 08 场景 22）'
+        );
+    }
 }
