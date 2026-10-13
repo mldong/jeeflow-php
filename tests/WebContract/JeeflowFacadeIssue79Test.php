@@ -155,6 +155,9 @@ class JeeflowFacadeIssue79Test extends TestCase
         $jumpValues = array_column($jl['data'], 'value');
         $this->assertContains('task1', $jumpValues, 'jumpAble 应包含已完成的 task1');
         $this->assertContains('apply', $jumpValues, 'jumpAble 应包含已完成的 apply');
+        $this->assertContains('task2', $jumpValues, 'jumpAble 应包含已完成的 task2');
+        $this->assertNotContains('task3', $jumpValues,
+            'issues/190：jumpAble 只出 FINISHED 历史行——仅 DOING 的 task3 不得出现（旧形状遍历模型全量 ⇒ 本断言红）');
         $r = $this->facade->flow('processTask/execute', [
             'processTaskId' => $t3, 'operator' => 'boss', 'submitType' => SubmitType::JUMP, 'taskName' => 'apply',
         ]);
@@ -330,5 +333,54 @@ class JeeflowFacadeIssue79Test extends TestCase
         $this->assertSame(ProcessTaskState::FINISHED, $doneA->getTaskState(), '软拒绝任务应正常完成');
         $this->assertSame(ProcessTaskState::DOING, $this->repo->findTaskById($taskB)->getTaskState(), '软拒绝不应废弃 userB');
         $this->assertSame(ProcessTaskState::DOING, $this->repo->findTaskById($taskC)->getTaskState(), '软拒绝不应废弃 userC');
+    }
+
+    // ── jumpAble 候选面（issues/190）：FINISHED 历史行过滤 + 会签排除 ──
+
+    public function testJumpAbleExcludesCountersignNodes(): void
+    {
+        // issues/190：会签节点即使已办结也不得成为 JUMP 目标（boot2 注释「不能跳转到会签节点」、
+        // 其余七栈同形）；阳性对照＝task1 确有 FINISHED 会签行，证明排除来自会签跳过而非"没有行"。
+        $defineId = $this->deployFlow('06-countersign-sequential.json');
+        $r1 = $this->facade->flow('processInstance/startAndExecute', [
+            'processDefineId' => $defineId,
+            'operator' => 'user1',
+        ]);
+        $this->assertSame(0, $r1['code'], 'startAndExecute 失败: ' . json_encode($r1, JSON_UNESCAPED_UNICODE));
+        $instanceId = $r1['data']['processInstanceId'];
+
+        // 串行会签逐个创建：userA 办结后 userB 的 DOING 任务才创建
+        $taskA = $this->doingTaskIdByActor($instanceId, 'task1', 'userA');
+        $this->assertNotSame('', $taskA, '会签节点应有 userA 的 DOING 任务');
+        $this->repo->addTaskActor($taskA, ['userA']);
+        $r = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $taskA, 'operator' => 'userA', 'submitType' => SubmitType::AGREE,
+        ]);
+        $this->assertSame(0, $r['code'], 'userA 会签同意失败: ' . json_encode($r, JSON_UNESCAPED_UNICODE));
+
+        $taskB = $this->doingTaskIdByActor($instanceId, 'task1', 'userB');
+        $this->assertNotSame('', $taskB, 'userA 办结后应创建 userB 的 DOING 任务');
+        $this->repo->addTaskActor($taskB, ['userB']);
+        $r = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $taskB, 'operator' => 'userB', 'submitType' => SubmitType::AGREE,
+        ]);
+        $this->assertSame(0, $r['code'], 'userB 会签同意失败: ' . json_encode($r, JSON_UNESCAPED_UNICODE));
+
+        // 阳性对照：会签行已 FINISHED 且 perform_type=1（排除不是"没有历史行可出"）
+        $finishedCountersign = 0;
+        foreach ($this->repo->findHistoryTasks($instanceId) as $t) {
+            if ($t->getTaskName() === 'task1'
+                && $t->getTaskState() === ProcessTaskState::FINISHED
+                && $t->getPerformType() === 1) {
+                $finishedCountersign++;
+            }
+        }
+        $this->assertGreaterThan(0, $finishedCountersign, '对照组：task1 应有 FINISHED 的会签历史行');
+
+        $jl = $this->facade->flow('processTask/jumpAbleTaskNameList', ['processInstanceId' => $instanceId]);
+        $this->assertSame(0, $jl['code']);
+        $jumpValues = array_column($jl['data'], 'value');
+        $this->assertContains('apply', $jumpValues, 'jumpAble 应含已完成的 apply');
+        $this->assertNotContains('task1', $jumpValues, 'issues/190：会签节点不得成为 JUMP 目标');
     }
 }

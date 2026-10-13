@@ -646,26 +646,32 @@ class JeeflowFacade
         return $this->ok($vo);
     }
 
+    /**
+     * JUMP 候选节点清单（submitType=4 的 taskName 唯一来源，spec 06:662）。
+     *
+     * issues/190（audit8 R23 / C6-L2 乙-4）：旧形状遍历模型收全部 TaskModel——JUMP 候选面含
+     * 从未走过与会签节点，与 java/boot2/rust/go/py/node/csharp/moon 八栈（均按 done 历史行
+     * 组装）方向相反。现按历史行组装：只留 FINISHED（对齐 java `findDoneTasks` 的
+     * `task_state=20`）→ 排会签（perform_type=1）→ 按 taskName 首次出现去重；label 取任务行
+     * （七栈同形）。本栈无 done-only 仓储腿（`findHistoryTasks` 含 DOING，issues/82-10），
+     * 状态过滤落这里；不加 SPI 方法（PHP 接口不能有默认方法体，加必选成员破坏第三方仓储）。
+     */
     private function jumpAbleTaskNameList(array $args): array
     {
         $instanceId = $this->toStr($args['processInstanceId'] ?? '');
-        $inst = $this->repository->findInstanceById($instanceId);
-        if ($inst === null) return $this->ok([]);
-        $def = $this->repository->findDefineById($inst->getDefineId());
-        if ($def === null) return $this->ok([]);
-
         $result = [];
-        try {
-            $model = ModelParser::parse((string) ($def['content'] ?? ''));
-            foreach ($model->getNodes() as $node) {
-                if ($node instanceof TaskModel) {
-                    $result[] = [
-                        'label' => $node->getDisplayName(),
-                        'value' => $node->getName(),
-                    ];
-                }
-            }
-        } catch (\Throwable $ignored) {}
+        $seen = [];
+        foreach ($this->repository->findHistoryTasks($instanceId) as $task) {
+            if ($task->getTaskState() !== ProcessTaskState::FINISHED) continue;
+            if ($task->getPerformType() === PerformType::COUNTERSIGN) continue;
+            $taskName = $task->getTaskName();
+            if (isset($seen[$taskName])) continue;
+            $seen[$taskName] = true;
+            $result[] = [
+                'label' => $task->getDisplayName(),
+                'value' => $taskName,
+            ];
+        }
         return $this->ok($result);
     }
 
