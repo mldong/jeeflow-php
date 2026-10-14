@@ -2033,6 +2033,21 @@ class JeeflowFacade
         ];
     }
 
+    // issues/204：design/detail.his[] 出口键归一（camelCase 立法）——PDO 腿裸行是蛇形键
+    // （create_time/process_design_id），InMemory 腿是 camel（designId）；对齐 java
+    // ProcessDesignHis 字段集（id/processDesignId/content/createTime/createUser），
+    // 双读范式与 designRowToMap 同构（issues/98 先例）。
+    private function designHisRowToMap(array $row): array
+    {
+        return [
+            'id' => $row['id'] ?? null,
+            'processDesignId' => $row['processDesignId'] ?? $row['process_design_id'] ?? $row['designId'] ?? null,
+            'content' => $row['content'] ?? null,
+            'createTime' => $this->fmtTime($row['createTime'] ?? $row['create_time'] ?? null),
+            'createUser' => $row['createUser'] ?? $row['create_user'] ?? null,
+        ];
+    }
+
     private function designPage(array $args): array
     {
         $ext = $this->requireExt();
@@ -2066,7 +2081,7 @@ class JeeflowFacade
             'isDeployed' => (int) ($design['isDeployed'] ?? $design['is_deployed'] ?? 0),
             'remark' => $design['remark'] ?? null,
             'jsonObject' => $jsonObject,
-            'his' => $ext->findDesignHisList($id),
+            'his' => array_map([$this, 'designHisRowToMap'], $ext->findDesignHisList($id)),
         ];
         return $this->ok($data);
     }

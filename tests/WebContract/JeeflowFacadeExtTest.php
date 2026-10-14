@@ -305,13 +305,22 @@ class JeeflowFacadeExtTest extends TestCase
         $this->assertIsString($detail['data']['id']);
         $this->assertSame((string) $bigIntId, $detail['data']['id']);
 
-        // 嵌套 his 列表：行 id 与 process_design_id 也必须字符串化
+        // 嵌套 his 列表：行 id 与 processDesignId 也必须字符串化
+        // issues/204：出口键一律 camelCase——行键从蛇形 process_design_id 归一为 processDesignId，
+        // 蛇形同义键禁出（fake 夹具仍是 PDO 蛇形行键，归一在门面出口完成）
         $this->assertNotEmpty($detail['data']['his']);
         foreach ($detail['data']['his'] as $his) {
             $this->assertIsString($his['id'], 'his.id must be string');
             $this->assertSame((string) $hisId, $his['id']);
-            $this->assertIsString($his['process_design_id'], 'his.process_design_id must be string');
-            $this->assertSame((string) $bigIntId, $his['process_design_id']);
+            $this->assertIsString($his['processDesignId'], 'his.processDesignId must be string');
+            $this->assertSame((string) $bigIntId, $his['processDesignId']);
+            $this->assertArrayNotHasKey('process_design_id', $his, '蛇形同义键禁出（issues/204 camelCase 立法）');
+            $this->assertArrayNotHasKey('create_time', $his, '蛇形同义键禁出（issues/204 camelCase 立法）');
+            $this->assertArrayHasKey('createTime', $his, 'createTime 必须以 camel 键在场');
+            $this->assertMatchesRegularExpression('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $his['createTime'],
+                "createTime should be yyyy-MM-dd HH:mm:ss, got {$his['createTime']}");
+            $this->assertArrayHasKey('createUser', $his);
+            $this->assertArrayHasKey('content', $his);
         }
     }
 
