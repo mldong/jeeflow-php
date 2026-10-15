@@ -54,7 +54,10 @@ class DecisionModel extends NodeModel
         }
 
         if (!$found) {
-            throw new JeeflowException('无法确定下一节点');
+            // issues/234 丙-10 → issues/236 R93（owner 10-15 拍「php 一并钉齐」）：零命中档文案逐字取
+            // java `WfErrEnum.NOT_FOUND_NEXT_NODE`，内部码同值（对外信封由门面统一转 99999999＋该 msg）。
+            // 旧形状＝JeeflowException('无法确定下一节点')：异串＋内部码缺省 0＝无从归因。
+            throw new JeeflowException('decision节点无法确定下一步执行路线', 20010001);
         }
     }
 
