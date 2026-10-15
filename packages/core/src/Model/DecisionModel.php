@@ -35,6 +35,7 @@ class DecisionModel extends NodeModel
             }
         }
 
+        // issues/234 丙-9：首条真边获胜——命中即走，不再继续遍历（多真边并行流转非 spec 语义）
         foreach ($this->getOutputs() as $tm) {
             if ($tm->getExpr() !== '') {
                 $evaluator = ServiceContext::find(ExpressionEvaluatorInterface::class);
@@ -42,11 +43,13 @@ class DecisionModel extends NodeModel
                     $found = true;
                     $tm->setEnabled(true);
                     $tm->execute($execution);
+                    break;
                 }
             } elseif ($nextNodeName !== null && strcasecmp($tm->getTo(), $nextNodeName) === 0) {
                 $found = true;
                 $tm->setEnabled(true);
                 $tm->execute($execution);
+                break;
             }
         }
 
