@@ -110,6 +110,13 @@ class PdoProcessRepository implements ProcessRepositoryInterface
         $stmt->execute([(string) $id]);
     }
 
+    public function hasInstancesByDefineId(int|string $id): bool
+    {
+        $stmt = $this->pdo->prepare('SELECT COUNT(*) FROM wf_process_instance WHERE process_define_id = ?');
+        $stmt->execute([(string) $id]);
+        return (int) $stmt->fetchColumn() > 0;
+    }
+
     public function updateDefineState(int|string $id, int $state): void
     {
         $stmt = $this->pdo->prepare('UPDATE wf_process_define SET state = ?, update_time = ? WHERE id = ?');

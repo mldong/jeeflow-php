@@ -34,6 +34,9 @@ interface ProcessRepositoryInterface
     /** 删除流程定义 */
     public function removeDefine(int|string $id): void;
 
+    /** 该定义下是否存在任何实例（含已办结/已撤回）——audit8 R110 删除守卫 */
+    public function hasInstancesByDefineId(int|string $id): bool;
+
     /** 更新定义状态（1 启用 / 0 停用） */
     public function updateDefineState(int|string $id, int $state): void;
 

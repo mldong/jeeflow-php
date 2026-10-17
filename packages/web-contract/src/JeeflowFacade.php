@@ -392,7 +392,14 @@ class JeeflowFacade
 
     private function defineRemove(array $args): array
     {
-        foreach ($this->idListArgs($args) as $id) {
+        $ids = $this->idListArgs($args);
+        // audit8 R110：先对整批做存在性校验再删，避免"前面的删了、后面的被拒"的半删。
+        foreach ($ids as $id) {
+            if ($this->repository->hasInstancesByDefineId($id)) {
+                throw new JeeflowException('存在正在未完成的流程实例，不允许删除！', 20010005);
+            }
+        }
+        foreach ($ids as $id) {
             $this->repository->removeDefine($id);
         }
         return $this->ok();

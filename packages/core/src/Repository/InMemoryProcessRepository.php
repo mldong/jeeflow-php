@@ -74,6 +74,16 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         unset($this->defines[(string) $id]);
     }
 
+    public function hasInstancesByDefineId(int|string $id): bool
+    {
+        foreach ($this->instances as $inst) {
+            if ((string) $inst->getDefineId() === (string) $id) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public function updateDefineState(int|string $id, int $state): void
     {
         $id = (string) $id;

@@ -110,6 +110,30 @@ class JeeflowFacadeTest extends TestCase
         $this->assertEquals(99999999, $result['code']);
     }
 
+    public function testR110DefineRemoveAnyInstanceGuard(): void
+    {
+        $defineId = $this->deploySimpleFlow();
+        $r = $this->facade->flow('processInstance/startAndExecute',
+            ['processDefineId' => $defineId, 'operator' => 'zhangsan']);
+        $this->assertEquals(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+
+        $msg = '存在正在未完成的流程实例，不允许删除！';
+        $r = $this->facade->flow('processDefine/remove', ['id' => $defineId]);
+        $this->assertEquals(99999999, $r['code']);
+        $this->assertSame($msg, $r['msg']);
+        $this->assertEquals(0, $this->facade->flow('processDefine/detail', ['id' => $defineId])['code']);
+
+        $clean = $this->deploySimpleFlow();
+        $r = $this->facade->flow('processDefine/remove', ['ids' => [$clean, $defineId]]);
+        $this->assertEquals(99999999, $r['code']);
+        $this->assertSame($msg, $r['msg']);
+        $this->assertEquals(0, $this->facade->flow('processDefine/detail', ['id' => $clean])['code']);
+        $this->assertEquals(0, $this->facade->flow('processDefine/detail', ['id' => $defineId])['code']);
+
+        $this->assertEquals(0, $this->facade->flow('processDefine/remove', ['id' => $clean])['code']);
+        $this->assertEquals(99999999, $this->facade->flow('processDefine/detail', ['id' => $clean])['code']);
+    }
+
     public function testDefineUpAndDown(): void
     {
         $defineId = $this->deploySimpleFlow();
