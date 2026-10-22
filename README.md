@@ -20,7 +20,7 @@ docs/                  文档
 
 ## 环境要求
 
-- PHP 8.1+
+- PHP 8.2+
 - Composer 2.x
 - MySQL 5.7+（PDO 模块）
 

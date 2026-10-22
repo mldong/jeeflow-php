@@ -8,7 +8,7 @@
 composer require mldong/jeeflow-php
 ```
 
-引擎核心零框架依赖（纯 PHP 8.1+），只需 `psr/http-message` 接口。
+引擎核心零框架依赖（纯 PHP 8.2+），只需 `psr/http-message` 接口。
 
 ## 最小示例（内存模式，5 行跑起来）
 
