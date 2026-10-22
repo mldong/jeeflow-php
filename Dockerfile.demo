@@ -1,11 +1,15 @@
 # jeeflow-php demo Docker 镜像
-FROM php:8.1-cli
+FROM php:8.4.27-cli
 
 # 安装 Composer + PHP 扩展（zip 为 composer download 所需）
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 RUN apt-get update -qq && apt-get install -y -qq libzip-dev unzip > /dev/null 2>&1 \
     && docker-php-ext-install zip > /dev/null 2>&1 \
     && rm -rf /var/lib/apt/lists/*
+
+# PHP2Shell（CVE-2026-109618/109619）硬化；完整修复仍以 PHP 版本为准
+RUN printf 'expose_php=Off\ndisplay_errors=Off\nlog_errors=On\nsession.upload_progress.enabled=0\n' \
+    > /usr/local/etc/php/conf.d/zz-security.ini
 
 WORKDIR /app
 
@@ -24,10 +28,13 @@ COPY flows /app/flows
 RUN cd /app/demo-slim && composer install --no-dev --no-scripts --no-interaction
 
 # 初始化 SQLite 数据库 + 部署示例流程
-RUN cd /app/demo-slim && php bin/demo-init.php
+RUN cd /app/demo-slim && php bin/demo-init.php \
+    && chown -R www-data:www-data /app/demo-slim/data
 
 EXPOSE 8090
 
+WORKDIR /app/demo-slim
+USER www-data
+
 # php -S 必须绑定 0.0.0.0（容器内 localhost 外部不可达）
 CMD ["php", "-S", "0.0.0.0:8090", "-t", "public"]
-WORKDIR /app/demo-slim
