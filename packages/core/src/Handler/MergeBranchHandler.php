@@ -25,22 +25,8 @@ class MergeBranchHandler implements HandlerInterface
 
     public function handle(Execution $execution): void
     {
-        $instance = $execution->getProcessInstance();
-        $doingTasks = $instance->getDoingTasks();
-        $execution->setMerged(empty($doingTasks));
-
-        if (!$execution->isMerged()) {
-            $hasActive = false;
-            foreach ($this->joinModel->getInputs() as $input) {
-                $sourceName = $input->getSource()->getName();
-                foreach ($doingTasks as $task) {
-                    if ($sourceName === $task->getTaskName()) {
-                        $hasActive = true;
-                        break 2;
-                    }
-                }
-            }
-            $execution->setMerged(!$hasActive);
-        }
+        $execution->setMerged(\Jeeflow\Core\Support\ReapplySupport::mergeReady(
+            $execution->getProcessInstance(), $this->joinModel,
+            (string) ($execution->getProcessTaskId() ?? $execution->getProcessTask()?->getTaskId() ?? '')));
     }
 }

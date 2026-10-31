@@ -69,6 +69,9 @@ class CreateTaskHandler implements HandlerInterface
             $tasks = [$task];
         }
 
+        \Jeeflow\Core\Support\ReapplySupport::attachScopes(
+            $model, $instance, $tasks, $this->taskModel->getName(),
+            (string) ($execution->getProcessTaskId() ?? ''));
         $execution->addTasks($tasks);
     }
 

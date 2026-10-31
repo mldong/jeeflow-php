@@ -30,6 +30,7 @@ class TaskModel extends NodeModel
     private string $candidateHandler = '';
     private ?int $countersignType = null;
     private string $countersignCompletionCondition = '';
+    private string $reapplyMode = 'NORMAL';
 
     public function __construct()
     {
@@ -95,4 +96,6 @@ class TaskModel extends NodeModel
     public function setCountersignType(?int $v): void { $this->countersignType = $v; }
     public function getCountersignCompletionCondition(): string { return $this->countersignCompletionCondition; }
     public function setCountersignCompletionCondition(string $v): void { $this->countersignCompletionCondition = $v; }
+    public function getReapplyMode(): string { return $this->reapplyMode; }
+    public function setReapplyMode(string $v): void { $this->reapplyMode = $v; }
 }

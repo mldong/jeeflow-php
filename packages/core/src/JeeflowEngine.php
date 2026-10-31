@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Jeeflow\Core;
 
 use Jeeflow\Core\Domain\FlowData;
+use Jeeflow\Core\Enum\ProcessTaskState;
+use Jeeflow\Core\Handler\CreateTaskHandler;
+use Jeeflow\Core\Support\ReapplySupport;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\FlowConst;
@@ -167,6 +170,11 @@ class JeeflowEngine implements JeeflowEngineInterface
     public function executeProcessTask(string $taskId, string $operator, ?FlowData $args = null): array
     {
         return $this->inTx(function () use ($taskId, $operator, $args) {
+            $args = ReapplySupport::stripReserved($args);
+            $pre = $this->repository->findTaskById($taskId);
+            if ($pre !== null && $pre->isDoing() && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
+                return $this->executeReapply($pre, $operator, $args);
+            }
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
@@ -190,6 +198,11 @@ class JeeflowEngine implements JeeflowEngineInterface
     public function executeAndJumpTask(string $taskId, string $operator, ?FlowData $args = null, ?string $nodeName = null): array
     {
         return $this->inTx(function () use ($taskId, $operator, $args, $nodeName) {
+            $pre = $this->repository->findTaskById($taskId);
+            if ($pre !== null && $pre->isDoing()
+                && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
+                throw new JeeflowException("带重提直返标记的申请待办不允许跳转，只接受重新提交(submitType=5)");
+            }
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
@@ -224,6 +237,11 @@ class JeeflowEngine implements JeeflowEngineInterface
     public function executeAndJumpToEnd(string $taskId, string $operator, ?FlowData $args = null): array
     {
         return $this->inTx(function () use ($taskId, $operator, $args) {
+            $pre = $this->repository->findTaskById($taskId);
+            if ($pre !== null && $pre->isDoing()
+                && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
+                throw new JeeflowException("带重提直返标记的申请待办不允许拒绝，只接受重新提交(submitType=5)");
+            }
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
@@ -241,9 +259,63 @@ class JeeflowEngine implements JeeflowEngineInterface
     public function executeAndJumpToFirstTaskNode(string $taskId, string $operator, ?FlowData $args = null): array
     {
         return $this->inTx(function () use ($taskId, $operator, $args) {
+            $args = ReapplySupport::stripReserved($args);
+            // 校验放在任何状态变更之前：来源节点配了 RETURN_TO_SOURCE 时，先读模型判准入
+            $pre = $this->repository->findTaskById($taskId);
+            if ($pre !== null && $pre->isDoing()
+                && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
+                throw new JeeflowException("带重提直返标记的申请待办不允许再次退回，只接受重新提交(submitType=5)");
+            }
+            $sourceModel = null;
+            $direct = false;
+            if ($pre !== null && $pre->isDoing()) {
+                $preInst = $this->repository->findInstanceById($pre->getProcessInstanceId());
+                $preDef = $preInst !== null ? $this->repository->findDefineById($preInst->getDefineId()) : null;
+                if ($preDef !== null) {
+                    $preModel = ModelParser::parse((string) $preDef['content']);
+                    $node = $preModel->getNode($pre->getTaskName());
+                    if ($node instanceof TaskModel) {
+                        $sourceModel = $node;
+                        $direct = ReapplySupport::parseMode($node->getReapplyMode(), $node->getName()) === ReapplySupport::RETURN_TO_SOURCE;
+                    }
+                }
+            }
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
+            if ($direct) {
+                if ($sourceModel->getPerformType() === \Jeeflow\Core\Enum\PerformType::COUNTERSIGN) {
+                    throw new JeeflowException("会签节点[{$sourceModel->getName()}]不支持退回修改直返");
+                }
+                if (FlowUtil::isFirstTaskName($model, $sourceModel->getName())) {
+                    throw new JeeflowException("申请节点[{$sourceModel->getName()}]不能配置重提直返");
+                }
+                $applyModel = null;
+                $start = $model->getStart();
+                if ($start !== null) {
+                    foreach ($start->getOutputs() as $tm) {
+                        if ($tm->getTarget() instanceof TaskModel
+                                && FlowUtil::isFirstTaskName($model, $tm->getTarget()->getName())) {
+                            $applyModel = $tm->getTarget();
+                            break;
+                        }
+                    }
+                }
+                if ($applyModel === null) {
+                    throw new JeeflowException('流程定义缺少申请节点，无法退回发起人');
+                }
+                $applyModel->setAssignee($exec->getProcessInstance()->getOperator());
+                $before = count($exec->getProcessTaskList());
+                (new CreateTaskHandler($applyModel))->handle($exec);
+                $created = array_slice($exec->getProcessTaskList(), $before);
+                $rc = ReapplySupport::newContext((string) $pre->getTaskId(), $sourceModel->getName(),
+                    ReapplySupport::scopesOf($pre->getVariables()));
+                foreach ($created as $nt) {
+                    $nt->getVariables()->set(ReapplySupport::VAR_REAPPLY_CTX, $rc);
+                }
+                $this->persistTasks($exec);
+                return $exec->getProcessTaskList();
+            }
             $start = $model->getStart();
             if ($start !== null) {
                 foreach ($start->getOutputs() as $tm) {
@@ -258,6 +330,51 @@ class JeeflowEngine implements JeeflowEngineInterface
             $this->persistTasks($exec);
             return $exec->getProcessTaskList();
         });
+    }
+
+    /**
+     * submitType=5 且申请待办带直返上下文：校验来源后在来源节点直接建新待办，
+     * 不执行申请节点出边、不重算来源前条件、不执行来源节点出边。
+     */
+    private function executeReapply(ProcessTask $applyTask, string $operator, ?FlowData $args): array
+    {
+        $st = $args?->get(FlowConst::SUBMIT_TYPE);
+        if ($st !== null && (int) $st !== 5) {
+            throw new JeeflowException('带重提直返标记的申请待办只接受重新提交(submitType=5)');
+        }
+        $instance = $this->repository->findInstanceById($applyTask->getProcessInstanceId());
+        if ($instance === null) throw new JeeflowException('流程实例不存在');
+        $define = $this->repository->findDefineById($instance->getDefineId());
+        if ($define === null) throw new JeeflowException('流程定义不存在');
+        $model = ModelParser::parse((string) $define['content']);
+        $rc = ReapplySupport::reapplyOf($applyTask->getVariables());
+        $sourceId = (string) ($rc['sourceTaskId'] ?? '');
+        $source = $sourceId !== '' ? $this->repository->findTaskById($sourceId) : null;
+        if ($source === null || $source->getTaskState() !== ProcessTaskState::FINISHED
+                || $source->getProcessInstanceId() !== $applyTask->getProcessInstanceId()) {
+            throw new JeeflowException('重提直返来源任务无效或未完成');
+        }
+        $sourceNode = $model->getNode($source->getTaskName());
+        if (!$sourceNode instanceof TaskModel
+                || ReapplySupport::parseMode($sourceNode->getReapplyMode(), $sourceNode->getName()) !== ReapplySupport::RETURN_TO_SOURCE) {
+            throw new JeeflowException('重提直返来源节点配置已变更，拒绝执行');
+        }
+        if (!FlowUtil::isFirstTaskName($model, $applyTask->getTaskName())) {
+            throw new JeeflowException('重提直返必须从申请待办发起');
+        }
+        $exec = $this->prepareExecution($applyTask->getTaskId(), $operator, $args);
+        if ($exec === null) return [];
+        // 遗留的下一节点指定人参数不得影响本次建单（历史记录不删）
+        $exec->getArgs()->remove(FlowConst::NEXT_NODE_OPERATOR);
+        $before = count($exec->getProcessTaskList());
+        (new CreateTaskHandler($sourceNode))->handle($exec);
+        $created = array_slice($exec->getProcessTaskList(), $before);
+        $branch = ReapplySupport::branchOf($rc);
+        foreach ($created as $nt) {
+            $nt->getVariables()->set(ReapplySupport::VAR_BRANCH_CTX, $branch);
+        }
+        $this->persistTasks($exec);
+        return $exec->getProcessTaskList();
     }
 
     // ═══ 内部方法 ═══
@@ -338,6 +455,20 @@ class JeeflowEngine implements JeeflowEngineInterface
         // 之后逐任务 fire PROCESS_TASK_START（对齐 Java JeeflowEngineImpl.persistTasks）。
         foreach ($exec->getProcessTaskList() as $task) {
             $this->saveNewTask($exec, $task);
+        }
+        // 分支根任务建单时 taskId 尚未生成（由仓储 saveTask 分配）⇒ 落库后回填 _branchCtx.root
+        foreach ($exec->getProcessTaskList() as $task) {
+            $scopes = ReapplySupport::scopesOf($task->getVariables());
+            $changed = false;
+            if ($task->getTaskId() !== null) {
+                foreach ($scopes as $i => $sc) {
+                    if (($sc['root'] ?? '') === '') { $scopes[$i]['root'] = (string) $task->getTaskId(); $changed = true; }
+                }
+            }
+            if ($changed) {
+                $task->getVariables()->set(ReapplySupport::VAR_BRANCH_CTX, $scopes);
+                $this->repository->updateTask($task);
+            }
         }
         // 记录类（snaker:custom）历史行落库（排在 updateInstance 之前——那边的级联只 UPDATE
         // 已存在的行，先 INSERT 才不会把 DONE 行漏成"内存里有、库里没有"）

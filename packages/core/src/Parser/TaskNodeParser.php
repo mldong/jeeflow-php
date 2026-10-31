@@ -30,6 +30,9 @@ class TaskNodeParser extends AbstractNodeParser
         $model->setExpireTime((string) ($p[self::EXPIRE_TIME_KEY] ?? ''));
         $model->setAutoExecute((string) ($p[self::AUTO_EXECUTE_KEY] ?? ''));
         $model->setCallback((string) ($p[self::CALLBACK_KEY] ?? ''));
+        // 退回发起人后的重提方式：缺省 NORMAL，非法值报配置错误
+        $model->setReapplyMode(\Jeeflow\Core\Support\ReapplySupport::parseMode(
+            (string) ($p[\Jeeflow\Core\Support\ReapplySupport::PROP_REAPPLY_MODE] ?? ''), $model->getName()));
         // ext 字段
         $ext = FlowData::create();
         $field = $p[self::EXT_FIELD_KEY] ?? null;
