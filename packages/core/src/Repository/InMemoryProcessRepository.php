@@ -13,6 +13,7 @@ use Jeeflow\Core\Spi\InMemoryIdGenerator;
 use Jeeflow\Core\Spi\PageQuery;
 use Jeeflow\Core\Spi\PageResult;
 use Jeeflow\Core\Spi\ProcessRepositoryInterface;
+use Jeeflow\Core\Support\ReapplySupport;
 use Jeeflow\Core\Util\CcActorUtil;
 use Jeeflow\Core\Util\FormDataUtil;
 
@@ -564,8 +565,9 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
         $instanceExt = $inst !== null ? ($inst->getVariables()->toArray() ?: []) : [];
         $ext = $task->getVariables()->toArray();
         // issues/121 P1：引擎建单必写的控制键不算「任务变量非空」，否则新建任务的 ext
-        // 永远不再回退实例变量（issues/82-3 既有契约）。
-        if (array_diff_key($ext, ['isFirstTaskNode' => 1]) === []) $ext = $instanceExt;
+        // 永远不再回退实例变量（issues/82-3 既有契约）。控制键集合含 spec 04 的两枚直返保留键，
+        // 判据与 PDO 仓同源（ReapplySupport::projectTaskExt，单点）。
+        $ext = ReapplySupport::projectTaskExt($ext, $instanceExt);
         $row = [
             'id' => $task->getTaskId(),
             'processInstanceId' => $task->getProcessInstanceId(),

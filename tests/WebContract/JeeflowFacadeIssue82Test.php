@@ -9,6 +9,7 @@ use Jeeflow\Core\Repository\InMemoryProcessExtRepository;
 use Jeeflow\Core\Repository\InMemoryProcessRepository;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\TransactionTemplateInterface;
+use Jeeflow\Core\Support\ReapplySupport;
 use Jeeflow\WebContract\JeeflowFacade;
 use PHPUnit\Framework\TestCase;
 
@@ -93,6 +94,56 @@ class JeeflowFacadeIssue82Test extends TestCase
         $this->assertIsArray($row['ext'] ?? null, '任务行应含 ext 容器: ' . json_encode($row, JSON_UNESCAPED_UNICODE));
         $this->assertSame('unit-test', $row['ext']['f_applyReason'], 'ext 空时应回退实例变量');
         $this->assertNotNull($row['version'] ?? null, '任务行应含 version: ' . json_encode($row, JSON_UNESCAPED_UNICODE));
+    }
+
+    /**
+     * spec 04 保留键 × issues/82-3 回退：直返申请待办那一格。
+     *
+     * 建单现在会往每条任务变量写 `_branchCtx`（空分支也写 []），而 `_reapplyContext` 只出现在
+     * 直返申请待办上。两枚都必须算进「引擎控制键」，否则 ① 每条任务行不再回退实例变量、
+     * ② 内部键从公开出口透出（本轮八栈齐漏，本栈靠上面三条既有用例报红才现形）。
+     * 但 `_reapplyContext` 是前端「重新提交后返回：X」的唯一取数口（jeeflow-ui helpers.ts 读
+     * ext._reapplyContext）⇒ 回退后要原样合回，且不得污染同一行的 instanceExt 出口。
+     */
+    public function testReapplyApplicantRowExtCarriesContextWithoutInternalKey(): void
+    {
+        $json = file_get_contents(jeeflow_flows_dir() . '/14-return-to-source.json');
+        $this->assertNotFalse($json, '缺少流程 fixture: 14-return-to-source.json');
+        $r = $this->facade->flow('processDefine/deploy', ['content' => $json, 'operator' => 'applicant']);
+        $this->assertSame(0, $r['code'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $r1 = $this->facade->flow('processInstance/startAndExecute', [
+            'processDefineId' => $r['data']['processDefineId'], 'operator' => 'applicant',
+        ]);
+        $this->assertSame(0, $r1['code'], json_encode($r1, JSON_UNESCAPED_UNICODE));
+        $iid = $r1['data']['processInstanceId'];
+
+        $taskA = $this->doingTaskId($iid, 'taskA');
+        $rRet = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $taskA, 'operator' => 'userA', 'submitType' => 6,
+        ]);
+        $this->assertSame(0, $rRet['code'], json_encode($rRet, JSON_UNESCAPED_UNICODE));
+
+        $todo = $this->facade->flow('processTask/todoList', ['operator' => 'applicant', 'pageSize' => 100]);
+        $this->assertSame(0, $todo['code'], json_encode($todo, JSON_UNESCAPED_UNICODE));
+        $marked = array_values(array_filter($todo['data']['rows'], static function (array $row): bool {
+            return is_array($row['ext'] ?? null)
+                && array_key_exists(ReapplySupport::VAR_REAPPLY_CTX, $row['ext']);
+        }));
+        $this->assertNotEmpty($marked, '直返申请待办的 ext 应带 _reapplyContext（前端提示的取数口）: '
+            . json_encode($todo['data']['rows'], JSON_UNESCAPED_UNICODE));
+        $row = $marked[0];
+
+        $this->assertArrayNotHasKey(ReapplySupport::VAR_BRANCH_CTX, $row['ext'],
+            '内部键 _branchCtx 不得从 ext 透出: ' . json_encode($row['ext'], JSON_UNESCAPED_UNICODE));
+        $this->assertNotEmpty($row['instanceExt'], '前置：instanceExt 必须非空，否则下面的回退断言恒真空');
+        foreach ($row['instanceExt'] as $k => $v) {
+            $this->assertArrayHasKey($k, $row['ext'], "回退仍要发生：实例变量键 {$k} 应在 ext 上");
+        }
+        $this->assertSame('taskA', $row['ext'][ReapplySupport::VAR_REAPPLY_CTX]['sourceNode'] ?? null,
+            '来源节点应可读（前端提示就取这一格）');
+        $this->assertArrayNotHasKey(ReapplySupport::VAR_REAPPLY_CTX, $row['instanceExt'],
+            '合回不得污染同一响应里的 instanceExt 出口: '
+            . json_encode($row['instanceExt'], JSON_UNESCAPED_UNICODE));
     }
 
     /**

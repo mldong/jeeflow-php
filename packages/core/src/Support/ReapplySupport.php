@@ -47,6 +47,31 @@ final class ReapplySupport
         return $args;
     }
 
+    /**
+     * 任务行 ext 的出口投影（issues/82-3 / 121 P1 判据体）：任务变量只剩引擎建单必写的控制键
+     * ⇒ 回退实例变量。控制键集合除行级首节点标记外，还含 spec 04 的两枚直返保留键
+     * （`_branchCtx`／`_reapplyContext`，建单时无条件写入、空分支也写 []）——不认它们，
+     * 每条任务行都从此不再回退、且内部键直接从公开出口透出（本轮八栈齐漏，只有本栈的
+     * 内容级用例报红；内存仓与 PDO 仓两处出口共用这一枚判据，严禁第二份判据）。
+     *
+     * `_reapplyContext` 是前端「重新提交后返回：X」的唯一取数口（jeeflow-ui helpers.ts 读
+     * ext._reapplyContext）⇒ 回退后原样合回。合回落在**副本**上：instanceExt 是同一响应里
+     * 的另一个出口，不能被任务侧的键污染。
+     *
+     * @param array<string,mixed> $taskVars    任务变量
+     * @param array<string,mixed> $instanceExt 实例变量
+     * @return array<string,mixed>
+     */
+    public static function projectTaskExt(array $taskVars, array $instanceExt): array
+    {
+        $control = ['isFirstTaskNode' => 1, self::VAR_BRANCH_CTX => 1, self::VAR_REAPPLY_CTX => 1];
+        if (array_diff_key($taskVars, $control) !== []) return $taskVars;
+        if (array_key_exists(self::VAR_REAPPLY_CTX, $taskVars)) {
+            $instanceExt[self::VAR_REAPPLY_CTX] = $taskVars[self::VAR_REAPPLY_CTX];
+        }
+        return $instanceExt;
+    }
+
     // ─── 模型静态分析 ────────────────────────────────────────────────────────
 
     /** @return NodeModel[] 从节点沿出边可达的节点 */
