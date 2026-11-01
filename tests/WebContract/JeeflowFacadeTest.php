@@ -904,4 +904,86 @@ class JeeflowFacadeTest extends TestCase
         $this->assertEquals(0, $result['code']);
         $this->assertArrayHasKey('processInstanceId', $result['data']);
     }
+
+    // ── issues/241：直返重提后 highLight 不得按当前实例变量重算来源前的条件分支 ──
+    //
+    // 决策节点的入边来源刻意放成 join（网关不产任务行）：任务行快照实例变量的栈
+    // 在「任务行前置」夹具上会被旧的最老行合并偶然救活，join 入边让那条通道失效。
+    public function testHighLightAfterReapplyDoesNotLightUnvisitedBranch241(): void
+    {
+        ServiceContext::put(ExpressionEvaluatorInterface::class, new SimpleExpressionEvaluator());
+        $flow = [
+            'name' => 'i241-return-highlight-join',
+            'displayName' => '直返重提高亮（汇合后分支）',
+            'type' => 'approval',
+            'nodes' => [
+                ['id' => 'start', 'type' => 'snaker:start'],
+                ['id' => 'apply', 'type' => 'snaker:task', 'properties' => ['assignee' => 'applicant', 'taskType' => 0, 'performType' => 0]],
+                ['id' => 'fork1', 'type' => 'snaker:fork', 'properties' => []],
+                ['id' => 'taskA', 'type' => 'snaker:task', 'properties' => ['assignee' => 'userA', 'taskType' => 0, 'performType' => 0]],
+                ['id' => 'taskB', 'type' => 'snaker:task', 'properties' => ['assignee' => 'userB', 'taskType' => 0, 'performType' => 0]],
+                ['id' => 'join1', 'type' => 'snaker:join', 'properties' => []],
+                ['id' => 'decision1', 'type' => 'snaker:decision', 'properties' => ['expr' => 'f_amount > 1000']],
+                ['id' => 'taskHigh', 'type' => 'snaker:task', 'properties' => ['assignee' => 'director', 'taskType' => 0, 'performType' => 0, 'reapplyMode' => 'RETURN_TO_SOURCE']],
+                ['id' => 'taskLow', 'type' => 'snaker:task', 'properties' => ['assignee' => 'manager', 'taskType' => 0, 'performType' => 0]],
+                ['id' => 'end', 'type' => 'snaker:end'],
+            ],
+            'edges' => [
+                ['id' => 'e0', 'sourceNodeId' => 'start', 'targetNodeId' => 'apply', 'properties' => []],
+                ['id' => 'e1', 'sourceNodeId' => 'apply', 'targetNodeId' => 'fork1', 'properties' => []],
+                ['id' => 'e2', 'sourceNodeId' => 'fork1', 'targetNodeId' => 'taskA', 'properties' => []],
+                ['id' => 'e3', 'sourceNodeId' => 'fork1', 'targetNodeId' => 'taskB', 'properties' => []],
+                ['id' => 'e4', 'sourceNodeId' => 'taskA', 'targetNodeId' => 'join1', 'properties' => []],
+                ['id' => 'e5', 'sourceNodeId' => 'taskB', 'targetNodeId' => 'join1', 'properties' => []],
+                ['id' => 'e6', 'sourceNodeId' => 'join1', 'targetNodeId' => 'decision1', 'properties' => []],
+                ['id' => 'e7', 'sourceNodeId' => 'decision1', 'targetNodeId' => 'taskHigh', 'properties' => ['expr' => 'f_amount > 1000']],
+                ['id' => 'e8', 'sourceNodeId' => 'decision1', 'targetNodeId' => 'taskLow', 'properties' => ['expr' => 'f_amount <= 1000']],
+                ['id' => 'e9', 'sourceNodeId' => 'taskHigh', 'targetNodeId' => 'end', 'properties' => []],
+                ['id' => 'e10', 'sourceNodeId' => 'taskLow', 'targetNodeId' => 'end', 'properties' => []],
+            ],
+        ];
+        $deploy = $this->facade->flow('processDefine/deploy', ['content' => json_encode($flow), 'operator' => 'zhangsan']);
+        $this->assertEquals(0, $deploy['code'], json_encode($deploy, JSON_UNESCAPED_UNICODE));
+        $defineId = $deploy['data']['processDefineId'];
+        $start = $this->facade->flow('processDefine/startAndExecute', [
+            'processDefineId' => $defineId, 'operator' => 'zhangsan', 'f_amount' => 6666,
+        ]);
+        $this->assertEquals(0, $start['code'], json_encode($start, JSON_UNESCAPED_UNICODE));
+        $iid = $start['data']['processInstanceId'];
+
+        foreach (['userA', 'userB'] as $actor) {
+            $todo = $this->facade->flow('processTask/todoList', ['operator' => $actor]);
+            $this->assertGreaterThanOrEqual(1, $todo['data']['recordCount'], $actor . ' 应有并行分支待办');
+            $exec = $this->facade->flow('processTask/execute', [
+                'processTaskId' => $todo['data']['rows'][0]['id'],
+                'operator' => $actor, 'submitType' => SubmitType::AGREE,
+            ]);
+            $this->assertEquals(0, $exec['code'], json_encode($exec, JSON_UNESCAPED_UNICODE));
+        }
+        $highTodo = $this->facade->flow('processTask/todoList', ['operator' => 'director']);
+        $this->assertGreaterThanOrEqual(1, $highTodo['data']['recordCount'], '汇合后 6666 应走 taskHigh');
+        $ret = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $highTodo['data']['rows'][0]['id'],
+            'operator' => 'director', 'submitType' => SubmitType::ROLLBACK_TO_OPERATOR,
+        ]);
+        $this->assertEquals(0, $ret['code'], json_encode($ret, JSON_UNESCAPED_UNICODE));
+        $applyTodo = $this->facade->flow('processTask/todoList', ['operator' => 'zhangsan']);
+        $this->assertGreaterThanOrEqual(1, $applyTodo['data']['recordCount'], '退回后应有申请待办');
+        $reapply = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $applyTodo['data']['rows'][0]['id'],
+            'operator' => 'zhangsan', 'submitType' => SubmitType::RE_APPLY, 'f_amount' => 666,
+        ]);
+        $this->assertEquals(0, $reapply['code'], json_encode($reapply, JSON_UNESCAPED_UNICODE));
+
+        $hl = $this->facade->flow('processInstance/highLight', ['id' => $iid]);
+        $this->assertEquals(0, $hl['code'], json_encode($hl, JSON_UNESCAPED_UNICODE));
+        $edges = $hl['data']['historyEdgeNames'];
+        $nodes = $hl['data']['historyNodeNames'];
+        $this->assertContains('e7', $edges, '汇合后的实际分支 e7 必须点亮（实际 ' . json_encode($edges) . '）');
+        $this->assertNotContains('e8', $edges, '未走分支 e8 不得点亮');
+        $this->assertNotContains('e10', $edges, '未走分支 e10 不得点亮');
+        $this->assertNotContains('taskLow', $nodes, '未走节点 taskLow 不得进历史');
+        $this->assertNotContains('end', $nodes, '未走节点 end 不得进历史');
+    }
+
 }

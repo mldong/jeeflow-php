@@ -1152,11 +1152,13 @@ class JeeflowFacade
         if (in_array($node->getName(), $visited, true)) return;
         $visited[] = $node->getName();
 
-        foreach ($node->getOutputs() as $tm) {
-            if ($node instanceof DecisionModel && $tm->getExpr() !== ''
-                && !$this->evalDecisionExpr($node, $tm, $instanceVars, $historyTasks)) {
-                continue;
-            }
+        $outputs = $node->getOutputs();
+        // issues/241：决策节点选边以任务行佐证为准（活跃目标 → 有任务行的目标），
+        // 一条佐证都没有才回落到按当前实例变量求值
+        if ($node instanceof DecisionModel) {
+            $outputs = $this->selectDecisionOutputs($node, $outputs, $active, $instanceVars, $historyTasks);
+        }
+        foreach ($outputs as $tm) {
             $edgeName = $tm->getName();
             if ($edgeName !== '' && !in_array($edgeName, $edges, true)) {
                 $edges[] = $edgeName;
@@ -1170,6 +1172,56 @@ class JeeflowFacade
             if (in_array($next->getName(), $active, true)) continue; // 遇活跃节点停止深入
             $this->collectPath($next, $active, $history, $edges, $visited, $instanceVars, $historyTasks);
         }
+    }
+
+    /**
+     * issues/241：决策节点选边——先按表达式求值（issues/06/153 旧口径），
+     * **当表达式给出的非空结果与任务行佐证相矛盾时，以任务行为准**；求值失败/零命中时保持
+     * 既有降级面（issues/164/201 的口径不被本规则改写）。
+     *
+     * 直返单（reapplyMode=RETURN_TO_SOURCE）重提后实例变量已按新值落库，而来源节点之前的
+     * 条件分支按契约不重算；按当前变量重放会选出没走过的分支，走过的分支在任务表里有行
+     * （活跃目标也算）——这是执行事实。
+     *
+     * @param TransitionModel[] $outputs
+     * @param string[]          $active
+     * @param ProcessTask[]     $historyTasks
+     * @return TransitionModel[]
+     */
+    private function selectDecisionOutputs(DecisionModel $decision, array $outputs, array $active,
+                                           FlowData $instanceVars, array $historyTasks): array
+    {
+        $selected = [];
+        foreach ($outputs as $tm) {
+            if ($tm->getExpr() === '' || $this->evalDecisionExpr($decision, $tm, $instanceVars, $historyTasks)) {
+                $selected[] = $tm;
+            }
+        }
+        if ($selected === []) return $selected;
+        $taskNames = [];
+        foreach ($historyTasks as $t) {
+            $taskNames[$t->getTaskName()] = true;
+        }
+        foreach ($selected as $tm) {
+            $target = $tm->getTarget();
+            if ($target === null) continue;
+            $name = $target->getName();
+            if (in_array($name, $active, true) || isset($taskNames[$name])) {
+                return $selected; // 表达式与执行事实一致，维持原口径
+            }
+        }
+        $activeHits = [];
+        $evidenced = [];
+        foreach ($outputs as $tm) {
+            $target = $tm->getTarget();
+            if ($target === null) continue;
+            $name = $target->getName();
+            if (in_array($name, $active, true)) $activeHits[] = $tm;
+            if (isset($taskNames[$name])) $evidenced[] = $tm;
+        }
+        if ($activeHits !== []) return $activeHits;
+        if ($evidenced !== []) return $evidenced;
+        return $selected;
     }
 
     /**
