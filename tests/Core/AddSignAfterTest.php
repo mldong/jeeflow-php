@@ -578,12 +578,13 @@ final class AddSignAfterTest extends TestCase
      * `NodeModel::canRejected()` 跨不过去 ⇒ 由既有 20010008 守卫拦下（与 go／node／rust／
      * c#／moon 同判据，逐字文案一致）。java 参考实现只到第 16 格，本格是跨语言对齐格。
      *
-     * ⚠️ 本格钉的是**本栈真实的后状态**（issues/243 登记的既有位序，不是本格的判据）：
-     * {@see JeeflowEngine::executeAndJumpTask()} 与 java 参考实现同形，守卫排在
-     * `prepareExecution`（内含 `instance->completeTask`）**之后**；内存仓储没有事务回滚
-     * （测试档未注册 TransactionTemplateInterface ⇒ `inTx` 直跑闭包）⇒ 被拦下的那次提交已把
-     * userB 那行落成 FINISHED(20)，但**复活行一条都不建**。真库腿由外层事务回滚兜住，
-     * 不在本格观察面内。
+     * ⚠️ 本格同时钉**文案**与**报错零写入**（issues/243 甲案，2026-11-03 落地）：血缘守卫
+     * {@see \Jeeflow\Core\Domain\ProcessInstance::checkRejectable()} 由引擎排在
+     * {@see JeeflowEngine::prepareExecution()}（内含 `instance->completeTask`，会把当前行办结并
+     * `updateTask` 落库）**之前**，所以内存仓储（无回滚，测试档未注册 TransactionTemplateInterface
+     * ⇒ `inTx` 直跑闭包）里报错后当前行仍是 DOING(10)、待办还在 userB 手里、一行都不多。
+     * 修前的形状是"点了退回、报错了、待办也没了"（当前行被静默落成 FINISHED(20)、复活行不建）；
+     * 真库腿由外层事务整笔回滚，两种位序都照不出差别——这一档只有内存仓储照得出来。
      */
     public function test17RollbackOnChainRejected(): void
     {
@@ -598,6 +599,7 @@ final class AddSignAfterTest extends TestCase
             '前置条件：userB 那条的血缘前驱就是同节点的 userA 那条');
         $this->assertSame(2, $this->rows($iid, 'review'), '加签后本节点两行（一办结一进行中）');
         $this->assertSame(1, $this->doingCount($iid, 'review'));
+        $totalRows = count($this->repo->findHistoryTasks($iid));
 
         try {
             $this->engine->executeAndJumpTask((string) $b->getTaskId(), 'userB',
@@ -613,11 +615,19 @@ final class AddSignAfterTest extends TestCase
 
         $this->assertNull($this->doing($iid, 'final'), '守卫不过不得流出本节点');
         $this->assertSame(2, $this->rows($iid, 'review'), '不得复活出第三条同节点行（零幽灵待办）');
-        $this->assertSame(0, $this->doingCount($iid, 'review'), '报错后本节点一条待办都不留');
-        $this->assertTrue($this->repo->findTaskById((string) $b->getTaskId())?->isFinished(),
-            '本栈形状：守卫排在办结之后 ⇒ userB 那行已 FINISHED（内存仓储无回滚，issues/243）');
+        // issues/243 甲案：守卫排在 prepareExecution 之前 ⇒ 报错那一次零写入（修前这里是 0，待办凭空消失）
+        $this->assertSame(1, $this->doingCount($iid, 'review'), '报错零写入：当前行必须仍是待办');
+        $this->assertTrue($this->repo->findTaskById((string) $b->getTaskId())?->isDoing(),
+            'userB 那行没被这次失败的提交办结');
+        $stillDoing = $this->doing($iid, 'review');
+        $this->assertNotNull($stillDoing, '待办还在办理人手里');
+        $this->assertSame((string) $b->getTaskId(), (string) $stillDoing->getTaskId(),
+            '还是报错那一条，不是新建的行');
+        $this->assertSame(['userB'], [$this->firstActor($stillDoing)], '办理人没换、也没被摘掉');
+        $this->assertSame($totalRows, count($this->repo->findHistoryTasks($iid)),
+            '报错不建单：实例下任务行总数不变');
         $this->assertSame(ProcessInstanceState::DOING, $this->repo->findInstanceById($iid)?->getState(),
-            '实例仍进行中（未落终态）');
+            '实例状态不受这次失败影响（仍进行中、未落终态）');
     }
 
     /** 实例变量出现任何 tf_ 键即红（test15 的逐键判据体，判据只在 AddSignSupport 之外这一处用）。 */

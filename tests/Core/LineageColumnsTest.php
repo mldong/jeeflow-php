@@ -6,6 +6,7 @@ namespace Jeeflow\Tests\Core;
 
 use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Enum\FlowConst;
+use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\JeeflowEngine;
@@ -77,7 +78,11 @@ class LineageColumnsTest extends TestCase
 
     /**
      * issues/121 P2 血缘版回退：正向复活 parent 行（落点/参与者/随行拷贝/残留剔除），
-     * 两格负向（20010007 无血缘含老行 None、20010008 血缘前驱跨不过 fork）。
+     * 三格负向（20010007 无血缘／20010008 血缘前驱跨不过 fork／20010008 血缘前驱指向并行旁支）。
+     *
+     * issues/243 甲案：两档守卫（{@see \Jeeflow\Core\Domain\ProcessInstance::checkRejectable()}）
+     * 由引擎排在任何状态变更之前 ⇒ 三格负向同时钉**报错即零写入**（当前行仍 DOING、
+     * 待办还在原办理人手里、实例状态不变、任务行总数不变、没有复活行）。
      */
     public function testRollbackRevivesParentRowAndNegatives(): void
     {
@@ -111,8 +116,10 @@ class LineageColumnsTest extends TestCase
         // ── 负向 1：无血缘（发起那条 parent 为 '0'）⇒ 必须报错，不得静默不建单。
         // 另起一条实例：上面那次正向回退已把 apply/task2 办结，复用会先撞到"任务不在进行中"。
         $inst0 = $this->engine->startProcessInstanceById('121', 'user1', FlowData::create());
-        $apply0 = $this->doing((string) $inst0->getInstanceId(), 'apply');
+        $iid0 = (string) $inst0->getInstanceId();
+        $apply0 = $this->doing($iid0, 'apply');
         $this->assertSame('0', (string) $apply0->getParentTaskId(), '前置条件：发起那条 parent 应为 0');
+        $rows0 = count($this->repo->findHistoryTasks($iid0));
         $e1 = null;
         try {
             $this->engine->executeAndJumpTask($apply0->getTaskId(), 'user1',
@@ -121,6 +128,31 @@ class LineageColumnsTest extends TestCase
         $this->assertNotNull($e1, '无血缘必须报错，不得静默不建单');
         $this->assertStringContainsString('上一步任务ID为空，无法驳回至上一步处理', $e1->getMessage(), '实得: ' . $e1->getMessage());
         $this->assertStringNotContainsString('2001000', $e1->getMessage(), 'msg 不得带引擎内部码');
+        // issues/243 甲案：血缘守卫排在 prepareExecution（内含 completeTask + updateTask）之前
+        // ⇒ 报错那一次零写入——当前待办仍在办理人手里、行数不变、没有凭空多出的复活行。
+        $this->assertNotNull($this->doing($iid0, 'apply'), '报错后当前待办必须仍是 DOING');
+        $this->assertTrue($this->repo->findTaskById($apply0->getTaskId())?->isDoing(),
+            '报错的那一条还是它自己，没被静默办结');
+        $this->assertSame($rows0, count($this->repo->findHistoryTasks($iid0)), '报错不建单：任务行总数不变');
+        $this->assertSame(ProcessInstanceState::DOING, $this->repo->findInstanceById($iid0)?->getState(),
+            '实例状态不受这次失败影响');
+
+        // 老行形状：parent 为 NULL（issues/121 P1 之前落的数据）同样必须报 20010007，不得静默通过。
+        // 复用上面那一条即可——上一段报错**没动它**（零写入），这里只把它的 parent 改成 NULL。
+        $apply0->setParentTaskId(null);
+        $this->repo->updateTask($apply0);
+        $e1b = null;
+        try {
+            $this->engine->executeAndJumpTask($apply0->getTaskId(), 'user1',
+                FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::ROLLBACK]), null);
+        } catch (\Throwable $e) { $e1b = $e; }
+        $this->assertNotNull($e1b, 'parent=NULL 必须报 20010007');
+        $this->assertStringContainsString('上一步任务ID为空，无法驳回至上一步处理', $e1b->getMessage(), '实得: ' . $e1b->getMessage());
+        $this->assertStringNotContainsString('2001000', $e1b->getMessage(), 'msg 不得带引擎内部码');
+        $this->assertTrue($this->repo->findTaskById($apply0->getTaskId())?->isDoing(),
+            'NULL 血缘那一档同样零写入');
+        $this->assertSame($rows0, count($this->repo->findHistoryTasks($iid0)),
+            'NULL 血缘那一档同样不建单：任务行总数不变');
 
         // ── 负向 2：血缘前驱跨不过 fork（boot2 语义：遇 fork/join/start 跳过该入边不再深入）──
         $this->repo->addDefine([
@@ -137,6 +169,7 @@ class LineageColumnsTest extends TestCase
         $this->repo->addTaskActor($branch->getTaskId(), ['fk-a']);
         $this->assertSame('apply', $this->repo->findTaskById($branch->getParentTaskId())->getTaskName(),
             '前置条件：分支行的 parent 是 fork 之前的 apply（否则这条红不是因为守卫）');
+        $rows2 = count($this->repo->findHistoryTasks($iid2));
         $e2 = null;
         try {
             $this->engine->executeAndJumpTask($branch->getTaskId(), 'fk-a',
@@ -145,6 +178,43 @@ class LineageColumnsTest extends TestCase
         $this->assertNotNull($e2, 'apply→fork→taskA 之间隔着 fork，boot2 语义下不可回退');
         $this->assertStringContainsString('无法驳回至上一步处理，请确认上一步骤并非fork、join、suprocess以及会签任务', $e2->getMessage(), '实得: ' . $e2->getMessage());
         $this->assertStringNotContainsString('2001000', $e2->getMessage(), 'msg 不得带引擎内部码');
+        // canRejected 那一档同样零写入（守卫排在 completeTask 之前）
+        $this->assertTrue($this->repo->findTaskById($branch->getTaskId())?->isDoing(),
+            '报错后当前行必须仍是 DOING（零写入）');
+        $this->assertSame($rows2, count($this->repo->findHistoryTasks($iid2)),
+            '报错不建单：实例下任务行总数不变');
+        $this->assertSame(ProcessInstanceState::DOING, $this->repo->findInstanceById($iid2)?->getState(),
+            '实例状态不受这次失败影响');
+
+        // ── 负向 3：血缘前驱指向**并行旁支**（b 不是 a 的祖先）⇒ 同样 20010008 且零写入。
+        // 与 java `test168RollbackRejectsCrossBranchLineage` 同格：伪造一条 parent 打到旁支行上，
+        // 守卫（NodeModel::canRejected 沿入边回溯遇 fork/join/start 不再深入）必须拦住，
+        // 拦住之后当前待办一行都不动。
+        $inst3 = $this->engine->startProcessInstanceById('121f', 'user1', FlowData::create());
+        $iid3 = (string) $inst3->getInstanceId();
+        $apply3 = $this->doing($iid3, 'apply');
+        $this->engine->executeProcessTask($apply3->getTaskId(), 'user1', $this->agree());
+        $doingList = $this->repo->findDoingTasks($iid3);
+        $this->assertGreaterThanOrEqual(2, count($doingList), '前置条件：fork 后应至少两条并行 DOING');
+        $a3 = $doingList[0];
+        $b3 = $doingList[1];
+        $a3->setParentTaskId($b3->getTaskId());
+        $this->repo->updateTask($a3);
+        $this->repo->addTaskActor($a3->getTaskId(), ['forker']);
+        $rows3 = count($this->repo->findHistoryTasks($iid3));
+        $e3 = null;
+        try {
+            $this->engine->executeAndJumpTask((string) $a3->getTaskId(), 'forker',
+                FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::ROLLBACK]), null);
+        } catch (\Throwable $e) { $e3 = $e; }
+        $this->assertNotNull($e3, '血缘指向旁支（非祖先）必须报 20010008');
+        $this->assertStringContainsString('无法驳回至上一步处理，请确认上一步骤并非fork、join、suprocess以及会签任务',
+            $e3->getMessage(), '实得: ' . $e3->getMessage());
+        $this->assertStringNotContainsString('2001000', $e3->getMessage(), 'msg 不得带引擎内部码');
+        $this->assertTrue($this->repo->findTaskById((string) $a3->getTaskId())?->isDoing(),
+            '旁支血缘那一档同样零写入：当前行仍是 DOING');
+        $this->assertSame($rows3, count($this->repo->findHistoryTasks($iid3)),
+            '报错不建单：实例下任务行总数不变');
     }
 
     private function agree(): FlowData

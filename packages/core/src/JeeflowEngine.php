@@ -204,6 +204,13 @@ class JeeflowEngine implements JeeflowEngineInterface
                 && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
                 throw new JeeflowException("带重提直返标记的申请待办不允许跳转，只接受重新提交(submitType=5)");
             }
+            if ($nodeName === null || $nodeName === '') {
+                // issues/243 甲案：血缘守卫排在 prepareExecution 之前——prepareExecution 内部
+                // completeTask + updateTask 会把当前行办结，内存仓储无回滚，守卫后置 ⇒
+                // 报错那一次结束后"待办凭空消失、又没有复活行"。判据本体只在
+                // ProcessInstance::checkRejectable 一份，复活腿（rejectTask 第一行）复用它。
+                $this->checkRollbackPossible($pre);
+            }
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
@@ -211,11 +218,7 @@ class JeeflowEngine implements JeeflowEngineInterface
                 // issues/121 P2：驳回走血缘版——上一步来源＝当前行的 task_parent_id，
                 // 由仓储把那条历史行取出来交给聚合根复活（取不到传 null，聚合根报 20010007）。
                 $current = $exec->getProcessTask();
-                $parentId = $current === null ? null : $current->getParentTaskId();
-                $history = ($parentId !== null && $parentId !== '' && $parentId !== '0')
-                    ? $this->repository->findTaskById($parentId)
-                    : null;
-                $exec->addTask($exec->getProcessInstance()->rejectTask($model, $current, $history));
+                $exec->addTask($exec->getProcessInstance()->rejectTask($model, $current, $this->lineageHistory($current)));
             } else {
                 $targetNode = $model->getNode($nodeName);
                 if ($targetNode === null) {
@@ -385,6 +388,45 @@ class JeeflowEngine implements JeeflowEngineInterface
     }
 
     // ═══ 内部方法 ═══
+
+    /**
+     * 当前行的血缘前驱那条历史行（issues/121 P2 的取行腿）：parent 为空 / '' / '0' ⇒ null
+     * （P1 之前落的老行同样落在这一档），否则按 id 从仓储取。引擎的两处调用点
+     * （{@see self::checkRollbackPossible()} 前置守卫、{@see self::executeAndJumpTask()} 复活腿）
+     * 共用这一份取法，判据本体在 {@see ProcessInstance::checkRejectable()}。
+     */
+    private function lineageHistory(?ProcessTask $current): ?ProcessTask
+    {
+        $parentId = $current === null ? null : $current->getParentTaskId();
+        if ($parentId === null || $parentId === '' || $parentId === '0') return null;
+        $history = $this->repository->findTaskById($parentId);
+        return $history instanceof ProcessTask ? $history : null;
+    }
+
+    /**
+     * 退回上一步（{@code nodeName} 空 ⇒ 血缘腿）的写前置守卫（issues/243 甲案）。
+     *
+     * <p>只做一件事：把 {@see ProcessInstance::checkRejectable()} 的两道判据（20010007 无血缘／
+     * 20010008 canRejected 不过）提到任何状态变更之前——本方法是**纯读**（task→instance→define→
+     * parse model→parent history），不写任务行、不写实例、不 fire 事件、不建历史行。</p>
+     *
+     * <p><b>不</b>在这里报"任务不存在/不在进行中""无权办理"，也不在这里发明第二套文案——那几档留给
+     * {@see self::prepareExecution()} 的既有固定错（它们本来也排在 completeTask 之前，天然零写入）；
+     * 取不到实例/定义时同样一律放行，由 prepareExecution 返回 null 走原形状。</p>
+     *
+     * <p>与 java 参考实现的一处结构差异：本栈的血缘前驱由引擎从**仓储**取（java 在聚合根内
+     * 沿 instance.tasks 找），故这里先取行再把它交给判据。</p>
+     */
+    private function checkRollbackPossible(?ProcessTask $current): void
+    {
+        if ($current === null || !$current->isDoing()) return;
+        $instance = $this->repository->findInstanceById((string) $current->getProcessInstanceId());
+        if (!$instance instanceof ProcessInstance) return;
+        $define = $this->repository->findDefineById((string) $instance->getDefineId());
+        if ($define === null) return;
+        $model = ModelParser::parse((string) $define['content']);
+        $instance->checkRejectable($model, $current, $this->lineageHistory($current));
+    }
 
     private function prepareExecution(string $taskId, string $operator, ?FlowData $args): ?Execution
     {

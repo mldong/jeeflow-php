@@ -323,13 +323,26 @@ class ProcessInstance
     }
 
     /**
-     * 驳回任务（退回上一步）——血缘版（规范 04 · 退回上一步）：上一步来源＝当前行的
-     * task_parent_id，复活调用方取出的那条历史行；不按模型入边拓扑推。
+     * 退回上一步的两道守卫（规范 04 · 退回上一步）：**只读判据，不碰任何状态**。
      *
-     * @param ProcessTask|null $history 血缘前驱行（由引擎按 parentTaskId 从仓储取；取不到传 null）
-     * @throws JeeflowException 无血缘 / 守卫不过各一条固定文案（引擎内部码 20010007、20010008 不进 msg）
+     * issues/243：这道守卫必须由引擎排在 {@see \Jeeflow\Core\JeeflowEngine::prepareExecution()}
+     * （内部 {@code completeTask} 会把当前行置为办结并 {@code updateTask} 落库）**之前**——
+     * 内存仓储无回滚，判据后置时"报错"那一次调用结束后当前待办已经消失且没有复活行，
+     * 用户看到的是"点了退回、报错了、待办也没了"。与后加签写入口四判据同一规矩：
+     * 判据一律排在任何状态变更之前，报错即零写入。
+     *
+     * ⚠️ 本栈与 java 参考实现的一处结构性差异：java 的这道判据**自己**从聚合根的 tasks 里按
+     * {@code task_parent_id} 找血缘前驱行；本栈的血缘前驱一直由引擎从仓储取（`findTaskById(parentId)`，
+     * 取不到传 null），故判据把这一行**作参数收进来**、只负责"这一行能不能退回"。
+     * 引擎前置位与 {@see self::rejectTask()} 复活腿共用这一份实现，**不许有第二份语义**。
+     *
+     * @param ProcessTask|null $history 血缘前驱行（parent 为空/0/取不到时为 null）
+     * @return ProcessTask 已过守卫的那条血缘前驱行（复活腿据此建单）
+     * @throws JeeflowException 引擎内部码 20010007 无血缘（parent 为空或 0，含 P1 之前落的老行）、
+     *                          20010008 canRejected 守卫不过（上一步是 fork/join/subprocess/会签）
+     *                          ——码进注释、msg 只出固定中文文案
      */
-    public function rejectTask(ProcessModel $model, ProcessTask $currentTask, ?ProcessTask $history): ProcessTask
+    public function checkRejectable(ProcessModel $model, ProcessTask $currentTask, ?ProcessTask $history): ProcessTask
     {
         if ($history === null) {
             throw new JeeflowException('上一步任务ID为空，无法驳回至上一步处理');
@@ -339,6 +352,24 @@ class ProcessInstance
         if ($current === null || $parent === null || !NodeModel::canRejected($current, $parent)) {
             throw new JeeflowException('无法驳回至上一步处理，请确认上一步骤并非fork、join、suprocess以及会签任务');
         }
+        return $history;
+    }
+
+    /**
+     * 驳回任务（退回上一步）——血缘版（规范 04 · 退回上一步）：上一步来源＝当前行的
+     * task_parent_id，复活调用方取出的那条历史行；不按模型入边拓扑推。
+     *
+     * 判据在 {@see self::checkRejectable()}（issues/243：引擎把那道守卫排在任何状态变更之前），
+     * 本方法在守卫已过之后只负责复活。
+     *
+     * @param ProcessTask|null $history 血缘前驱行（由引擎按 parentTaskId 从仓储取；取不到传 null）
+     * @throws JeeflowException 无血缘 / 守卫不过各一条固定文案（引擎内部码 20010007、20010008 不进 msg）
+     */
+    public function rejectTask(ProcessModel $model, ProcessTask $currentTask, ?ProcessTask $history): ProcessTask
+    {
+        $history = $this->checkRejectable($model, $currentTask, $history);
+        $current = $model->getNode($currentTask->getTaskName());
+        // 注意：`$current === null` 与 `!canRejected` 同档，已在守卫里报过 20010008 ⇒ 这里不再判空
 
         $hisVars = $history->getVariables()->toArray();
         // 首任务节点那条由发起人提交 ⇒ 参与者取该行 u_userId；其余取该行办结人。
