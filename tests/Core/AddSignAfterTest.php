@@ -573,6 +573,53 @@ final class AddSignAfterTest extends TestCase
         $this->assertSame(ProcessInstanceState::FINISHED, $this->repo->findInstanceById($iid)?->getState());
     }
 
+    /**
+     * 加签链上「退回上一步」(submitType=3) **禁**：userB 那条的血缘前驱与自己同节点（review），
+     * `NodeModel::canRejected()` 跨不过去 ⇒ 由既有 20010008 守卫拦下（与 go／node／rust／
+     * c#／moon 同判据，逐字文案一致）。java 参考实现只到第 16 格，本格是跨语言对齐格。
+     *
+     * ⚠️ 本格钉的是**本栈真实的后状态**（issues/243 登记的既有位序，不是本格的判据）：
+     * {@see JeeflowEngine::executeAndJumpTask()} 与 java 参考实现同形，守卫排在
+     * `prepareExecution`（内含 `instance->completeTask`）**之后**；内存仓储没有事务回滚
+     * （测试档未注册 TransactionTemplateInterface ⇒ `inTx` 直跑闭包）⇒ 被拦下的那次提交已把
+     * userB 那行落成 FINISHED(20)，但**复活行一条都不建**。真库腿由外层事务回滚兜住，
+     * 不在本格观察面内。
+     */
+    public function test17RollbackOnChainRejected(): void
+    {
+        $iid = $this->startToReview(self::ADD_SIGN_ON);
+        $a = $this->doing($iid, 'review');
+        $this->assertNotNull($a);
+        $this->engine->executeProcessTask((string) $a->getTaskId(), 'userA', $this->agreeWith('userB'));
+
+        $b = $this->doing($iid, 'review');
+        $this->assertNotNull($b, '加签后 userB 应在同一节点收到第二条待办');
+        $this->assertSame((string) $a->getTaskId(), (string) $b->getParentTaskId(),
+            '前置条件：userB 那条的血缘前驱就是同节点的 userA 那条');
+        $this->assertSame(2, $this->rows($iid, 'review'), '加签后本节点两行（一办结一进行中）');
+        $this->assertSame(1, $this->doingCount($iid, 'review'));
+
+        try {
+            $this->engine->executeAndJumpTask((string) $b->getTaskId(), 'userB',
+                $this->plain(SubmitType::ROLLBACK), null);
+            $this->fail('加签链上不得退回上一步');
+        } catch (JeeflowException $e) {
+            $this->assertStringContainsString(
+                '无法驳回至上一步处理，请确认上一步骤并非fork、join、suprocess以及会签任务',
+                $e->getMessage(), '实得: ' . $e->getMessage());
+            // 与 LineageColumnsTest 同口径：内部码进注释、msg 只出固定中文文案
+            $this->assertStringNotContainsString('2001000', $e->getMessage(), 'msg 不得带引擎内部码');
+        }
+
+        $this->assertNull($this->doing($iid, 'final'), '守卫不过不得流出本节点');
+        $this->assertSame(2, $this->rows($iid, 'review'), '不得复活出第三条同节点行（零幽灵待办）');
+        $this->assertSame(0, $this->doingCount($iid, 'review'), '报错后本节点一条待办都不留');
+        $this->assertTrue($this->repo->findTaskById((string) $b->getTaskId())?->isFinished(),
+            '本栈形状：守卫排在办结之后 ⇒ userB 那行已 FINISHED（内存仓储无回滚，issues/243）');
+        $this->assertSame(ProcessInstanceState::DOING, $this->repo->findInstanceById($iid)?->getState(),
+            '实例仍进行中（未落终态）');
+    }
+
     /** 实例变量出现任何 tf_ 键即红（test15 的逐键判据体，判据只在 AddSignSupport 之外这一处用）。 */
     private function assertStringStartNotWithTf(string $key): void
     {
