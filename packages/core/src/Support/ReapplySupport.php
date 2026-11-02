@@ -8,7 +8,7 @@ use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\ProcessTaskState;
-use Jeeflow\Core\Exception\JeeflowException;
+use Jeeflow\Core\JeeflowException;
 use Jeeflow\Core\Model\ForkModel;
 use Jeeflow\Core\Model\JoinModel;
 use Jeeflow\Core\Model\NodeModel;
