@@ -38,6 +38,15 @@ final class FlowConst
     public const CC_ACTORS = 'tf_ccActors';
     public const CC_ACTORS_START = 'f_ccActors';
 
+    // 后加签（可重复）跨栈契约键（spec 04「后加签」＋ spec 06 §2.7；camelCase 勿改 snake_case）：
+    // ADD_SIGN_OPERATORS 是**本次提交**指定的本节点后继办理人（逗号串与数组两形同判据）；
+    // ADD_SIGN_HISTORY 是追加式账本（每圈 append，落已完成任务行变量，形状照 TRANSFER_HISTORY）；
+    // ADD_SIGN_ROUND 拼 `_{节点名}` 记轮次，**不复用 LOOP_COUNTER**——后者是退回复活时被
+    // lineageVars 剔掉的会签簿记，加签链的轮次要跨"已办过的人"计数，两者语义不同。
+    public const ADD_SIGN_OPERATORS = 'tf_addSignOperators';
+    public const ADD_SIGN_HISTORY = 'tf_addSignHistory';
+    public const ADD_SIGN_ROUND = 'addSignRound';
+
     public const USER_USER_ID = 'u_userId';
     public const USER_REAL_NAME = 'u_realName';
     public const USER_DEPT_ID = 'u_deptId';

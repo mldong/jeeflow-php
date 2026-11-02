@@ -56,6 +56,20 @@ class Execution
      */
     private array $pendingEnds = [];
 
+    /**
+     * <b>本次请求</b>点名的后加签办理人（已归一，没点人为空表）。
+     *
+     * 为什么不从 {@see self::$args} 读：`args` 是「实例变量 ← 本次参数」的合并结果，
+     * 而历史形状下 `ProcessInstance::completeTask` 会把整包提交参数并进**实例变量**
+     * ⇒ 上一轮提交里的 `tf_addSignOperators` 会随实例变量复活，凭空多建一条本节点待办。
+     * `tf_nextNodeOperator` 同病（重提直返腿为此在引擎里显式剥键）。
+     * 根因已在 `completeTask` 修掉（实例变量只收数据类键，spec 04「流程变量约定」末注），
+     * 本字段是**第二道**：控制类参数一律只认当次请求，不靠剥键。
+     *
+     * @var string[]
+     */
+    private array $addSignOperators = [];
+
     public function __construct()
     {
         $this->args = FlowData::create();
@@ -161,6 +175,10 @@ class Execution
     public function setProcessTaskList(array $v): void { $this->processTaskList = $v; }
     public function isMerged(): bool { return $this->merged; }
     public function setMerged(bool $v): void { $this->merged = $v; }
+    /** @return string[] 本次请求点名的后加签办理人（已归一） */
+    public function getAddSignOperators(): array { return $this->addSignOperators; }
+    /** @param string[]|null $v null 与空表同档＝本次没点人 */
+    public function setAddSignOperators(?array $v): void { $this->addSignOperators = $v ?? []; }
     public function getEngine(): ?JeeflowEngineInterface { return $this->engine; }
     public function setEngine(?JeeflowEngineInterface $v): void { $this->engine = $v; }
     public function getOperator(): string { return $this->operator; }

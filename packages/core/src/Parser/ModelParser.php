@@ -11,6 +11,7 @@ use Jeeflow\Core\Model\TaskModel;
 use Jeeflow\Core\Model\TransitionModel;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\JsonProviderInterface;
+use Jeeflow\Core\Support\AddSignSupport;
 
 /**
  * 模型解析器 —— 将 JSON 流程定义解析为 ProcessModel
@@ -133,6 +134,12 @@ final class ModelParser
                 }
             }
         }
+
+        // 后加签两条解析期硬校验（spec 02 §4.3）——配了就直接报错，不做运行时降级：
+        // 静默跑下去会让配置者以为开关生效，实际两档推进闸各裁各的。
+        // 排在引用构造之后，因为"是不是首任务节点"要沿 start 的出边看。
+        // 判据单点在 AddSignSupport（本类只有一个调用点，不在此重写第二份）。
+        AddSignSupport::assertModelLegal($processModel);
 
         return $processModel;
     }

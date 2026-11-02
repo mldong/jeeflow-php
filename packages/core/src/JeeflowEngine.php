@@ -7,6 +7,7 @@ namespace Jeeflow\Core;
 use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Handler\CreateTaskHandler;
+use Jeeflow\Core\Support\AddSignSupport;
 use Jeeflow\Core\Support\ReapplySupport;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
@@ -245,6 +246,9 @@ class JeeflowEngine implements JeeflowEngineInterface
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
+            // 拒绝结束：本节点未完成的加签任务一并废弃，不留孤儿待办（spec 04 · 后加签）
+            AddSignSupport::abandonDoingOnNode($model, $exec->getProcessInstance(),
+                (string) $exec->getProcessTask()?->getTaskName(), $operator);
             foreach ($model->getModels(EndModel::class) as $end) {
                 $tm = new TransitionModel();
                 $tm->setTarget($end);
@@ -283,6 +287,9 @@ class JeeflowEngine implements JeeflowEngineInterface
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
+            // 退回发起人：本节点未完成的加签任务一并废弃，不留孤儿待办（spec 04 · 后加签）
+            AddSignSupport::abandonDoingOnNode($model, $exec->getProcessInstance(),
+                (string) $exec->getProcessTask()?->getTaskName(), $operator);
             if ($direct) {
                 if ($sourceModel->getPerformType() === \Jeeflow\Core\Enum\PerformType::COUNTERSIGN) {
                     throw new JeeflowException("会签节点[{$sourceModel->getName()}]不支持退回修改直返");
@@ -400,6 +407,12 @@ class JeeflowEngine implements JeeflowEngineInterface
         if ($args === null) $args = FlowData::create();
         FlowUtil::filterFieldByPerm($args, $model, $task->getTaskName());
 
+        // 后加签写入口校验（spec 04 · 后加签）：**必须排在 completeTask 之前**——内存仓储无回滚，
+        // 报错时不得留下已完成的任务行（"报错且零写入"是这条链的硬要求）。
+        // 四条判据（与 tf_nextNodeOperator 互斥／未开 allowAddSign 却传键／加给自己／超上限）
+        // 的判据体只有 AddSignSupport 一份，本类只有一个调用点。
+        AddSignSupport::validateSubmission($model, $task, $args, $operator);
+
         // 完成任务——聚合根内部修改了 instance 中的 task 状态
         $instance->completeTask($taskId, $operator, $args);
 
@@ -433,6 +446,9 @@ class JeeflowEngine implements JeeflowEngineInterface
         $exec = $this->buildExecution($model, $instance, $mergedArgs, $operator);
         $exec->setProcessTask($task);
         $exec->setProcessTaskId($taskId);
+        // 加签人取"本次请求"的值显式带上，不让处理器读合并后的 args（判据与病因见
+        // Execution::$addSignOperators 的注释——实例变量会把上一轮的 tf_ 键复活）。
+        $exec->setAddSignOperators(AddSignSupport::operators($args));
         return $exec;
     }
 

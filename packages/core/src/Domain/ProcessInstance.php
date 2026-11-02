@@ -63,12 +63,28 @@ class ProcessInstance
 
     // ═══ 命令方法 ═══
 
+    /**
+     * 完成指定任务。
+     *
+     * ⚠️ **控制类参数（`tf_*`）一律不进实例变量**——它们只属于这一次提交与这一条任务行。
+     * 整包 putAll 会让上一轮的 `tf_` 键**跨请求复活**：`tf_addSignOperators` 使后续办结凭空
+     * 多建一条本节点待办，`tf_nextNodeOperator` 同病（重提直返腿为此在引擎里显式剥键），
+     * `tf_approvalComment` 更是把某人的审批意见污染成全流程可读的变量。
+     * 判据出处＝spec 04「流程变量约定」末注（把「退回修改、重提直返」§4.2 那条单点绕行
+     * 抬成引擎通用规则）；任务行留痕不受影响（{@see ProcessTask::finish()} 仍收整包 args）。
+     */
     public function completeTask(string $taskId, string $operator, ?FlowData $args): void
     {
         $task = $this->findDoingTask($taskId);
         $task->finish($operator, $args);
         if ($args !== null) {
-            $this->variables->setAll($args->toArray());
+            foreach ($args->keys() as $key) {
+                $k = (string) $key;
+                if (str_starts_with($k, FlowConst::TASK_FORM_DATA_PREFIX)) {
+                    continue;
+                }
+                $this->variables->set($k, $args->get($k));
+            }
             // 提取 f_ 前缀变量持久化到流程变量
             $formData = FlowData::create();
             foreach ($args->keys() as $key) {

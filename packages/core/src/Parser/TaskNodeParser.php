@@ -33,6 +33,13 @@ class TaskNodeParser extends AbstractNodeParser
         // 退回发起人后的重提方式：缺省 NORMAL，非法值报配置错误
         $model->setReapplyMode(\Jeeflow\Core\Support\ReapplySupport::parseMode(
             (string) ($p[\Jeeflow\Core\Support\ReapplySupport::PROP_REAPPLY_MODE] ?? ''), $model->getName()));
+        // 后加签两开关（spec 02 §4.3）：缺省关／0＝不限，非法值解析期报配置错误，不得静默当缺省。
+        // 判据单点在 AddSignSupport（本类不写第二份）；声明成 TaskModel 字段后，
+        // 下面"直接属性镜像进 ext"那条腿不收它们（只收固定白名单），双源就此断掉。
+        $model->setAllowAddSign(\Jeeflow\Core\Support\AddSignSupport::parseAllow(
+            $p[\Jeeflow\Core\Support\AddSignSupport::PROP_ALLOW_ADD_SIGN] ?? null, $model->getName()));
+        $model->setAddSignMaxRounds(\Jeeflow\Core\Support\AddSignSupport::parseMaxRounds(
+            $p[\Jeeflow\Core\Support\AddSignSupport::PROP_ADD_SIGN_MAX_ROUNDS] ?? null, $model->getName()));
         // ext 字段
         $ext = FlowData::create();
         $field = $p[self::EXT_FIELD_KEY] ?? null;

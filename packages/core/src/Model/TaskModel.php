@@ -7,6 +7,7 @@ namespace Jeeflow\Core\Model;
 use Jeeflow\Core\Execution;
 use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Enum\PerformType;
+use Jeeflow\Core\Handler\AddSignHandler;
 use Jeeflow\Core\Handler\CountersignHandler;
 
 /**
@@ -31,6 +32,10 @@ class TaskModel extends NodeModel
     private ?int $countersignType = null;
     private string $countersignCompletionCondition = '';
     private string $reapplyMode = 'NORMAL';
+    /** 后加签开关；缺省 false（节点不可加签，行为与既有普通任务逐字一致） */
+    private bool $allowAddSign = false;
+    /** 后加签轮次上限；0＝不限（缺省） */
+    private int $addSignMaxRounds = 0;
 
     public function __construct()
     {
@@ -41,6 +46,13 @@ class TaskModel extends NodeModel
     {
         if ($this->performType === PerformType::COUNTERSIGN) {
             $this->fire(new CountersignHandler($this), $execution);
+            if ($execution->isMerged()) {
+                $this->runOutTransition($execution);
+            }
+        } elseif ($this->allowAddSign) {
+            // 后加签档：推进闸交给 AddSignHandler 裁决（本次点人→同节点续建且不流转；
+            // 没点人但本节点还有兄弟待办→不流转；两者皆否→放行出边）。
+            $this->fire(new AddSignHandler($this), $execution);
             if ($execution->isMerged()) {
                 $this->runOutTransition($execution);
             }
@@ -98,4 +110,8 @@ class TaskModel extends NodeModel
     public function setCountersignCompletionCondition(string $v): void { $this->countersignCompletionCondition = $v; }
     public function getReapplyMode(): string { return $this->reapplyMode; }
     public function setReapplyMode(string $v): void { $this->reapplyMode = $v; }
+    public function isAllowAddSign(): bool { return $this->allowAddSign; }
+    public function setAllowAddSign(bool $v): void { $this->allowAddSign = $v; }
+    public function getAddSignMaxRounds(): int { return $this->addSignMaxRounds; }
+    public function setAddSignMaxRounds(int $v): void { $this->addSignMaxRounds = $v; }
 }
