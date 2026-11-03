@@ -485,6 +485,17 @@ class JeeflowEngine implements JeeflowEngineInterface
         // 的判据体只有 AddSignSupport 一份，本类只有一个调用点。
         AddSignSupport::validateSubmission($model, $task, $args, $operator);
 
+        // 拦截器名可解析性前置校验（issues/244-①）：**同样必须排在 completeTask 之前**——
+        // 与上面后加签四判据同一条规矩（内存仓储无回滚，报错即零写入）。
+        // 从前"拦截器未注册"只在下游 `$node->execute()` 的 runInterceptors 才抛（此刻本行已
+        // completeTask + updateTask 落库、事件也已 fire）⇒ 报错那一次当前待办被静默办结、
+        // 新任务没建，实例 DOING 却零待办。判据本体只有 NodeModel 一份（纯读、不执行拦截器；
+        // 为什么不是"再跑一次拦截器"见该方法注释）。执行期行为不动：拦截器仍在节点体后照常跑。
+        $currentNode = $model->getNode($task->getTaskName());
+        if ($currentNode !== null) {
+            $currentNode->assertInterceptorsResolvable($model);
+        }
+
         // 完成任务——聚合根内部修改了 instance 中的 task 状态
         $instance->completeTask($taskId, $operator, $args);
 

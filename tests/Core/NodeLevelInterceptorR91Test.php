@@ -4,12 +4,22 @@ declare(strict_types=1);
 
 namespace Jeeflow\Tests\Core;
 
+use Jeeflow\Core\Domain\FlowData;
+use Jeeflow\Core\Enum\FlowConst;
+use Jeeflow\Core\Enum\ProcessInstanceState;
+use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\Execution;
 use Jeeflow\Core\Interceptor\FlowInterceptor;
 use Jeeflow\Core\Interceptor\FlowInterceptorRegistry;
+use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\JeeflowException;
 use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\ProcessModel;
+use Jeeflow\Core\Parser\ModelParser;
+use Jeeflow\Core\Repository\InMemoryProcessRepository;
+use Jeeflow\Core\ServiceContext;
+use Jeeflow\Core\Spi\BuiltinJsonProvider;
+use Jeeflow\Core\Spi\JsonProviderInterface;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -40,6 +50,8 @@ final class NodeLevelInterceptorR91Test extends TestCase
     protected function setUp(): void
     {
         FlowInterceptorRegistry::clear();
+        ServiceContext::clear();
+        ServiceContext::put(JsonProviderInterface::class, new BuiltinJsonProvider());
         $this->sink = new R91Sink();
         foreach ($this->names as $name => $tag) {
             FlowInterceptorRegistry::register($name, new R91Recorder($tag, $this->sink));
@@ -49,6 +61,8 @@ final class NodeLevelInterceptorR91Test extends TestCase
     protected function tearDown(): void
     {
         FlowInterceptorRegistry::clear();
+        ServiceContext::clear();
+        ModelParser::reset();
     }
 
     /** 节点级 post 声明生效，且**不与根级叠加**（spec02 §3「缺省回落流程级」的另一半＝非空即替换） */
@@ -127,6 +141,119 @@ final class NodeLevelInterceptorR91Test extends TestCase
     {
         $this->runNode(new R91SilentNode(), pre: null, post: null);
         self::assertSame([], $this->sink->marks, '无声明却跑了拦截器实得=' . json_encode($this->sink->marks));
+    }
+
+    /**
+     * issues/244-①：**当前节点** postInterceptors 写了没注册的名字时，拦截器解析必须排在
+     * 任何状态变更之前——报错即零写入（原任务仍 DOING、id 未变、实例状态不变、任务行总数不变）。
+     *
+     * 改前形状（红样）：`prepareExecution` 先 `completeTask` + `updateTask`（首写），再
+     * `$node->execute()` → `execPostInterceptors` → `runInterceptors` 才 `resolve` 抛
+     * 「拦截器未注册」。真库有外层事务整笔回滚看不出来；内存仓储无回滚 ⇒ 报错那一次
+     * "当前任务已 DONE、新任务没建" ⇒ 实例 DOING 却零待办、流程失联。
+     *
+     * 夹具在测试内构造（不动共享 flows/）：start → apply(postInterceptors＝未注册名) → end，
+     * apply 的 assignee＝applicant（发起人），办理走 submitType=1（同意）。
+     */
+    public function testUnregisteredPostInterceptorFailsBeforeAnyWrite(): void
+    {
+        $ghost = 'com.mldong.jeeflow.ghost.PostGhostInterceptor';
+        $repo = new InMemoryProcessRepository();
+        $repo->addDefine([
+            'id' => 'i244a',
+            'name' => 'i244a-ghost-post',
+            'displayName' => '未注册后置拦截器(244①夹具)',
+            'type' => 'approval',
+            'state' => 1,
+            'content' => $this->ghostPostFlowJson($ghost),
+            'version' => 1,
+        ]);
+        $engine = new JeeflowEngine($repo);
+
+        $instance = $engine->startProcessInstanceById('i244a', 'user1', FlowData::create());
+        $instanceId = $instance->getInstanceId();
+        $applyTask = $instance->getDoingTasks()[0] ?? null;
+        self::assertNotNull($applyTask, '发起后应有 apply 待办');
+        $taskIdBefore = $applyTask->getTaskId();
+        $stateBefore = $instance->getState();
+        $countBefore = count($instance->getTasks());
+
+        try {
+            $engine->executeProcessTask($taskIdBefore, 'user1',
+                FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::AGREE]));
+            self::fail('未注册的拦截器名必须显式抛错（实得：办理正常返回）');
+        } catch (JeeflowException $e) {
+            self::assertStringContainsString('拦截器未注册', $e->getMessage());
+            self::assertStringContainsString($ghost, $e->getMessage(), '文案要能指到是哪个名字没注册');
+        }
+
+        // —— 报错零写入（内存仓储无回滚，这三条就是本病的判据）——
+        $taskAfter = $repo->findTaskById($taskIdBefore);
+        self::assertNotNull($taskAfter);
+        self::assertSame($taskIdBefore, $taskAfter->getTaskId(), '原任务 id 不得变');
+        self::assertTrue($taskAfter->isDoing(),
+            '原任务必须仍进行中——改前被静默办结（state=' . $taskAfter->getTaskState() . '）');
+        $instanceAfter = $repo->findInstanceById($instanceId);
+        self::assertSame($stateBefore, $instanceAfter->getState(), '实例状态不得变');
+        self::assertCount($countBefore, $instanceAfter->getTasks(), '任务行总数不得变（不得凭空建新行）');
+    }
+
+    /**
+     * 244① 正向哨兵：**已注册**的 postInterceptors 不受前置守卫影响——照常在节点体之后跑到，
+     * 办理照常推进（守卫只查表、不执行拦截器；执行期派发点仍在 {@see NodeModel::execute()}）。
+     */
+    public function testRegisteredPostInterceptorStillRunsAndFlowProceeds(): void
+    {
+        $repo = new InMemoryProcessRepository();
+        $repo->addDefine([
+            'id' => 'i244a-ok',
+            'name' => 'i244a-ok-post',
+            'displayName' => '已注册后置拦截器(244①正向)',
+            'type' => 'approval',
+            'state' => 1,
+            'content' => $this->ghostPostFlowJson('r91.A'),
+            'version' => 1,
+        ]);
+        $engine = new JeeflowEngine($repo);
+
+        $instance = $engine->startProcessInstanceById('i244a-ok', 'user1', FlowData::create());
+        $instanceId = $instance->getInstanceId();
+        $applyTask = $instance->getDoingTasks()[0];
+        $taskId = $applyTask->getTaskId();
+
+        $engine->executeProcessTask($taskId, 'user1', FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::AGREE]));
+
+        self::assertContains('A', $this->sink->marks, '已注册的 post 必须照常跑到（实得=' . json_encode($this->sink->marks) . '）');
+        self::assertTrue($repo->findTaskById($taskId)->isFinished(), '办理应正常完成');
+        self::assertSame(ProcessInstanceState::FINISHED, $repo->findInstanceById($instanceId)->getState(),
+            'apply → end，实例应办结');
+    }
+
+    /** 244① 夹具：start → apply(postInterceptors＝$ghost) → end（测试内构造，不动共享 flows/） */
+    private function ghostPostFlowJson(string $ghost): string
+    {
+        $json = json_encode([
+            'name' => 'i244a-ghost-post',
+            'displayName' => '未注册后置拦截器(244①夹具)',
+            'type' => 'approval',
+            'nodes' => [
+                ['id' => 'start', 'type' => 'snaker:start', 'x' => 100, 'y' => 200,
+                 'properties' => ['width' => 50, 'height' => 50], 'text' => ['value' => '开始']],
+                ['id' => 'apply', 'type' => 'snaker:task', 'x' => 200, 'y' => 200,
+                 'properties' => ['width' => 100, 'height' => 50, 'form' => 'apply-form',
+                     'assignee' => 'applicant', 'taskType' => 0, 'performType' => 0,
+                     'postInterceptors' => $ghost],
+                 'text' => ['value' => '发起申请']],
+                ['id' => 'end', 'type' => 'snaker:end', 'x' => 400, 'y' => 200,
+                 'properties' => ['width' => 50, 'height' => 50], 'text' => ['value' => '结束']],
+            ],
+            'edges' => [
+                ['id' => 'e0', 'sourceNodeId' => 'start', 'targetNodeId' => 'apply', 'properties' => []],
+                ['id' => 'e1', 'sourceNodeId' => 'apply', 'targetNodeId' => 'end', 'properties' => []],
+            ],
+        ]);
+        self::assertNotFalse($json);
+        return $json;
     }
 
     private function runNode(R91SilentNode $node, ?string $pre = null, ?string $post = null,

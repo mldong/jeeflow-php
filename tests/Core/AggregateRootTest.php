@@ -7,7 +7,9 @@ namespace Jeeflow\Tests\Core;
 use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
+use Jeeflow\Core\Enum\CountersignType;
 use Jeeflow\Core\Enum\FlowConst;
+use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Repository\InMemoryProcessRepository;
@@ -123,6 +125,53 @@ class AggregateRootTest extends TestCase
         $this->assertSame(['user2'], $tasks[0]->getActorIds());
         $this->assertSame(['user3'], $tasks[1]->getActorIds());
         $this->assertSame(['user4'], $tasks[2]->getActorIds());
+    }
+
+    /**
+     * 串行会签零候选人（issues/244-②，跨栈已定语义：**建一行、不挂任何参与者、引擎不报错**）。
+     *
+     * 改前形状：SERIAL 分支写 `[$actorIds[0]]`——名册为空时取下标 0 触发 E_WARNING
+     * （`Undefined array key 0`；phpunit.xml 开着 `failOnWarning`，测试档会红），且参与者列表里
+     * 落进一个 null（PDO 仓 `saveTask` 逐元素 INSERT ⇒ 写出一行 `actor_id = NULL`）。
+     * 基准＝go/python/node/moon 四栈现行行为。
+     *
+     * 判据口径：错误处理器把 E_WARNING 收进 sink（不靠测试档的 failOnWarning 兜，红样里能逐字看见）；
+     * 三枚会签簿记变量照旧写（operatorList_<node>＝[]、loopCounter_<node>＝0、nrOfInstances_<node>＝0）。
+     * 参与者 0 行＝任务上 `getActorIds()` 为空——两仓的落库形状都是"逐 actorIds 元素写一行"，
+     * 空数组即 0 行（PDO 仓 `saveTask` 的 foreach 空转），null 元素根本不会出现。
+     */
+    public function testSerialCountersignWithZeroActorsCreatesOneRowWithoutActors(): void
+    {
+        $define = $this->makeDefine();
+        $instance = ProcessInstance::create($define, 'user1');
+
+        $warnings = [];
+        set_error_handler(static function (int $no, string $msg) use (&$warnings): bool {
+            $warnings[] = $msg;
+            return true;
+        }, E_WARNING);
+        try {
+            $tasks = $instance->createCountersignTasks(
+                'node_cs', '串行会签', 0, PerformType::COUNTERSIGN, null,
+                [], 'user1', CountersignType::SERIAL
+            );
+        } finally {
+            restore_error_handler();
+        }
+
+        self::assertSame([], $warnings, '零候选人不得触发 E_WARNING 实得=' . json_encode($warnings));
+        self::assertCount(1, $tasks, '串行会签零候选人＝建一行、不挂人（不是 0 行）');
+        $task = $tasks[0];
+        self::assertSame(ProcessTaskState::DOING, $task->getTaskState(), '任务应处于进行中 10');
+        self::assertSame([], $task->getActorIds(), '参与者必须 0 行，不得落进 null');
+        self::assertSame(PerformType::COUNTERSIGN, $task->getPerformType(), 'perform_type 仍是会签');
+        self::assertSame([], $task->getVariables()->get(FlowConst::COUNTERSIGN_OPERATOR_LIST . '_node_cs'),
+            'operatorList_<node> 应为空数组');
+        self::assertSame(0, $task->getVariables()->get(FlowConst::LOOP_COUNTER . '_node_cs'),
+            'loopCounter_<node> 应为 0');
+        self::assertSame(0, $task->getVariables()->get(FlowConst::NR_OF_INSTANCES . '_node_cs'),
+            'nrOfInstances_<node> 应为 0');
+        self::assertCount(1, $instance->getDoingTasks(), '实例上应恰好一条待办');
     }
 
     public function testInMemoryRepository(): void

@@ -281,6 +281,9 @@ class ProcessInstance
      * 对齐 mldong 内置引擎 createCountersignTask 与 Java/Go/Python/Node 的串行逐个创建。
      * PARALLEL / 未配置类型保持全员预创建。
      *
+     * 名册为空（issues/244-②）：串行支**建一行、不挂人**（三枚会签变量照写：[]/0/0），
+     * 并行支的"零人 0 行"不在本条范围。
+     *
      * @param string[] $actorIds
      * @param string|null $expireExpr 节点到期表达式（issues/126 案 A · 第二/三处写点：
      *                                串行首位与并行全员各自都要算，变量源＝实例变量）
@@ -294,9 +297,15 @@ class ProcessInstance
     {
         // 串行会签逐个创建（issues/93）：仅建首位 + 记录任务变量
         if ($countersignType === CountersignType::SERIAL) {
+            // 零候选人（issues/244-②，跨栈已定语义＝go/python/node/moon 现行行为）：
+            // **建一行、不挂任何参与者、引擎不报错**。旧形状写 `[$actorIds[0]]`——名册为空时
+            // 取下标 0 触发 E_WARNING（`Undefined array key 0`），且参与者列表落进一个 null
+            // （PDO 仓 `saveTask` 逐元素 INSERT ⇒ 库里多一行 `actor_id = NULL`）。
+            // 空数组照常传给工厂：两仓的参与者落库都是"逐 actorIds 元素写一行"，[] 即 0 行。
+            $actors = $actorIds === [] ? [] : [$actorIds[0]];
             $first = ProcessTask::create(
                 $this->instanceId, $taskName, $displayName,
-                $taskType, $performType, $formKey, [$actorIds[0]], $operator,
+                $taskType, $performType, $formKey, $actors, $operator,
                 $parentTaskId, $isFirstTaskNode
             );
             $first->getVariables()->set(FlowConst::COUNTERSIGN_OPERATOR_LIST . '_' . $taskName, $actorIds);
