@@ -210,6 +210,12 @@ class JeeflowEngine implements JeeflowEngineInterface
                 // 报错那一次结束后"待办凭空消失、又没有复活行"。判据本体只在
                 // ProcessInstance::checkRejectable 一份，复活腿（rejectTask 第一行）复用它。
                 $this->checkRollbackPossible($pre);
+            } else {
+                // issues/243 §8-2：命名跳转的「找不到节点模型」同一族缺口，同规矩前置——
+                // 从前这句在 prepareExecution（内部 completeTask + updateTask 已把当前行办结）之后
+                // 才抛，内存仓储无回滚 ⇒ 节点名写错一次就把办理人的待办凭空弄丢
+                //（真库有动作级事务整笔回滚，观察不到差别 ⇒ 这一档只有内存仓储照得出来）。
+                $this->checkJumpTargetExists($pre, $nodeName);
             }
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
@@ -426,6 +432,30 @@ class JeeflowEngine implements JeeflowEngineInterface
         if ($define === null) return;
         $model = ModelParser::parse((string) $define['content']);
         $instance->checkRejectable($model, $current, $this->lineageHistory($current));
+    }
+
+    /**
+     * 命名跳转（{@code submitType=4}，{@code $nodeName} 非空那一支）的节点存在性前置守卫
+     * （issues/243 §8-2）。
+     *
+     * <p>与 {@see self::checkRollbackPossible()} 同族同规矩：从前"根据节点名称[X]无法找到节点模型"
+     * 是在 {@see self::prepareExecution()}（内部 completeTask + updateTask 已把当前行办结）之后才抛的，
+     * 内存仓储无回滚 ⇒ 名字写错一次就把办理人的待办凭空弄丢。真库有动作级事务整笔回滚，观察不到差别，
+     * 所以这一档同样只有内存仓储照得出来。</p>
+     *
+     * <p>纯读；取不到任务/不在进行中/取不到实例或定义一律放行，让 {@see self::prepareExecution()}
+     * 报它自己原有的固定错（那些档本就在办结之前）。不新增第二种文案——抛的还是原来那一句。</p>
+     */
+    private function checkJumpTargetExists(?ProcessTask $current, string $nodeName): void
+    {
+        if ($current === null || !$current->isDoing()) return;
+        $instance = $this->repository->findInstanceById((string) $current->getProcessInstanceId());
+        if (!$instance instanceof ProcessInstance) return;
+        $define = $this->repository->findDefineById((string) $instance->getDefineId());
+        if ($define === null) return;
+        if (ModelParser::parse((string) $define['content'])->getNode($nodeName) === null) {
+            throw new JeeflowException("根据节点名称[{$nodeName}]无法找到节点模型");
+        }
     }
 
     private function prepareExecution(string $taskId, string $operator, ?FlowData $args): ?Execution

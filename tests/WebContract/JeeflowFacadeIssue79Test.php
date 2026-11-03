@@ -171,11 +171,31 @@ class JeeflowFacadeIssue79Test extends TestCase
         $jn = $this->startMultiTaskAt('task2');
         $t2n = $this->doingTaskId($jn, 'task2');
         $this->repo->addTaskActor($t2n, ['manager']);
+        $taskRowsBefore = count($this->repo->getAllTasks());
         $jr = $this->facade->flow('processTask/execute', [
             'processTaskId' => $t2n, 'operator' => 'manager', 'submitType' => SubmitType::JUMP, 'taskName' => 'no-such-node',
         ]);
         $this->assertSame(99999999, $jr['code'], 'JUMP 无效节点应报 99999999');
         $this->assertStringContainsString('无法找到节点模型', $jr['msg'], 'JUMP 无效节点应报「无法找到节点模型」');
+        // issues/243 §8-2：这一档的节点存在性判据已上提到办结之前 ⇒ 报错零写入。
+        // 修前 prepareExecution 先 completeTask + updateTask，内存仓储无回滚（本门面挂的是 no-op
+        // TransactionTemplate），t2n 会被静默办结、待办就此消失 ⇒ 改前这两条断言必须红
+        //（真库靠动作级事务整笔回滚兜住，照不出来 ⇒ 这一格只有在内存仓储才有意义）。
+        $this->assertSame(
+            $t2n,
+            $this->doingTaskId($jn, 'task2'),
+            '报错后原任务必须还是那条待办（零写入：既没被办结、也没新建另一条）'
+        );
+        $this->assertSame(
+            ProcessInstanceState::DOING,
+            $this->stateOf($jn),
+            '失败的 JUMP 不得改实例状态'
+        );
+        $this->assertSame(
+            $taskRowsBefore,
+            count($this->repo->getAllTasks()),
+            '失败的 JUMP 不得新增/改动任务行（任务行总数不变）'
+        );
 
         // ── submitType=5 RE_APPLY：task1 重新提交（tf_nextNodeOperator + f_ 表单）
         $ra = $this->startMultiTaskAt('task1');
