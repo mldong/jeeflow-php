@@ -61,15 +61,22 @@ class PersistEngineScenarioTest extends TestCase
 
     // ─── ④ 无 relTableName → 回落流程 name → 表不存在 → 快速失败（配置错误显式报错）───
 
-    public function testNoTableNameFallsBackAndThrows(): void
+    public function testNoTableNameFallsBackAndSkipsSilently(): void
     {
+        // 改判（issues/245，owner 2026-11-03「静默就好了，不用做那么严格的校验」）：
+        // 没配 relTableName ⇒ 回落流程名（库里不存在的 sync_notable）⇒ **静默跳过**：
+        // 不写、不报错、流程照常走完。旧断言钉的是"回落名查不到表 ⇒ 抛 RuntimeException"，
+        // 已按拍板改判。边界未松：表存在但写入失败仍上抛（同目录其它负向格守着）。
         $this->addDefine('1', 'sync_notable', $this->flow(
             'sync_notable', '', 'SYNC', PersistPostInterceptor::JAVA_CLASS,
             $this->simpleNodes('apply')
         ));
-        $this->expectException(\RuntimeException::class);
-        $this->expectExceptionMessageMatches('/not found/');
-        $this->engine->startProcessInstanceById('1', 'user1', FlowData::of(['f_title' => 'x']));
+        $instance = $this->engine->startProcessInstanceById('1', 'user1', FlowData::of(['f_title' => 'x']));
+        $again = $this->repo->findInstanceById($instance->getInstanceId());
+        $this->assertNotNull($again, '缺表不得阻断流程：实例应照常建起');
+        $writer = ServiceContext::find(DynamicTableWriter::class);
+        $this->assertInstanceOf(PdoDynamicTableWriter::class, $writer);
+        $this->assertFalse($writer->tableExists('sync_notable'));
     }
 
     // ─── ⑯ SYNC 全链路：发起 INSERT → apply_10 → task1 权限过滤 + tf_ + task1_10 → end_20 ───

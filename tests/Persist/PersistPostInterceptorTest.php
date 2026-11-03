@@ -158,7 +158,7 @@ class PersistPostInterceptorTest extends TestCase
         return $this->repo->findInstanceById($instance->getInstanceId());
     }
 
-    private function addDefine(string $persistMode, bool $withPerm = false): void
+    private function addDefine(string $persistMode, bool $withPerm = false, string $relTable = 'biz_order'): void
     {
         $field = $withPerm
             ? ',"field":{"PERMISSION_f_title":1,"PERMISSION_f_amount":2}'
@@ -168,7 +168,7 @@ class PersistPostInterceptorTest extends TestCase
   "name": "persist_demo",
   "displayName": "persist demo",
   "persistMode": "{$persistMode}",
-  "relTableName": "biz_order",
+  "relTableName": "{$relTable}",
   "postInterceptors": "com.mldong.jeeflow.persist.interceptor.PersistPostInterceptor",
   "nodes": [
     {"id":"start","type":"snaker:start","x":0,"y":0,"properties":{},"text":{"value":"开始"}},
@@ -190,6 +190,19 @@ JSON;
             'content' => $json,
             'version' => 1,
         ]);
+    }
+
+    public function testMissingBusinessTableSkipsSilently(): void
+    {
+        // issues/245 拍板（owner 2026-11-03「静默就好了，不用做那么严格的校验」）：
+        // 定义指向的业务表不存在 ⇒ 静默跳过：不写、不报错、流程照常走完（与 java 同档）。
+        $this->addDefine('ARCHIVE', false, 'no_such_biz');
+        $instance = $this->runToEnd(SubmitType::AGREE, ['f_title' => 'x', 'f_amount' => '1']);
+        $this->assertSame(\Jeeflow\Core\Enum\ProcessInstanceState::FINISHED, $instance->getState(),
+            '缺表不得阻断流程：实例应正常到终态');
+        $writer = ServiceContext::find(DynamicTableWriter::class);
+        $this->assertInstanceOf(PdoDynamicTableWriter::class, $writer);
+        $this->assertFalse($writer->tableExists('no_such_biz'));
     }
 
     private function fetchRow(?string $instanceId): ?array

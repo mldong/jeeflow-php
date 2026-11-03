@@ -50,6 +50,14 @@ class PersistPostInterceptor implements FlowInterceptor
         if ($table === '') {
             return;
         }
+        // 缺表静默（owner 2026-11-03 拍板：静默就好、不做部署期校验）：定义指向的业务表不存在时
+        // **不写、不报错、不阻断流程**——与 java 参考实现同档（列集为空 ⇒ 不落库）。
+        // 边界（issues/169 的"不得静默丢写错"不放宽）：只吞"表不存在"这一档；
+        // 表存在但写入失败（约束/类型/连接）仍由 insert/update 原样上抛。
+        // 未知 writer 实现（没有 tableExists）⇒ 行为不变。
+        if (method_exists($writer, 'tableExists') && $writer->tableExists($table) === false) {
+            return;
+        }
         $mode = strtoupper(trim($model->getPersistMode()));
         if ($mode === self::PERSIST_MODE_SYNC) {
             $this->interceptSync($execution, $writer, $table);

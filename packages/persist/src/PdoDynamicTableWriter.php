@@ -157,6 +157,30 @@ class PdoDynamicTableWriter implements DynamicTableWriter
      */
     private function tableColumns(string $tableName): array
     {
+        $cols = $this->fetchTableColumns($tableName);
+        if ($cols === []) {
+            throw new \RuntimeException("persist: table {$tableName} not found");
+        }
+        return $cols;
+    }
+
+    /**
+     * 业务表是否存在（**纯读探测**；缺失返回 false，不抛）——issues/245 拍板：
+     * 缺表档由拦截器静默跳过（不写、不报错、不阻断流程，与 java 参考实现同档）。
+     * PDO 异常（连接/权限/语法）照常上抛，不折成 false——那不是"缺表"。
+     */
+    public function tableExists(string $tableName): bool
+    {
+        return $this->fetchTableColumns($tableName) !== [];
+    }
+
+    /**
+     * 查表结构；查不到返回空数组（缺表不在这里抛，也**不缓存负结果**——表可能后建）。
+     *
+     * @return list<array{name: string, pk: bool, auto: bool}>
+     */
+    private function fetchTableColumns(string $tableName): array
+    {
         if (isset($this->cache[$tableName])) {
             return $this->cache[$tableName];
         }
@@ -190,10 +214,9 @@ class PdoDynamicTableWriter implements DynamicTableWriter
                 ];
             }
         }
-        if ($cols === []) {
-            throw new \RuntimeException("persist: table {$tableName} not found");
+        if ($cols !== []) {
+            $this->cache[$tableName] = $cols;
         }
-        $this->cache[$tableName] = $cols;
         return $cols;
     }
 
