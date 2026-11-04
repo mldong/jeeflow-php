@@ -12,6 +12,8 @@ use Jeeflow\Core\Model\TransitionModel;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\JsonProviderInterface;
 use Jeeflow\Core\Support\AddSignSupport;
+use Jeeflow\Core\Support\CollectSupport;
+use Jeeflow\Core\Support\RecallSupport;
 
 /**
  * 模型解析器 —— 将 JSON 流程定义解析为 ProcessModel
@@ -140,6 +142,17 @@ final class ModelParser
         // 排在引用构造之后，因为"是不是首任务节点"要沿 start 的出边看。
         // 判据单点在 AddSignSupport（本类只有一个调用点，不在此重写第二份）。
         AddSignSupport::assertModelLegal($processModel);
+
+        // 已办撤回两条解析期硬校验（spec 02 §4.4，issues/246）：会签节点撤"谁的一票"语义不清；
+        // 申请节点走实例撤回＋重新发起（既有通道），不需要同实例复活。
+        // 判据单点在 RecallSupport（本类只有一个调用点，不在此重写第二份）；
+        // **位序照 java**：后加签两判 → 已办撤回两判 → 动态会签三判。
+        RecallSupport::assertModelLegal($processModel);
+
+        // 动态会签三条解析期硬校验（spec 02 §4.4，issues/247）：与 allowAddSign 双开＝共用参数
+        // tf_addSignOperators 的行为歧义；会签节点推进语义与征询挂起语义打架；申请节点不需要征询。
+        // 判据单点在 CollectSupport（同上纪律）。
+        CollectSupport::assertModelLegal($processModel);
 
         return $processModel;
     }

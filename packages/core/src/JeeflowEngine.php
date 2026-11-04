@@ -8,11 +8,13 @@ use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Handler\CreateTaskHandler;
 use Jeeflow\Core\Support\AddSignSupport;
+use Jeeflow\Core\Support\RecallSupport;
 use Jeeflow\Core\Support\ReapplySupport;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessEventTypeEnum;
+use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\Event\ProcessEvent;
 use Jeeflow\Core\Event\ProcessPublisher;
@@ -456,6 +458,91 @@ class JeeflowEngine implements JeeflowEngineInterface
         if (ModelParser::parse((string) $define['content'])->getNode($nodeName) === null) {
             throw new JeeflowException("根据节点名称[{$nodeName}]无法找到节点模型");
         }
+    }
+
+    /**
+     * 已办撤回（issues/246，规范 04 · 已办撤回）：办理人撤回自己已办结的那一手，同实例内复活重办。
+     *
+     * **判据全部排在任何状态变更之前**（报错即零写入——与后加签写入口 / 退回守卫同一规矩；
+     * 内存仓储无回滚，先废弃再判错就会留下不可恢复的半撤状态）。位序逐字照 java：
+     * 行存在且已办结 → 参与者/特权 → 实例 DOING → 节点开关 → 窗口（下游无任何 FINISHED）。
+     *
+     * ⚠️ 参与人判断**不走 {@see ProcessTask::isAllowed()}**：那条只认 DOING 行，
+     * 而目标行正是 FINISHED——按名册（`actorIds`）判断，`flow.auto`/`flow.admin` 特权放行（与转办同口径）。
+     *
+     * 落库顺序：废弃行 updateTask → 复活行 saveTask（拿 taskId，全量写参与者行）＋码 3
+     * → 原行盖 `tf_recallHistory`（recalledTaskId 指向复活行）updateTask → 实例 updateTime
+     * → fire 码 10 TASK_RECALL（sourceId＝被撤回的旧行；**只发 10，不补发 5/6**）。
+     *
+     * 与 java 相同的**不扩面**：复活行走裸 `saveTask`＋`notifyTaskStart`，**不**过
+     * {@see self::saveNewTask()} ⇒ 不并委托、不回填 `_branchCtx.root`（go 那腿过了 saveNewTask，
+     * 差异记录在案，以参考实现为准）。撤回**不回滚业务数据**：f_ 已进实例变量、persist 已写业务表。
+     *
+     * @return ProcessTask 复活的新行（DOING，本实例本节点唯一活待办）
+     */
+    public function recallTask(string $taskId, string $operator): ProcessTask
+    {
+        return $this->inTx(function () use ($taskId, $operator): ProcessTask {
+            // ── 判据 1：行存在且已办结 ──
+            $target = $this->repository->findTaskById($taskId);
+            if (!$target instanceof ProcessTask || !$target->isFinished()) {
+                throw new JeeflowException(RecallSupport::MSG_NOT_FINISHED);
+            }
+            // ── 判据 2：参与者/特权（FINISHED 行按名册判断，不走只认 DOING 的 isAllowed）──
+            $privileged = strcasecmp($operator, FlowConst::AUTO_ID) === 0
+                || strcasecmp($operator, FlowConst::ADMIN_ID) === 0;
+            if (!$privileged && !in_array($operator, $target->getActorIds(), true)) {
+                throw new JeeflowException(RecallSupport::MSG_NO_PERMISSION);
+            }
+            // ── 判据 3：实例存在且 DOING ──
+            $instance = $this->repository->findInstanceById((string) $target->getProcessInstanceId());
+            if (!$instance instanceof ProcessInstance) {
+                throw new JeeflowException('流程实例不存在');
+            }
+            if ($instance->getState() !== ProcessInstanceState::DOING) {
+                throw new JeeflowException(RecallSupport::MSG_INSTANCE_NOT_DOING);
+            }
+            // ── 判据 4：节点开关 ──
+            $define = $this->repository->findDefineById((string) $instance->getDefineId());
+            if ($define === null) {
+                throw new JeeflowException('流程定义不存在');
+            }
+            $model = ModelParser::parse((string) $define['content']);
+            $node = $model->getNode($target->getTaskName());
+            if (!$node instanceof TaskModel || !$node->isAllowRecall()) {
+                throw new JeeflowException(sprintf(RecallSupport::MSG_SWITCH_OFF, $target->getTaskName()));
+            }
+            // ── 判据 5：窗口（下游任何 FINISHED ⇒ 拦；行集合＝聚合根里的全部任务行）──
+            $doingDescendants = RecallSupport::validateWindow($instance->getTasks(), $target);
+
+            // ══ 判据全过，以下才允许写 ══
+            $isFirstTaskNode = FlowUtil::isFirstTaskName($model, $target->getTaskName());
+            $resurrected = $instance->recallTask($node, $target, $operator, $doingDescendants, $isFirstTaskNode);
+            foreach ($doingDescendants as $t) {
+                $this->repository->updateTask($t);
+            }
+            $this->repository->saveTask($resurrected);
+            // 复活行自己的待办另走码 3（规范 04 · 已办撤回；java 14674d7 补的这一腿——
+            // 首版只 saveTask 漏 notifyTaskStart，go/python 均按 spec 走码 3，参考实现就此对齐）
+            $this->notifyTaskStart($resurrected);
+            // 账本排在 saveTask 之后：recalledTaskId 要指向复活行的 taskId；随后必须补一次
+            // updateTask，PDO 仓存的是快照，不补这一刀账本就丢。
+            RecallSupport::appendRecallHistory($target, $operator, $resurrected->getTaskId());
+            $this->repository->updateTask($target);
+            $this->repository->updateInstance($instance);
+            // 码 10 TASK_RECALL：撤回事实落库之后 fire 一次（sourceId＝被撤回的旧行）
+            ProcessPublisher::notify(ProcessEvent::of(
+                ProcessEventTypeEnum::TASK_RECALL,
+                $target->getTaskId(),
+                null,
+                [
+                    ProcessPublisher::KEY_INSTANCE_ID => $instance->getInstanceId(),
+                    ProcessPublisher::KEY_TASK_ID => $target->getTaskId(),
+                    ProcessPublisher::KEY_OPERATOR => $operator,
+                ],
+            ));
+            return $resurrected;
+        });
     }
 
     private function prepareExecution(string $taskId, string $operator, ?FlowData $args): ?Execution

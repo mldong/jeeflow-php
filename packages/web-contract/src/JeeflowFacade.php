@@ -32,7 +32,11 @@ use Jeeflow\Core\Spi\ProcessRepositoryInterface;
 use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
 use Jeeflow\Core\Spi\UserSearchProviderInterface;
+use Jeeflow\Core\Support\AddSignSupport;
+use Jeeflow\Core\Support\CollectSupport;
+use Jeeflow\Core\Support\ReapplySupport;
 use Jeeflow\Core\Util\CcActorUtil;
+use Jeeflow\Core\Util\FlowUtil;
 use Jeeflow\Core\Util\FormDataUtil;
 use Jeeflow\Core\Util\JeeflowQueryParser;
 use Jeeflow\Core\Util\SurrogateRule;
@@ -64,6 +68,16 @@ class JeeflowFacade
 
     /** issues/137 §3-1：内部异常对外只说这一句（固定文案，其余七栈逐字复刻；spec 06 §2.12） */
     public const INTERNAL_FAILURE_MSG = '流程处理失败';
+
+    /**
+     * 动态会签发起分流的「主办不是本次办理人」档（issues/247）：逐字取 java
+     * `WfErrEnum.NOT_ALLOWED_EXECUTE`（go `facade/collect.go` / python `facade.py` 两腿同文案）。
+     *
+     * ⚠️ 与引擎 {@see \Jeeflow\Core\JeeflowEngine::prepareExecution()} 那句
+     * 「操作人[X]无权执行此任务」是**两档不同文案**、各有出处，不要合并成一种：
+     * 前者是征询发起腿的固定错（参考实现带的就是 WfErrEnum 那条），后者是本栈既有办理腿的。
+     */
+    private const MSG_NOT_ALLOWED_EXECUTE = '当前参与者不能执行该流程任务';
 
     public function __construct(JeeflowEngine $engine, ProcessRepositoryInterface $repository,
                                 ?ProcessExtRepositoryInterface $extRepository = null)
@@ -159,6 +173,8 @@ class JeeflowFacade
             'processTask/addCandidate' => $this->taskSurrogate($args),
             'processTask/transfer' => $this->taskTransfer($args),
             'processTask/removeTaskActor' => $this->taskRemoveActor($args), // issues/115 残留：第 47 个 action
+            'processTask/recall' => $this->taskRecall($args), // issues/246 已办撤回
+            'processTask/revokeDynamicCountersign' => $this->taskRevokeCountersign($args), // issues/247 撤回动态会签
             'processTask/latest' => $this->taskLatest($args),
             'processTask/candidatePage' => $this->candidatePage($args),
             // ── 视图端点 ──
@@ -585,6 +601,14 @@ class JeeflowFacade
         }
         $flowArgs->set(FlowConst::SUBMIT_TYPE, $submitType);
 
+        // ── 动态会签分流与闸门（issues/247）——**判据全部排在任何状态变更之前** ──
+        $collect = $this->tryDynamicCountersign($taskId, $operator, $flowArgs);
+        if ($collect !== null) {
+            // 征询模式带 tf_addSignOperators：只建成员行、**不办结主办行**（响应带 marker 供前端提示）
+            return $this->ok($collect);
+        }
+        $this->gateDynamicCountersign($taskId, $flowArgs);
+
         // 分发逻辑（spec §2.8）
         if ($submitType === SubmitType::REJECT) {
             $this->engine->executeAndJumpToEnd($taskId, $operator, $flowArgs);
@@ -603,6 +627,246 @@ class JeeflowFacade
             $this->engine->executeProcessTask($taskId, $operator, $flowArgs);
         }
         return $this->ok();
+    }
+
+    /**
+     * 已办撤回（issues/246，规范 06 §processTask/recall）：办理人撤回自己已办结的那一手，
+     * 同实例内复活重办。判据与落库全在引擎（{@see \Jeeflow\Core\JeeflowEngine::recallTask()}），
+     * 门面只做参数归一（operator 硬必填、主键档缺失响亮报错，绝不拿 `''`/`0` 当 id 落库）
+     * 与信封包装。**位序照 java taskRecall：operator 空判在前、主键缺失判在后。**
+     *
+     * ⚠️ 本 action 不接受 `operatorOf()` 的"空串回落 user1"缺省档——那会把撤回人静默记成别人，
+     * 审计链失真且不报错（与 {@see self::withdraw()} 的 operator 硬必填同一条契约，规范 06 §2.5）。
+     */
+    private function taskRecall(array $args): array
+    {
+        $operator = trim($this->toStr($args['operator'] ?? ''));
+        if ($operator === '') return $this->error('operator 必填');
+        $taskId = $this->toStr($args[FlowConst::PROCESS_TASK_ID_KEY] ?? '');
+        if ($taskId === '') return $this->error('processTaskId 缺失');
+        $resurrected = $this->engine->recallTask($taskId, $operator);
+        return $this->ok([
+            'processTaskId' => (string) $resurrected->getTaskId(),
+            'taskState' => $resurrected->getTaskState(),
+        ]);
+    }
+
+    /**
+     * 动态会签发起分流（issues/247，规范 04 · 动态会签）：征询节点带 `tf_addSignOperators`
+     * 的提交＝**只建成员行、不办结主办行**；返回响应 marker（`data.dynamicCountersign`），
+     * 非征询提交返回 null 走普通流转。
+     *
+     * **判据全部排在任何状态变更之前**（互斥／参与人／上限／加给自己／重复），报错即零写入——
+     * 内存仓储无回滚，与后加签写入口／退回守卫／撤回窗口判据同一规矩。
+     * 判据位序逐字照 java `tryDynamicCountersign`。
+     *
+     * @return array<string, mixed>|null marker（null＝不接管，走原流转）
+     */
+    private function tryDynamicCountersign(string $taskId, string $operator, FlowData $flowArgs): ?array
+    {
+        $host = $this->repository->findTaskById($taskId);
+        if (!$host instanceof ProcessTask || !$host->isDoing()) return null;
+        $operators = AddSignSupport::operators($flowArgs);
+        if ($operators === []) return null;
+        $inst = $this->repository->findInstanceById((string) $host->getProcessInstanceId());
+        if (!$inst instanceof ProcessInstance) return null;
+        $def = $this->repository->findDefineById((string) $inst->getDefineId());
+        if ($def === null) return null;
+        $model = ModelParser::parse((string) $def['content']);
+        $node = $model->getNode($host->getTaskName());
+        if (!$node instanceof TaskModel || !$node->isDynamicCountersign()) return null;
+        // 成员行不能冒充主办发起（拉人只限主办行）——放行给闸门腿报它的逐字文案
+        if (CollectSupport::isMemberRow($inst->getTasks(), $host)) return null;
+        // ── 以下每一条报错都必须零写入 ──
+        // 互斥（与 tf_nextNodeOperator 同传＝死参数，报错不静默）
+        if ($this->hasNextNodeOperatorArg($flowArgs)) {
+            throw new JeeflowException(AddSignSupport::MSG_MUTEX);
+        }
+        if (!$host->isAllowed($operator)) {
+            // 逐字取 java 的 WfErrEnum.NOT_ALLOWED_EXECUTE（go/python 两腿同文案），不另造
+            throw new JeeflowException(self::MSG_NOT_ALLOWED_EXECUTE);
+        }
+        $round = CollectSupport::lastRound($host) + 1;
+        $max = $node->getAddSignMaxRounds();
+        if ($max > 0 && $round > $max) {
+            throw new JeeflowException(sprintf(AddSignSupport::MSG_MAX_ROUNDS, $node->getName(), $max));
+        }
+        $reason = $flowArgs->getStr(FlowConst::ADD_SIGN_REASON);
+        $existing = CollectSupport::memberRows($inst->getTasks(), $host);
+        foreach ($operators as $op) {
+            if ($op === $operator) {
+                throw new JeeflowException(AddSignSupport::MSG_SELF);
+            }
+            foreach ($existing as $m) {
+                if ($m->isDoing() && in_array($op, $m->getActorIds(), true)) {
+                    throw new JeeflowException(sprintf(CollectSupport::MSG_DUPLICATE, $op, $node->getName()));
+                }
+            }
+        }
+        // ── 判据全过：建成员行（同节点同名、parent＝主办行、轮次/原因/分支归属三戳）──
+        $isFirstTaskNode = FlowUtil::isFirstTaskName($model, $node->getName());
+        /** @var ProcessTask[] $created */
+        $created = [];
+        foreach ($operators as $op) {
+            $member = $inst->createTask(
+                $node->getName(),
+                $node->getDisplayName(),
+                $node->getTaskType(),
+                // performType 取节点配置：能走到这里说明本节点不是会签（解析期已拦）
+                $node->getPerformType(),
+                $node->getForm() !== '' ? $node->getForm() : null,
+                [$op],
+                $operator,
+                $host->getTaskId(),
+                $isFirstTaskNode,
+                // 到期时间同尺（走聚合根那条腿，不另造写点）
+                $node->getExpireTime()
+            );
+            $member->getVariables()->set(FlowConst::ADD_SIGN_ROUND . '_' . $node->getName(), $round);
+            if ($reason !== null && $reason !== '') {
+                $member->getVariables()->set(FlowConst::ADD_SIGN_REASON, $reason);
+            }
+            $created[] = $member;
+        }
+        CollectSupport::appendCollectHistory($host, $operator, $operators, $round, $reason);
+        $host->getVariables()->set(FlowConst::ADD_SIGN_ROUND . '_' . $node->getName(), $round);
+        // 落库：成员行 saveTask（拿 taskId、全量写参与者行）＋逐行 fire 码 3；主办行 updateTask。
+        // ⚠️ PDO 仓存的是快照，appendCollectHistory 盖在主办行变量上的账本必须靠下面这次
+        // updateTask 才落得下去（与引擎 saveNewTask 那条纪律同理）。
+        foreach ($created as $member) {
+            $this->repository->saveTask($member);
+        }
+        // 分支归属戳排在落库之后：attachScopes 用当条 taskId 填 `_branchCtx.root`，
+        // 落库前 taskId 还是 null ⇒ root 会落成空串（java 那边同样在 saveTask 前挂，
+        // 其 saveNewTask 的 fillRootSelf 回填腿本栈走的是这里这一刀，终态同答案）。
+        ReapplySupport::attachScopes($model, $inst, $created, $node->getName(), (string) $host->getTaskId());
+        foreach ($created as $member) {
+            $this->repository->updateTask($member);
+            ProcessPublisher::notify(ProcessEvent::of(
+                ProcessEventTypeEnum::PROCESS_TASK_START,
+                $member->getTaskId(),
+                null,
+                [
+                    ProcessPublisher::KEY_INSTANCE_ID => $member->getProcessInstanceId(),
+                    ProcessPublisher::KEY_TASK_ID => $member->getTaskId(),
+                    ProcessPublisher::KEY_ACTORS => $member->getActorIds(),
+                ],
+            ));
+        }
+        $this->repository->updateTask($host);
+        [$total, $submitted] = CollectSupport::countMembers($inst->getTasks(), $host);
+        return [
+            'dynamicCountersign' => [
+                'round' => $round,
+                'total' => $total,
+                'submitted' => $submitted,
+            ],
+        ];
+    }
+
+    /**
+     * 动态会签闸门（issues/247）：征询节点上——主办行未收齐成员意见 ⇒ 逐字文案报错
+     * （挡**全部** submitType，含驳回；唯一出口＝`processTask/revokeDynamicCountersign`）；
+     * 成员行携带拉人参数 ⇒ 报错（拉人只限主办行）。非征询节点原样放行。
+     *
+     * 收齐判据＝**还有无 DOING 成员行**（承重判据二：宽口径计数跳过撤回清场的 99 行），
+     * 撤回后闸门自然恢复，不需要额外的复位动作。
+     */
+    private function gateDynamicCountersign(string $taskId, FlowData $flowArgs): void
+    {
+        $task = $this->repository->findTaskById($taskId);
+        if (!$task instanceof ProcessTask || !$task->isDoing()) return;
+        $inst = $this->repository->findInstanceById((string) $task->getProcessInstanceId());
+        if (!$inst instanceof ProcessInstance) return;
+        $def = $this->repository->findDefineById((string) $inst->getDefineId());
+        if ($def === null) return;
+        $model = ModelParser::parse((string) $def['content']);
+        $node = $model->getNode($task->getTaskName());
+        if (!$node instanceof TaskModel || !$node->isDynamicCountersign()) return;
+        if (CollectSupport::isMemberRow($inst->getTasks(), $task)) {
+            if (AddSignSupport::operators($flowArgs) !== []) {
+                throw new JeeflowException(CollectSupport::MSG_MEMBER_PULL);
+            }
+            return;
+        }
+        $pending = CollectSupport::pendingMembers($inst->getTasks(), $task);
+        if ($pending !== []) {
+            [$total, $submitted] = CollectSupport::countMembers($inst->getTasks(), $task);
+            throw new JeeflowException(sprintf(CollectSupport::MSG_PENDING, $task->getTaskName(), $submitted, $total));
+        }
+    }
+
+    /**
+     * 撤回动态会签（issues/247，规范 06 §processTask/revokeDynamicCountersign）：废弃主办行下
+     * 全部未答成员行，账本追加撤回条目；**已交意见行原样保留**；闸门自然恢复
+     * （判据＝还有无 DOING 成员行）；轮次不消耗。独立 action，不进 execute 参数空间
+     * （撤回不是办结动作）。**位序照 java taskRevokeCountersign。**
+     *
+     * ⚠️ 承重判据三：**参与人判断不能用 {@see ProcessTask::isAllowed()}**——那条只认 DOING 行，
+     * 主办行办结后会把合法撤回判成无权。这里按**名册**（`actorIds`）判断，
+     * "无待答成员"那一档由随后的判据兜底。
+     */
+    private function taskRevokeCountersign(array $args): array
+    {
+        $operator = trim($this->toStr($args['operator'] ?? ''));
+        if ($operator === '') return $this->error('operator 必填');
+        $taskId = $this->toStr($args[FlowConst::PROCESS_TASK_ID_KEY] ?? '');
+        if ($taskId === '') return $this->error('processTaskId 缺失');
+        $reason = $this->toStr($args['reason'] ?? '');
+        $host = $this->repository->findTaskById($taskId);
+        if (!$host instanceof ProcessTask) return $this->error('任务不存在');
+        if (!$this->isPrivilegedOperator($operator) && !in_array($operator, $host->getActorIds(), true)) {
+            return $this->error(CollectSupport::MSG_NO_PERMISSION_REVOKE);
+        }
+        $inst = $this->repository->findInstanceById((string) $host->getProcessInstanceId());
+        if (!$inst instanceof ProcessInstance) return $this->error('流程实例不存在');
+        $def = $this->repository->findDefineById((string) $inst->getDefineId());
+        if ($def === null) return $this->error('流程定义不存在');
+        $model = ModelParser::parse((string) $def['content']);
+        $node = $model->getNode($host->getTaskName());
+        if (!$node instanceof TaskModel || !$node->isDynamicCountersign()) {
+            return $this->error(sprintf(CollectSupport::MSG_NO_PENDING, $host->getTaskName()));
+        }
+        $pending = CollectSupport::pendingMembers($inst->getTasks(), $host);
+        if ($pending === []) {
+            return $this->error(sprintf(CollectSupport::MSG_NO_PENDING, $host->getTaskName()));
+        }
+        // ── 判据全过，以下才允许写 ──
+        $revokedActors = [];
+        foreach ($pending as $m) {
+            $m->abandon($operator);
+            $ids = $m->getActorIds();
+            $revokedActors[] = $ids === [] ? null : $ids[0];
+            $this->repository->updateTask($m);
+        }
+        CollectSupport::appendRevokeHistory($host, $operator, $revokedActors,
+            CollectSupport::lastRound($host), $reason);
+        $this->repository->updateTask($host);
+        return $this->ok([
+            'revoked' => count($revokedActors),
+            'actors' => $revokedActors,
+        ]);
+    }
+
+    /**
+     * `tf_nextNodeOperator` 是否"传了"（互斥判据的读参腿）。
+     *
+     * ⚠️ 不另造尺子：判据与后加签写入口 {@see AddSignSupport::validateSubmission()} **同一条**
+     * （标量档＝非空 trim 串，逐字照 java；数组档走归一单点，因为 PHP 的 `(string)[]` 会撞
+     * Array to string conversion 警告，而归一后为空的那个参数本就什么都指定不了、不该算"同传"）。
+     * AddSignSupport 里那一枚是 private，本栈不为了复用把它抬成 public——门面的这条腿
+     * 只做同判据的第三次调用点，语义体仍在 §2.10 那一枚单点上。
+     */
+    private function hasNextNodeOperatorArg(FlowData $flowArgs): bool
+    {
+        $raw = $flowArgs->get(FlowConst::NEXT_NODE_OPERATOR);
+        if ($raw === null) {
+            return false;
+        }
+        if (is_array($raw)) {
+            return CcActorUtil::normalizeActors($raw) !== [];
+        }
+        return trim($this->toStr($raw)) !== '';
     }
 
     private function taskDetail(array $args): array
@@ -647,6 +911,18 @@ class JeeflowFacade
                         'form' => $node instanceof TaskModel ? ($node->getForm() ?: null) : null,
                         'ext' => $node instanceof TaskModel ? $node->getExt()->toArray() : null,
                     ];
+                    // 动态会签投影（issues/247，规范 06 §2.7）：征询主办行 ext.dynamicCountersign
+                    // 从成员行**现算**（不落库、不另建簿记面），前端据此把执行按钮置灰——
+                    // 未收齐时全部 submitType 都挡，唯一出口＝processTask/revokeDynamicCountersign。
+                    // ⚠️ 无成员行 ⇒ buildProjection 返回 null，**不输出空壳**（逐字照 java）。
+                    // 本栈 $vo['ext'] 是值拷贝（java 那边是同一个 Map 引用），改完必须回写一次。
+                    if ($node instanceof TaskModel && $node->isDynamicCountersign() && $inst !== null) {
+                        $collect = CollectSupport::buildProjection($inst->getTasks(), $task);
+                        if ($collect !== null) {
+                            $tExt['dynamicCountersign'] = $collect;
+                            $vo['ext'] = $tExt;
+                        }
+                    }
                 }
             } catch (\Throwable $ignored) {}
         }

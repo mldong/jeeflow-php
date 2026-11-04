@@ -47,6 +47,8 @@ final class EventTypeAliasTest extends TestCase
         foreach (['INSTANCE_START', 'INSTANCE_END', 'TASK_START'] as $old) {
             self::assertNotContains($old, $names, "别名 {$old} 不应混进 cases()");
         }
-        self::assertCount(9, $names, 'A 套码表 1..9 共九支，不多不少');
+        // 10 TASK_RECALL 由 issues/246 入表（spec §11.3 现读）⇒ 本体十支；
+        // 别名三条仍只有 1/2/3 那三枚旧名，不得混进 cases()。
+        self::assertCount(10, $names, 'A 套码表 1..10 共十支，不多不少');
     }
 }

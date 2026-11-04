@@ -263,7 +263,7 @@ class ProcessEventTest extends TestCase
         return array_map(fn(ProcessEvent $e) => $e->getType()->name, $l->events);
     }
 
-    // ── 6. §11.3 码表逐字对齐：规范名＋码值 1..9，10+ 只占号不发 ──
+    // ── 6. §11.3 码表逐字对齐：规范名＋码值 1..10，11+ 只占号不发 ──
 
     public function testEnumMatchesSpecCodeTable(): void
     {
@@ -272,6 +272,8 @@ class ProcessEventTest extends TestCase
             $actual[$case->value] = $case->name;
         }
         // 键序＝声明序，期望表逐字抄自 spec §11.3「码｜规范名」两列
+        // （10 TASK_RECALL 由 issues/246 启用——**1..9 九行一字未动**，只在表尾追加权威新行；
+        //   go `engine/interceptor_test.go`／python `tests/spec_test.py` 两腿同此同步）
         $this->assertSame([
             1 => 'PROCESS_INSTANCE_START',
             2 => 'PROCESS_INSTANCE_END',
@@ -282,8 +284,9 @@ class ProcessEventTest extends TestCase
             7 => 'TASK_TRANSFER',
             8 => 'TASK_WITHDRAW',
             9 => 'INSTANCE_TERMINATED',
+            10 => 'TASK_RECALL',
         ], $actual, '规范名与码值必须与 spec §11.3 逐字一致（规范名是权威，集成层判据用名不用码）');
-        $this->assertCount(9, $actual, '10+ 本轮只占号，不得提前发码（§11.4 第 1 条）');
+        $this->assertCount(10, $actual, '11+ 本轮只占号，不得提前发码（§11.4 第 1 条）');
     }
 
     // ── 7. §11.8 L2-30：一条流从发起到办结【按顺序】收到 [1,3,5,2] ──

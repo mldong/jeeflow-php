@@ -57,10 +57,14 @@ final class AddSignSupport
     private function __construct() {}
 
     /**
-     * 解析 allowAddSign：缺省 false；非布尔报配置错误，不得静默落回缺省
+     * 解析布尔开关：缺省 false；非布尔报配置错误，不得静默落回缺省
      * （判据照 reapplyMode 既有先例，逐字对齐 java 的档位）。
+     *
+     * issues/246/247 起 $keyName 成为第三参：同一把尺子服务三枚开关
+     * （allowAddSign / allowRecall / dynamicCountersign），非法值文案里的键名取**实际那枚**，
+     * 不写死 allowAddSign——逐字对齐 java `AddSignSupport.parseAllow(value, nodeName, keyName)`。
      */
-    public static function parseAllow(mixed $value, string $nodeName): bool
+    public static function parseAllow(mixed $value, string $nodeName, string $keyName = self::PROP_ALLOW_ADD_SIGN): bool
     {
         if ($value === null) {
             return false;
@@ -69,7 +73,7 @@ final class AddSignSupport
             return $value;
         }
         if (is_array($value)) {
-            throw new JeeflowException(self::illegalProp(self::PROP_ALLOW_ADD_SIGN, '数组', $nodeName));
+            throw new JeeflowException(self::illegalProp($keyName, '数组', $nodeName));
         }
         $v = trim(self::stringify($value));
         if ($v === '') {
@@ -81,7 +85,7 @@ final class AddSignSupport
         if (strcasecmp($v, 'false') === 0) {
             return false;
         }
-        throw new JeeflowException(self::illegalProp(self::PROP_ALLOW_ADD_SIGN, $v, $nodeName));
+        throw new JeeflowException(self::illegalProp($keyName, $v, $nodeName));
     }
 
     /**
@@ -216,7 +220,9 @@ final class AddSignSupport
 
     /**
      * 废弃本节点未完成的加签任务（拒绝／退回发起人时调用，不留孤儿待办）。
-     * 只对开了 allowAddSign 的节点动手——会签节点的兄弟任务由既有会签腿管，不在此扩面。
+     * 只对开了 {@see TaskModel::isAllowAddSign() allowAddSign}
+     * 或 {@see TaskModel::isDynamicCountersign() dynamicCountersign} 的节点动手（issues/247：
+     * 征询成员行同属本节点 DOING，实例撤回/退回路径一并清场）。
      *
      * 落库不另开腿：废弃只改聚合里的行，{@see \Jeeflow\Core\JeeflowEngine::persistTasks()}
      * 那次 `updateInstance` 的级联会 UPDATE 到既有行（与会签的 abandon 腿同一条）。
@@ -230,7 +236,8 @@ final class AddSignSupport
             return 0;
         }
         $node = $model->getNode($nodeName);
-        if (!$node instanceof TaskModel || !$node->isAllowAddSign()) {
+        if (!$node instanceof TaskModel
+            || (!$node->isAllowAddSign() && !$node->isDynamicCountersign())) {
             return 0;
         }
         $abandoned = 0;

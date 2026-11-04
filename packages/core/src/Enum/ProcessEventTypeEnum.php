@@ -8,7 +8,7 @@ namespace Jeeflow\Core\Enum;
  * 流程事件类型 —— 规范名 ＋ 码值 ＋ 载荷的唯一权威契约＝**规范 11 · 事件契约**
  * （`jeeflow-doc/docs/spec/11-events.md` §11.3），issues/127＋132 立章。
  *
- * 本枚举是 A 套整型码（java 血缘 1..4 连续扩展 5..9）；八语言按**规范名**对齐，
+ * 本枚举是 A 套整型码（java 血缘 1..4 连续扩展 5..10，10 由 issues/246 启用）；八语言按**规范名**对齐，
  * **集成层跨语言判据一律用规范名，不得拿数字码当判据**（§11.6：Go/Node 原 0..5 套、
  * Python 原字符串套都重排到本套）。一个号一旦发出去不许改语义、不许复用
  * （4 号位让位给 `CC_CREATE` 的历史见该项注释）。
@@ -83,6 +83,18 @@ enum ProcessEventTypeEnum: int
      */
     case INSTANCE_TERMINATED = 9;
 
+    /**
+     * 已办任务撤回发生（§11.3 码 10，issues/246 立码，spec 11 码表现读）。
+     *
+     * 触发时机：撤回动作落库之后 fire **一次**——原 FINISHED 行保留＋`tf_recallHistory` 追加
+     * ＋同节点新 DOING 行建单（**复活行自己的待办另走码 3**，见 java 14674d7）。
+     * sourceId＝被撤回的旧行 taskId，载荷 instanceId, taskId, operator。
+     * **只发 10，不补发 5/6**——撤回不是办结也不是拒绝（同 8 不补发 2 的理由）。
+     * 动态会签（issues/247）**不新增事件码**：成员行建/结走既有 3/5，
+     * 撤回未答成员靠 `tf_addSignHistory` 账本留痕、不发码。
+     */
+    case TASK_RECALL = 10;
+
     // ── 旧 case 名一代兼容别名（issues/132 第二轮 R2-4，spec §11.6「改名栈须保留旧成员名为一代别名」）──
     // PHP backed enum 不允许两个 case 同值，故用 enum 常量承载：常量值就是 case 对象本身，
     // `cases()` / `from()` / `->name` 一律不受影响（别名不进枚举本体，规范名仍是唯一权威）。
@@ -90,7 +102,7 @@ enum ProcessEventTypeEnum: int
     public const INSTANCE_START = self::PROCESS_INSTANCE_START;
     public const INSTANCE_END = self::PROCESS_INSTANCE_END;
     public const TASK_START = self::PROCESS_TASK_START;
-    // 10+ 预留：超时催办 / 超时自动通过 ……（§11.4 第 1 条「本轮不发」——八栈都没有时钟
+    // 11+ 预留：超时催办 / 超时自动通过 ……（§11.4 第 1 条「本轮不发」——八栈都没有时钟
     // 扫描器，发了没有触发源；占号只为防下一个新栈再发明一套，见 §11.3 表末行）
 
     public function label(): string
@@ -105,6 +117,7 @@ enum ProcessEventTypeEnum: int
             self::TASK_TRANSFER          => '任务转办',
             self::TASK_WITHDRAW          => '流程撤回',
             self::INSTANCE_TERMINATED    => '流程实例终止',
+            self::TASK_RECALL            => '已办任务撤回',
         };
     }
 }

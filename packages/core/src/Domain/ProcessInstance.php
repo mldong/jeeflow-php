@@ -225,6 +225,51 @@ class ProcessInstance
     }
 
     /**
+     * 已办撤回（issues/246，规范 04 · 已办撤回）的**复活腿**：废弃下游未答行＋同节点新建 DOING 行。
+     *
+     * ⚠️ 判据**不**在本方法里——全部由
+     * {@see \Jeeflow\Core\Support\RecallSupport::validateWindow()} 与引擎的前置位序拦下
+     * （报错即零写入，与后加签写入口／{@see self::checkRejectable()} 同一规矩）。
+     * 本方法只做两件写：
+     *  1. 下游仍 DOING 的行全部废弃（后加签行、征询成员行、并行分支多支自然覆盖）；
+     *  2. 同节点复活一行：名册＝原行名册、血缘 parent＝原行的 parent、到期时间按节点表达式同尺。
+     *
+     * 原 FINISHED 行**一律不改写**（jeeflow 无独立历史表，任务行即审批历史，翻回 DOING
+     * ＝改写已出证的记录）；它的 `tf_recallHistory` 账本要等复活行拿到 taskId 才能盖，
+     * 故由引擎在 saveTask 之后补盖（{@see \Jeeflow\Core\Support\RecallSupport::appendRecallHistory()}）。
+     *
+     * @param ProcessTask[] $doingDescendants 已过窗口判据的下游 DOING 行（要废弃）
+     * @return ProcessTask 复活的新行（DOING，本实例本节点唯一活待办）
+     */
+    public function recallTask(TaskModel $node, ProcessTask $target, string $operator,
+                               array $doingDescendants, bool $isFirstTaskNode): ProcessTask
+    {
+        foreach ($doingDescendants as $t) {
+            $t->abandon($operator);
+        }
+        // 与 AddSignHandler／CreateTaskHandler 同一条建单腿：走本聚合根的 createTask，
+        // 内部已按节点 expireTime 表达式同尺写 expire_time（issues/126 那五处写点的纪律），
+        // 撤回腿因此**不新增**建单写点。taskType/performType/form/expire 取节点，
+        // displayName 与名册取**原行**（历史出证的是什么，复活的就是什么）。
+        $resurrected = $this->createTask(
+            $target->getTaskName(),
+            $target->getDisplayName(),
+            $node->getTaskType(),
+            $node->getPerformType(),
+            $node->getForm() !== '' ? $node->getForm() : null,
+            $target->getActorIds(),
+            $operator,
+            // 建单不变量：parent 随行拷贝＝"上一步的上一步"，与原行同一条血缘
+            $target->getParentTaskId(),
+            $isFirstTaskNode,
+            $node->getExpireTime()
+        );
+        $this->updateTime = date('Y-m-d H:i:s');
+        $this->updateUser = $operator;
+        return $resurrected;
+    }
+
+    /**
      * 创建**历史/已完成**任务行（记录类节点 `snaker:custom` 专用）—— 对齐 Java
      * `ProcessInstance#createHistoryTask`（domain/ProcessInstance.java:425）。
      *

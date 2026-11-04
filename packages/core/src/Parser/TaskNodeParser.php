@@ -37,7 +37,16 @@ class TaskNodeParser extends AbstractNodeParser
         // 判据单点在 AddSignSupport（本类不写第二份）；声明成 TaskModel 字段后，
         // 下面"直接属性镜像进 ext"那条腿不收它们（只收固定白名单），双源就此断掉。
         $model->setAllowAddSign(\Jeeflow\Core\Support\AddSignSupport::parseAllow(
-            $p[\Jeeflow\Core\Support\AddSignSupport::PROP_ALLOW_ADD_SIGN] ?? null, $model->getName()));
+            $p[\Jeeflow\Core\Support\AddSignSupport::PROP_ALLOW_ADD_SIGN] ?? null, $model->getName(),
+            \Jeeflow\Core\Support\AddSignSupport::PROP_ALLOW_ADD_SIGN));
+        // 已办撤回开关（规范 02 §4.4，issues/246）：同尺解析，非法值解析期报配置错误
+        $model->setAllowRecall(\Jeeflow\Core\Support\AddSignSupport::parseAllow(
+            $p[\Jeeflow\Core\Support\RecallSupport::PROP_ALLOW_RECALL] ?? null, $model->getName(),
+            \Jeeflow\Core\Support\RecallSupport::PROP_ALLOW_RECALL));
+        // 动态会签（征询模式）开关（规范 02 §4.4，issues/247）：同尺解析
+        $model->setDynamicCountersign(\Jeeflow\Core\Support\AddSignSupport::parseAllow(
+            $p[\Jeeflow\Core\Support\CollectSupport::PROP_DYNAMIC_COUNTERSIGN] ?? null, $model->getName(),
+            \Jeeflow\Core\Support\CollectSupport::PROP_DYNAMIC_COUNTERSIGN));
         $model->setAddSignMaxRounds(\Jeeflow\Core\Support\AddSignSupport::parseMaxRounds(
             $p[\Jeeflow\Core\Support\AddSignSupport::PROP_ADD_SIGN_MAX_ROUNDS] ?? null, $model->getName()));
         // ext 字段

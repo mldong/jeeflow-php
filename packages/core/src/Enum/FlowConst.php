@@ -46,6 +46,12 @@ final class FlowConst
     public const ADD_SIGN_OPERATORS = 'tf_addSignOperators';
     public const ADD_SIGN_HISTORY = 'tf_addSignHistory';
     public const ADD_SIGN_ROUND = 'addSignRound';
+    // 动态会签（征询模式，issues/247）发起原因：选填，随账本条目落库并盖到每条成员行
+    // （单行出证自足）。跨栈契约键，camelCase 勿改 snake_case。
+    public const ADD_SIGN_REASON = 'tf_addSignReason';
+    // 已办撤回账本（issues/246）：{operator, time, recalledTaskId} 只追加，落**被撤回的旧行**变量。
+    // tf_ 前缀使退回复活腿（ProcessInstance::lineageVars）天然剔掉它。
+    public const RECALL_HISTORY = 'tf_recallHistory';
 
     public const USER_USER_ID = 'u_userId';
     public const USER_REAL_NAME = 'u_realName';
