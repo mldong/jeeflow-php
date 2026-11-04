@@ -521,6 +521,12 @@ class JeeflowEngine implements JeeflowEngineInterface
             foreach ($doingDescendants as $t) {
                 $this->repository->updateTask($t);
             }
+            // 复活行走**建单收口**（owner 2026-11-04 定档，与 java 1.8.59 同步）：撤回后重新出现的
+            // 这一手本质是一次建单，不是历史行的状态翻转 ⇒ 名册与普通建单同尺＝
+            // 原行名册 ＋ 当时生效委托并入（不摘原人）。此前本栈与 java／csharp 直调 saveTask ⇒ 不并，
+            // 与 go／python／node／rust／moon 五栈相反（5-3 分裂），定档后统一取"并"。
+            // 顺序仍是"先并再落库"：此刻 taskId 未分配，事后 addTaskActor 会打在空 id 上静默无效。
+            $this->applySurrogateByName(SurrogateInterceptor::resolveName($model, $define), $resurrected);
             $this->repository->saveTask($resurrected);
             // 复活行自己的待办另走码 3（规范 04 · 已办撤回；java 14674d7 补的这一腿——
             // 首版只 saveTask 漏 notifyTaskStart，go/python 均按 spec 走码 3，参考实现就此对齐）
@@ -763,12 +769,17 @@ class JeeflowEngine implements JeeflowEngineInterface
     /** 应用生效委托（引擎内置、默认开启）；关闭或仓储缺席时零影响。 */
     private function applySurrogate(Execution $exec, ProcessTask $task): void
     {
+        $this->applySurrogateByName(SurrogateInterceptor::resolveProcessName($exec), $task);
+    }
+
+    /**
+     * 同 `applySurrogate`，只是流程名由调用方现成给（issues/246 复活行走这一支：
+     * `recallTask` 判据阶段已有模型与定义行，不必为拿一个名字再造 `Execution`）。
+     * 开关与「未配置扩展仓储静默跳过」两条语义不变。
+     */
+    private function applySurrogateByName(string $processName, ProcessTask $task): void
+    {
         if (!$this->surrogateAutoApply) return;
-        // 条款 1.1：**模型 name 优先，模型未带 name 才回落 wf_process_define.name**
-        // （deploy 的 def.setName(model.getName()) 让两者正常恒等；回落不能省，
-        //  空串=只命中全流程兜底，该流程自己配的委托会一条都查不到）。
-        // 取值逻辑与 FlowInterceptor 挂点共用 SurrogateInterceptor::resolveProcessName，一处维护。
-        $processName = SurrogateInterceptor::resolveProcessName($exec);
         $this->surrogateApplier()->apply($task, $processName);
     }
 

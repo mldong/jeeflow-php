@@ -6,6 +6,7 @@ namespace Jeeflow\Core\Interceptor;
 
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Execution;
+use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 
@@ -87,7 +88,7 @@ class SurrogateInterceptor implements FlowInterceptor
      */
     public static function resolveProcessName(Execution $exec): string
     {
-        $name = trim((string) $exec->getProcessModel()?->getName());
+        $name = self::resolveName($exec->getProcessModel(), null);
         if ($name !== '') return $name;
 
         $defineId = $exec->getProcessInstance()?->getDefineId();
@@ -101,6 +102,31 @@ class SurrogateInterceptor implements FlowInterceptor
                 . ': ' . $e->getMessage());
             return '';
         }
+        return self::defineName($define);
+    }
+
+    /**
+     * 委托查询流程名的**同一把尺子**，供调用方手上已有模型／定义行时直接用
+     * （issues/246 已办撤回：`recallTask` 判据阶段就解析过模型、也取过定义行，
+     *  再造一个 `Execution` 只为走上面那条重载，等于把同一个契约写成两遍）。
+     *
+     * 规则逐字同 `resolveProcessName(Execution)`：模型 name 优先、缺失才回落定义行 name；
+     * 两枚都拿不到返回空串（＝只命中全流程兜底委托）。
+     */
+    public static function resolveName(?ProcessModel $model, ?array $define): string
+    {
+        return $model === null ? self::defineName($define)
+            : (self::nameOf($model->getName()) ?? self::defineName($define));
+    }
+
+    private static function nameOf(?string $raw): ?string
+    {
+        $name = trim((string) $raw);
+        return $name === '' ? null : $name;
+    }
+
+    private static function defineName(?array $define): string
+    {
         return trim((string) ($define['name'] ?? ''));
     }
 

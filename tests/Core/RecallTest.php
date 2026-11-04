@@ -16,12 +16,14 @@ use Jeeflow\Core\Event\ProcessEventListenerRegistry;
 use Jeeflow\Core\JeeflowEngine;
 use Jeeflow\Core\JeeflowException;
 use Jeeflow\Core\Parser\ModelParser;
+use Jeeflow\Core\Repository\InMemoryProcessExtRepository;
 use Jeeflow\Core\Repository\InMemoryProcessRepository;
 use Jeeflow\Core\ServiceContext;
 use Jeeflow\Core\Spi\BuiltinJsonProvider;
 use Jeeflow\Core\Spi\JsonProviderInterface;
 use Jeeflow\Core\Support\RecallSupport;
 use Jeeflow\Tests\Fixture\RecordingCustomListener;
+use Jeeflow\WebContract\JeeflowFacade;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -669,5 +671,44 @@ final class RecallTest extends TestCase
         $this->assertCount(1, $this->recallLedger($firstOld) ?? [], '最早那条历史行的账本不被第二次撤回污染');
         $this->assertCount(1, $this->recallLedger($secondOld) ?? [], '第二次撤回的账本落在它自己那一行');
         $this->assertSame(1, $this->doingCount($iid, 'review'));
+    }
+
+    /**
+     * 定档用例（owner 2026-11-04，规范 04 · 已办撤回第 3 条）：复活行**走建单收口** ⇒
+     * 名册＝原行名册 ＋ 当时生效委托并入（不摘原人），与普通建单同尺。
+     *
+     * <p>两档同一支内前后做。第二档的委托必须在 review **建单之后**才桥接进来——
+     * 不设这条前置自证，「复活行含代理人」可能被「建单时就已并入、原行本来就有代理人」顶包，
+     * 这一格就照不到撤回这条腿（java 侧同口径用例 `recallResurrectedRowMergesEffectiveSurrogate`
+     * 第一版正是栽在这儿：断言写成了「原行只有 userA」，而那张 review 行自己就是委托生效后建的）。</p>
+     */
+    public function test11ResurrectedRowMergesEffectiveSurrogate(): void
+    {
+        // ── 档一：没有扩展仓储 ⇒ 名册逐字不变（未配置扩展仓储是正常部署形态，静默跳过） ──
+        $iid1 = $this->startToReview(['allowRecall' => true]);
+        $this->engine->executeProcessTask((string) $this->doing($iid1, 'review')->getTaskId(), 'userA',
+            $this->plain(SubmitType::AGREE));
+        $plainRevived = $this->engine->recallTask(
+            (string) $this->finishedRow($iid1, 'review')->getTaskId(), 'userA');
+        $this->assertSame(['userA'], $plainRevived->getActorIds(), '未配置扩展仓储时名册不该多挂人');
+
+        // ── 档二：复活**当时**有生效委托 ⇒ 并入、不摘原人 ──
+        $iid2 = $this->startToReview(['allowRecall' => true]);
+        $this->engine->executeProcessTask((string) $this->doing($iid2, 'review')->getTaskId(), 'userA',
+            $this->plain(SubmitType::AGREE));
+        $oldRow = $this->finishedRow($iid2, 'review');
+        $rosterBefore = $oldRow->getActorIds();
+        $this->assertSame(['userA'], $rosterBefore, '前置：委托桥接前原行名册只有 userA');
+
+        $ext = new InMemoryProcessExtRepository();
+        $ext->saveSurrogate(['operator' => 'userA', 'surrogate' => 'userB', 'processName' => '',
+            'enabled' => 1, 'startTime' => '2020-01-01 00:00:00', 'endTime' => '2099-12-31 23:59:59']);
+        // 门面构造即把扩展仓储桥接进 ServiceContext（issues/116：引擎内置行为只认容器里的仓储）
+        new JeeflowFacade($this->engine, $this->repo, $ext);
+
+        $revived = $this->engine->recallTask((string) $oldRow->getTaskId(), 'userA');
+        $this->assertContains('userB', $revived->getActorIds(), '复活行名册须含被委托人');
+        $this->assertContains('userA', $revived->getActorIds(), '并入不摘原人');
+        $this->assertSame($rosterBefore, $oldRow->getActorIds(), '原 FINISHED 行的名册一字不动');
     }
 }
