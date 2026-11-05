@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Jeeflow\Core\Metadata;
 
+use Jeeflow\Core\Spi\DefaultActionPermissionProvider;
+
 /**
  * 处理器元数据注册中心（设计器字典）——对齐 Java HandlerRegistry
  */
@@ -19,6 +21,7 @@ final class HandlerRegistry
 
     /**
      * 内置 7 个 AssignmentHandler 元数据（对齐 Python BUILTIN_ASSIGNMENT_METAS / Java HandlerRegistry）
+     * ＋ 1 条 ActionPermissionProvider 内置默认件元数据（issues/29／hub issues/248）；
      * 注册名使用 Java 类全限定名（四语言通用约定）
      */
     private function registerBuiltIn(): void
@@ -30,6 +33,11 @@ final class HandlerRegistry
         $this->register(new HandlerMeta('AssignmentHandler', 'com.mldong.jeeflow.interceptor.impl.OrgUserAssignmentHandlers$DeptMainLeaderAssignmentHandler', '当前用户所属部门分管领导', 40));
         $this->register(new HandlerMeta('AssignmentHandler', 'com.mldong.jeeflow.interceptor.impl.FormFieldAssigneeHandler', '根据表单字段值分配参与者', 50));
         $this->register(new HandlerMeta('AssignmentHandler', 'com.mldong.jeeflow.interceptor.impl.OrgUserAssignmentHandlers$TaskRoleAssigneeHandler', '根据任务节点唯一编码关联角色分配参与者', 60));
+        // issues/29（hub issues/248 跨语言续腿）：action 权限码映射 SPI 进内置清单，
+        // 类型名/类名串与 java HandlerRegistry／go／python 的登记逐字一致（集成方可覆盖注册）
+        $this->register(new HandlerMeta(DefaultActionPermissionProvider::META_TYPE,
+            DefaultActionPermissionProvider::META_CLASS,
+            'action 权限码默认映射（boot3 注解语义归纳）', 0));
     }
 
     public function register(HandlerMeta $meta): void

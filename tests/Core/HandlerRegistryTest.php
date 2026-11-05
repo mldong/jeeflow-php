@@ -48,7 +48,17 @@ class HandlerRegistryTest extends TestCase
     {
         $registry = new HandlerRegistry();
         $all = $registry->listHandlers();
-        $this->assertCount(7, $all);
+        // 7 内置 AssignmentHandler + 1 内置 ActionPermissionProvider 默认件（issues/29／hub issues/248）
+        $this->assertCount(8, $all);
+    }
+
+    public function testBuiltInActionPermissionMeta(): void
+    {
+        $registry = new HandlerRegistry();
+        $handlers = $registry->listHandlers('ActionPermissionProvider');
+        $this->assertCount(1, $handlers);
+        $this->assertSame('com.mldong.jeeflow.spi.DefaultActionPermissionProvider', $handlers[0]->className);
+        $this->assertSame('action 权限码默认映射（boot3 注解语义归纳）', $handlers[0]->displayName);
     }
 
     public function testListHandlersUnknownType(): void
@@ -71,18 +81,19 @@ class HandlerRegistryTest extends TestCase
     public function testListHandlerTypes(): void
     {
         $registry = new HandlerRegistry();
-        $this->assertSame(['AssignmentHandler'], $registry->listHandlerTypes(), '内置 7 条同型 ⇒ 去重后单类型（首次注册序）');
+        $this->assertSame(['AssignmentHandler', 'ActionPermissionProvider'], $registry->listHandlerTypes(),
+            '内置 7 条 AssignmentHandler + 1 条 ActionPermissionProvider（issues/248）⇒ 两类型（首次注册序）');
 
         $registry->register(new HandlerMeta('CandidateHandler', 'com.example.CandidateProvider', '候选人提供者', 1));
         $this->assertSame(
-            ['AssignmentHandler', 'CandidateHandler'],
+            ['AssignmentHandler', 'ActionPermissionProvider', 'CandidateHandler'],
             $registry->listHandlerTypes(),
             '显式注册类型入场（对齐 Java 参考口径）'
         );
 
         $registry->register(new HandlerMeta('AssignmentHandler', 'com.custom.MyHandler', '自定义处理器', 100));
         $this->assertSame(
-            ['AssignmentHandler', 'CandidateHandler'],
+            ['AssignmentHandler', 'ActionPermissionProvider', 'CandidateHandler'],
             $registry->listHandlerTypes(),
             '同类型多枚 ⇒ 去重不重复'
         );
