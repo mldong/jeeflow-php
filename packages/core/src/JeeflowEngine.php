@@ -535,6 +535,18 @@ class JeeflowEngine implements JeeflowEngineInterface
             // updateTask，PDO 仓存的是快照，不补这一刀账本就丢。
             RecallSupport::appendRecallHistory($target, $operator, $resurrected->getTaskId());
             $this->repository->updateTask($target);
+            // issues/249：updateInstance 的级联腿会按聚合副本逐行 updateTask——$target 是
+            // findTaskById 新取的独立副本，不把它换进聚合，刚盖的 tf_recallHistory 会被聚合里
+            // 没账本的旧副本抹掉（内存仓 updateInstance 不级联所以单测绿；PDO 真库腿一手红）。
+            // go/python/node 同款 syncTaskToAggregate 形状。
+            $tasks = $instance->getTasks();
+            foreach ($tasks as $i => $t) {
+                if ($t->getTaskId() === $target->getTaskId()) {
+                    $tasks[$i] = $target;
+                    break;
+                }
+            }
+            $instance->setTasks($tasks);
             $this->repository->updateInstance($instance);
             // 码 10 TASK_RECALL：撤回事实落库之后 fire 一次（sourceId＝被撤回的旧行）
             ProcessPublisher::notify(ProcessEvent::of(
