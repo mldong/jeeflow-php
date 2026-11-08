@@ -805,8 +805,11 @@ class PdoProcessRepository implements ProcessRepositoryInterface
 
         // Fetch - include process define info
         $order = $query->getOrderBy() ?: 't.create_time DESC';
+        // issues/250：pi 本来就在 baseSql 里（todoList/doneList 两条都 LEFT JOIN wf_process_instance），
+        // 这里只多投一列 pi.state，别名 instance_state —— 不新增关联、不解析流程定义。
         $sql = "SELECT DISTINCT t.*, pd.name AS process_define_name, pd.display_name AS process_define_display_name, "
-            . "pd.version AS process_define_version, pi.variable AS instance_variable, pi.create_time AS instance_create_time "
+            . "pd.version AS process_define_version, pi.variable AS instance_variable, pi.create_time AS instance_create_time, "
+            . "pi.state AS instance_state "
             . $baseSql . $whereSql . " ORDER BY $order"
             . SqlPaging::clause($query->getPageSize(), $query->getOffset());
         $stmt = $this->pdo->prepare($sql);
@@ -839,6 +842,12 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'taskType' => $task->getTaskType(),
                 'performType' => $task->getPerformType(),
                 'taskState' => $task->getTaskState(),
+                // issues/250：行所属流程实例的状态（10/20/30/40/45/50/99），前端据此把
+                // 「实例已结束的已办行」撤回按钮置灰。任务态照不出这一格：末节点办结后
+                // taskState=20 而实例也才刚变 20，两列必须各读各的。
+                // 强转 int 是契约要求（MySQL 仿真预处理把 INT 列读成串）；pi 未命中 ⇒ null，
+                // 与内存仓 taskToRow 同答案（两仓不得分叉，issues/117 场景 27）。
+                'instanceState' => isset($row['instance_state']) ? (int) $row['instance_state'] : null,
                 'operator' => $task->getActorId(),
                 'formKey' => $task->getFormKey(),
                 'taskParentId' => $task->getParentTaskId(),

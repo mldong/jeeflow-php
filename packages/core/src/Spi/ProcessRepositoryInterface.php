@@ -143,10 +143,28 @@ interface ProcessRepositoryInterface
      */
     public function removeTaskActor(int|string $taskId, array $actorIds): void;
 
-    /** 待办任务分页 */
+    /**
+     * 待办任务分页。
+     *
+     * issues/250 行增量（**两条列表同一条文**，见 {@see self::pageDoneTasks()}）：每行必须带
+     * `instanceState` —— 整数，值＝该行所属流程实例的 state（10 进行中 / 20 已完成 / 30 撤回 /
+     * 40 终止 / 45 拒绝 / 50 挂起 / 99 废弃）。取数口是列表查询**本来就关联**的
+     * `wf_process_instance`（别名 `pi`）的 `state` 列，SQL 别名 `instance_state`；
+     * 实例不在场（LEFT JOIN 未命中）⇒ `null`。不新增关联、不解析流程定义、不改任何撤回判据。
+     *
+     * ⚠️ 义务在**仓储层**：门面 todoList/doneList 是 pass-through（`pageResult` 直出 `PageResult::toArray`），
+     * 行投影不经门面 ⇒ 只改门面照不出这一格。PHP 侧没有 java 的 `TaskRow` 值对象，行就是数组，
+     * 故本条文写在 SPI 文档上；两仓落点＝{@see \Jeeflow\Core\Repository\InMemoryProcessRepository::taskToRow()}
+     * 与 {@see \Jeeflow\RepositoryPDO\PdoProcessRepository::pagedTaskQuery()}，两处必须同答案。
+     */
     public function pageTodoTasks(PageQuery $query): PageResult;
 
-    /** 已办任务分页 */
+    /**
+     * 已办任务分页。行契约与 {@see self::pageTodoTasks()} 逐字同（含 issues/250 的 `instanceState`）。
+     *
+     * 这一格正是本轮的用途所在：末节点办结后任务态是 20、实例态**也才刚**变 20，
+     * 前端要把「实例已结束的已办行」撤回按钮置灰，只有 `taskState` 一列无从判断。
+     */
     public function pageDoneTasks(PageQuery $query): PageResult;
 
     // ── 抄送 ──

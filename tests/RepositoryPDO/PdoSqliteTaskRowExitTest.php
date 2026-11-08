@@ -260,6 +260,33 @@ SQL);
         }
     }
 
+    /**
+     * issues/250：列表行必须带所属流程实例的状态 `instanceState`（SQLite PDO 真 SQL 腿）。
+     *
+     * 承重档＝**实例结束后读已办**：任务态仍是 20，只有 instanceState 能告诉前端这单已走完
+     * （任务态照不出这一格）。内部对照＝同一实例结束前读待办行必须是 10，两格合起来挡住
+     * 「恒 10 / 恒 20 / 恒 null」。内存仓 taskToRow 也设了该字段，所以只打内存腿照不出 SQL
+     * 漏投那一列（issues/249 同形教训），本格必须走这条 PDO 路。
+     */
+    public function testListRowCarriesInstanceState(): void
+    {
+        [, $taskId] = $this->startSimple();
+
+        $before = $this->rowOf('processTask/todoList', 'leader', $taskId);
+        $this->assertSame(10, $before['instanceState'] ?? null,
+            '实例进行中 ⇒ SQL 待办行必须投出 instanceState=10');
+
+        $exec = $this->facade->flow('processTask/execute', [
+            'processTaskId' => $taskId, 'operator' => 'leader', 'submitType' => 1,
+        ]);
+        $this->assertSame(0, $exec['code'], json_encode($exec, JSON_UNESCAPED_UNICODE));
+
+        $after = $this->rowOf('processTask/doneList', 'leader', $taskId);
+        $this->assertSame(20, $after['taskState'], '前置：任务行自身仍是已完成');
+        $this->assertSame(20, $after['instanceState'] ?? null,
+            '实例已结束 ⇒ pi.state 必须投成 instanceState=20（任务态照不出这一格）');
+    }
+
     private function rowOf(string $action, string $operator, string $taskId): array
     {
         $r = $this->facade->flow($action, ['operator' => $operator]);

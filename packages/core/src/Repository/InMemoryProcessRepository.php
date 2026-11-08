@@ -576,6 +576,10 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
             'taskType' => $task->getTaskType(),
             'performType' => $task->getPerformType(),
             'taskState' => $task->getTaskState(),
+            // issues/250：行所属流程实例的状态（10/20/30/40/45/50/99）——与 PDO 仓
+            // `pi.state AS instance_state` 同一列同一判据，前端据此把实例已结束的已办行撤回按钮置灰。
+            // 实例就在上面查 ext 回退时取到了，不新增关联；不在场 ⇒ null（键恒在，两仓同答案）。
+            'instanceState' => $inst?->getState(),
             'operator' => $task->getActorId(),
             'formKey' => $task->getFormKey(),
             'taskParentId' => $task->getParentTaskId(),
