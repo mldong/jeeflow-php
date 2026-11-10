@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Jeeflow\Core\Support;
 
+use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\JeeflowException;
+use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\ProcessModel;
+use Jeeflow\Core\Model\TaskModel;
 use Jeeflow\Core\Util\FlowUtil;
 
 /**
@@ -33,6 +36,11 @@ final class RecallSupport
 {
     /** 节点属性键：已办撤回开关（properties 平铺层，缺省 false） */
     public const PROP_ALLOW_RECALL = 'allowRecall';
+
+    /** 已办撤回节点开关快照键（issues/251）：办理时由引擎从 TaskModel 盖到本行变量，值＝
+     *  办理时刻的 allowRecall 定义值；tf_ 前缀不进实例变量（不传播）。查询出口搬运成
+     *  行顶层 allowRecall 供前端预判置灰。撤回校验仍以现读定义为权威，快照仅供预判。 */
+    public const KEY_ALLOW_RECALL = 'tf_allowRecall';
 
     /** 逐字判据文案（跨栈统一；规范 06 §processTask/recall 失败文案表） */
     public const MSG_WINDOW = '任务[%s]的后续节点已办理，不能撤回';
@@ -181,5 +189,20 @@ final class RecallSupport
             }
         }
         return $out;
+    }
+
+    /**
+     * 办理时把当前节点的 allowRecall 开关快照进行变量（issues/251）：已办行置灰的
+     * "节点开关"预判从行上读，查询出口只搬运不解析定义。tf_ 前缀键被实例合并排除
+     * （completeTask 立法，不传播）；本栈建单只写 isFirstTaskNode（与 jeeflow/go 同形）。
+     * 撤回校验仍以现读定义为权威，快照仅供前端预判（漂移为设计内）。
+     * 非 TaskModel（start/end/decision 等不办理的节点）与 null args 静默跳过。
+     */
+    public static function stampAllowRecall(?FlowData $args, ?NodeModel $node): void
+    {
+        if ($args === null || !$node instanceof TaskModel) {
+            return;
+        }
+        $args->set(self::KEY_ALLOW_RECALL, $node->isAllowRecall());
     }
 }

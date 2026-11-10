@@ -602,6 +602,15 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface
             $row['processDefineVersion'] = $def['version'] ?? null;
             $row['version'] = isset($def['version']) ? (int) $def['version'] : null;
         }
+        // issues/251：办理时快照的节点开关投成顶层标准字段，供前端已办行置灰预判——从原行
+        // 变量取（ext 回退替换不影响）；只投已办行（本栈建单只写 isFirstTaskNode，待办行无键，
+        // 与 jeeflow/go 同形；DOING 守卫为防御性同形）；无键不投＝存量行＝前端退回可点
+        if ($task->getTaskState() !== ProcessTaskState::DOING) {
+            $snap = $task->getVariables()->get(FlowConst::ALLOW_RECALL);
+            if ($snap !== null) {
+                $row['allowRecall'] = (bool) $snap;
+            }
+        }
         return $row;
     }
 

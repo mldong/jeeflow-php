@@ -52,6 +52,9 @@ final class FlowConst
     // 已办撤回账本（issues/246）：{operator, time, recalledTaskId} 只追加，落**被撤回的旧行**变量。
     // tf_ 前缀使退回复活腿（ProcessInstance::lineageVars）天然剔掉它。
     public const RECALL_HISTORY = 'tf_recallHistory';
+    // 已办撤回节点开关快照（issues/251）：办理时由引擎从 TaskModel 盖到本行变量，值＝办理时刻的
+    // allowRecall 定义值；tf_ 前缀不进实例变量（不传播）。查询出口搬运成行顶层 allowRecall 供前端预判
+    public const ALLOW_RECALL = 'tf_allowRecall';
 
     public const USER_USER_ID = 'u_userId';
     public const USER_REAL_NAME = 'u_realName';

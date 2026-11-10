@@ -711,4 +711,58 @@ final class RecallTest extends TestCase
         $this->assertContains('userA', $revived->getActorIds(), '并入不摘原人');
         $this->assertSame($rosterBefore, $oldRow->getActorIds(), '原 FINISHED 行的名册一字不动');
     }
+
+    // ═══ issues/251：办理时快照 tf_allowRecall ═══
+
+    public function test251StampAllowRecallSnapshot(): void
+    {
+        $iid = $this->startToReview(['assignee' => 'userA', 'allowRecall' => true]);
+        // 待办 review 行无快照键（建单只写 isFirstTaskNode，与 jeeflow/go 同形）
+        $review = $this->doing($iid, 'review');
+        $this->assertNotNull($review);
+        $this->assertNull($review->getVariables()->get(FlowConst::ALLOW_RECALL),
+            '待办行不应带快照键');
+
+        // 同名隔离：办理 args 塞业务裸键 allowRecall
+        $this->engine->executeProcessTask((string) $review->getTaskId(), 'userA',
+            FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::AGREE])->set('allowRecall', 'custom'));
+        // 快照两态：review 行 true（ext 里业务键 custom 保留）
+        $reviewRow = $this->finishedRow($iid, 'review');
+        $this->assertNotNull($reviewRow);
+        $this->assertTrue($reviewRow->getVariables()->get(FlowConst::ALLOW_RECALL));
+        $this->assertSame('custom', $reviewRow->getVariables()->get('allowRecall'),
+            '业务同名键与快照互不干扰');
+
+        // final（未配置节点）→ false
+        $final = $this->doing($iid, 'final');
+        $this->engine->executeProcessTask((string) $final->getTaskId(), 'userF',
+            FlowData::of([FlowConst::SUBMIT_TYPE => SubmitType::AGREE]));
+        $finalRow = $this->finishedRow($iid, 'final');
+        $this->assertNotNull($finalRow);
+        $this->assertFalse($finalRow->getVariables()->get(FlowConst::ALLOW_RECALL));
+
+        // apply 行（发起腿办结，禁配档）
+        $applyRow = $this->finishedRow($iid, 'apply');
+        $this->assertNotNull($applyRow);
+        $this->assertFalse($applyRow->getVariables()->get(FlowConst::ALLOW_RECALL));
+
+        // 不传播：实例变量无 tf_allowRecall
+        $inst = $this->repo->findInstanceById($iid);
+        $this->assertNotNull($inst);
+        $this->assertNull($inst->getVariables()->get(FlowConst::ALLOW_RECALL),
+            '实例变量不得含快照键');
+
+        // 出口行内搬运：doneList 已办行投顶层、ext 业务键原样（门面两参构造，同 CcListRowShapeTest）
+        $facade = new JeeflowFacade($this->engine, $this->repo);
+        $resp = $facade->flow('processTask/doneList',
+            ['operator' => 'userA', 'pageNum' => 1, 'pageSize' => 10]);
+        $this->assertSame(0, $resp['code'], json_encode($resp, JSON_UNESCAPED_UNICODE));
+        $reviewDone = null;
+        foreach ($resp['data']['rows'] as $r) {
+            if ($r['taskName'] === 'review') { $reviewDone = $r; }
+        }
+        $this->assertNotNull($reviewDone);
+        $this->assertTrue($reviewDone['allowRecall'], '已办行投顶层 true');
+        $this->assertSame('custom', $reviewDone['ext']['allowRecall'], 'ext 业务键原样');
+    }
 }

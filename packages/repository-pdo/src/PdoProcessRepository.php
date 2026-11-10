@@ -867,6 +867,14 @@ class PdoProcessRepository implements ProcessRepositoryInterface
                 'version' => $row['process_define_version'] ?? null,
                 'instanceCreateTime' => $row['instance_create_time'] ?? null,
             ];
+            // issues/251：办理时快照的节点开关投成顶层标准字段，供前端已办行置灰预判——从原行
+            // 变量取；只投已办行（与内存仓 taskToRow 同形）；无键不投＝存量行＝前端退回可点
+            if ($task->getTaskState() !== ProcessTaskState::DOING) {
+                $snap = $task->getVariables()->get(FlowConst::ALLOW_RECALL);
+                if ($snap !== null) {
+                    $rows[count($rows) - 1]['allowRecall'] = (bool) $snap;
+                }
+            }
         }
         return new PageResult($query->getPageNum(), $query->getPageSize(), $total, $rows);
     }

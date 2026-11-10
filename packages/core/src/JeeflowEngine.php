@@ -601,6 +601,11 @@ class JeeflowEngine implements JeeflowEngineInterface
             $currentNode->assertInterceptorsResolvable($model);
         }
 
+        // issues/251：办理时把本节点的 allowRecall 开关快照进行变量（tf_allowRecall）——
+        // prepareExecution 是全部办结路径的公共序言，一处盖键全路径覆盖。tf_ 键被实例
+        // 合并排除（不传播）；撤回校验仍以现读定义为权威，快照仅供前端预判；出口只投已办行。
+        RecallSupport::stampAllowRecall($args, $currentNode);
+
         // 完成任务——聚合根内部修改了 instance 中的 task 状态
         $instance->completeTask($taskId, $operator, $args);
 
