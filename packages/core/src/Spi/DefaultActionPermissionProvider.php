@@ -16,7 +16,7 @@ use Jeeflow\Core\ServiceContext;
  *
  * 三档优先级（java {@code permissionCodes} 的判据次序）：
  * ① 放行清单 {@see self::NO_PERM_ACTIONS}（11 条）→ null；
- * ② OR 表 {@see self::OR_RULES}（7 条）→ 权限码数组；
+ * ② OR 表 {@see self::OR_RULES}（8 条）→ 权限码数组；
  * ③ 默认派生 {@code "wf:" . str_replace('/', ':', $action)}。
  */
 final class DefaultActionPermissionProvider implements ActionPermissionProviderInterface
@@ -28,7 +28,7 @@ final class DefaultActionPermissionProvider implements ActionPermissionProviderI
     public const META_CLASS = 'com.mldong.jeeflow.spi.DefaultActionPermissionProvider';
 
     /**
-     * OR 规则表（对齐 java OR_RULES，7 条——条目数是跨栈契约形状锚，加一条要八栈同批改）。
+     * OR 规则表（对齐 java OR_RULES，8 条——条目数是跨栈契约形状锚，加一条要八栈同批改）。
      */
     public const OR_RULES = [
         'processDefine/detail' => ['wf:processDefine:detail', 'wf:processDesign:listByType'],
@@ -44,6 +44,9 @@ final class DefaultActionPermissionProvider implements ActionPermissionProviderI
         // 六语言同款落点见各集成壳的权限表（本轮同批，hub issues/248）。
         'processTask/recall' => ['wf:processTask:execute'],
         'processTask/revokeDynamicCountersign' => ['wf:processTask:execute'],
+        // issues/253 动态协办：照 246/247 B 案惯例复用"办理"这枚码，不建按钮种子行——
+        // 派生协办的主体按引擎判据本来就必然是主办行名册内的人（＝有办理权的人）。
+        'processTask/aidant' => ['wf:processTask:execute'],
     ];
 
     /**

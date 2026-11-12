@@ -33,6 +33,7 @@ use Jeeflow\Core\Spi\ProcessExtRepositoryInterface;
 use Jeeflow\Core\Spi\UserProviderInterface;
 use Jeeflow\Core\Spi\UserSearchProviderInterface;
 use Jeeflow\Core\Support\AddSignSupport;
+use Jeeflow\Core\Support\AidantSupport;
 use Jeeflow\Core\Support\CollectSupport;
 use Jeeflow\Core\Support\ReapplySupport;
 use Jeeflow\Core\Util\CcActorUtil;
@@ -175,6 +176,7 @@ class JeeflowFacade
             'processTask/removeTaskActor' => $this->taskRemoveActor($args), // issues/115 残留：第 47 个 action
             'processTask/recall' => $this->taskRecall($args), // issues/246 已办撤回
             'processTask/revokeDynamicCountersign' => $this->taskRevokeCountersign($args), // issues/247 撤回动态会签
+            'processTask/aidant' => $this->taskAidant($args), // issues/253 动态协办
             'processTask/latest' => $this->taskLatest($args),
             'processTask/candidatePage' => $this->candidatePage($args),
             // ── 视图端点 ──
@@ -652,6 +654,46 @@ class JeeflowFacade
     }
 
     /**
+     * 动态协办（issues/253，规范 06 §processTask/aidant）：主办把"这活"交给别人干——按人派生
+     * task_type=1 协办子行，主办行原样保留 DOING，节点推进仍由主办行办结触发。
+     *
+     * 门面只做参数归一与信封包装，判据/建单/账本全在引擎（{@see \Jeeflow\Core\JeeflowEngine::aidantTask()}，
+     * 与 recall 同分工）。operator 硬必填（不接受缺省，与 transfer/withdraw 同口径）；
+     * actorIds 逗号串与数组两形共用 §2.11 那枚归一单点，空 ⇒ 逐字「actorIds 必填」。
+     * waitCompletion 选填 bool，缺省 false＝主办不等协办办结即可推进。
+     *
+     * 成功 data → null（规范 06）；失败 msg 见跨栈统一文案表协办六行。
+     * 权限码复用 wf:processTask:execute（OR 规则，照 246/247 B 案惯例）。
+     * **位序照 java taskAidant：operator 空判在前、主键缺失判在后、actorIds 空判第三。**
+     */
+    private function taskAidant(array $args): array
+    {
+        $operator = trim($this->toStr($args['operator'] ?? ''));
+        if ($operator === '') return $this->error('operator 必填');
+        $taskId = $this->toStr($args[FlowConst::PROCESS_TASK_ID_KEY] ?? '');
+        if ($taskId === '') return $this->error('processTaskId 缺失');
+        $actorIds = CcActorUtil::normalizeActors($args[FlowConst::ACTOR_IDS_KEY] ?? []);
+        if ($actorIds === []) return $this->error(AidantSupport::MSG_NO_ACTORS);
+        $reason = $this->toStr($args['reason'] ?? '');
+        $waitCompletion = self::parseWaitCompletion($args['waitCompletion'] ?? null);
+        $this->engine->aidantTask($taskId, $actorIds, $reason, $waitCompletion, $operator);
+        return $this->ok();
+    }
+
+    /**
+     * waitCompletion 入参解析：缺省 false（规范 06「选填 bool，缺省 false」）。
+     * 布尔与 "true"/"false" 字符串两形都认（前端 JSON 与表单串两种来源）；其余值按缺省 false
+     * 处理——契约只定义了 bool 档，不为非法值新造文案（跨栈统一文案表协办六行之外不加第七行）。
+     */
+    private static function parseWaitCompletion(mixed $value): bool
+    {
+        if ($value === null) return false;
+        if (is_bool($value)) return $value;
+        if (is_array($value) || is_object($value)) return false;
+        return strcasecmp(trim((string) $value), 'true') === 0;
+    }
+
+    /**
      * 动态会签发起分流（issues/247，规范 04 · 动态会签）：征询节点带 `tf_addSignOperators`
      * 的提交＝**只建成员行、不办结主办行**；返回响应 marker（`data.dynamicCountersign`），
      * 非征询提交返回 null 走普通流转。
@@ -920,6 +962,16 @@ class JeeflowFacade
                         $collect = CollectSupport::buildProjection($inst->getTasks(), $task);
                         if ($collect !== null) {
                             $tExt['dynamicCountersign'] = $collect;
+                            $vo['ext'] = $tExt;
+                        }
+                    }
+                    // 动态协办投影（issues/253）：主办行 ext.aidant 从 task_parent_id＋task_type=1
+                    // 现算，不落新存储。**无节点开关**——协办档只由运行期派生，任何任务节点都可能有。
+                    // ⚠️ 无协办行 ⇒ buildProjection 返回 null，不输出空壳（逐字照 java）；改完回写一次。
+                    if ($node instanceof TaskModel && $inst !== null) {
+                        $aidant = AidantSupport::buildProjection($inst->getTasks(), $task);
+                        if ($aidant !== null) {
+                            $tExt['aidant'] = $aidant;
                             $vo['ext'] = $tExt;
                         }
                     }

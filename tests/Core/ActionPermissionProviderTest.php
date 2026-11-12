@@ -13,7 +13,7 @@ use PHPUnit\Framework\TestCase;
  * action → 权限码映射 SPI 单元测试（issues/29 跨语言续腿，hub issues/248 PHP 腿）。
  *
  * 行为基准＝java {@code DefaultActionPermissionProvider}（其测试是权威）：
- * 放行 11 条 → OR 7 条 → 默认派生 wf:{action 的 / 换 :}，三档优先级逐条照抄。
+ * 放行 11 条 → OR 8 条 → 默认派生 wf:{action 的 / 换 :}，三档优先级逐条照抄。
  */
 class ActionPermissionProviderTest extends TestCase
 {
@@ -111,12 +111,12 @@ class ActionPermissionProviderTest extends TestCase
         $this->assertNull(DefaultActionPermissionProvider::permissionCodesFor(null));
     }
 
-    // ═══ 两表条目数＝跨栈契约形状锚（7 与 11，加一条要八栈同批改） ═══
+    // ═══ 两表条目数＝跨栈契约形状锚（8 与 11，加一条要八栈同批改） ═══
 
     public function testTableEntryCounts(): void
     {
-        $this->assertCount(7, DefaultActionPermissionProvider::OR_RULES,
-            'OR 表条目数钉死 7（java OR_RULES 同数）');
+        $this->assertCount(8, DefaultActionPermissionProvider::OR_RULES,
+            'OR 表条目数钉死 8（java OR_RULES 同数；issues/253 协办 +1）');
         $this->assertCount(11, DefaultActionPermissionProvider::NO_PERM_ACTIONS,
             '放行清单条目数钉死 11（java NO_PERM_ACTIONS 同数）');
     }

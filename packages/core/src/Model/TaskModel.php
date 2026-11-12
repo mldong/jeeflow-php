@@ -9,6 +9,7 @@ use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\Handler\AddSignHandler;
 use Jeeflow\Core\Handler\CountersignHandler;
+use Jeeflow\Core\Support\AidantSupport;
 
 /**
  * 任务节点模型
@@ -51,6 +52,7 @@ class TaskModel extends NodeModel
         if ($this->performType === PerformType::COUNTERSIGN) {
             $this->fire(new CountersignHandler($this), $execution);
             if ($execution->isMerged()) {
+                $this->abandonAidantOnLeave($execution);
                 $this->runOutTransition($execution);
             }
         } elseif ($this->allowAddSign) {
@@ -58,6 +60,7 @@ class TaskModel extends NodeModel
             // 没点人但本节点还有兄弟待办→不流转；两者皆否→放行出边）。
             $this->fire(new AddSignHandler($this), $execution);
             if ($execution->isMerged()) {
+                $this->abandonAidantOnLeave($execution);
                 $this->runOutTransition($execution);
             }
         } elseif ($this->dynamicCountersign) {
@@ -66,11 +69,27 @@ class TaskModel extends NodeModel
             // AddSignHandler 推进闸：主办还 DOING ⇒ merged=false 节点不动；主办办结且成员清零 ⇒ 放行。
             $this->fire(new AddSignHandler($this), $execution);
             if ($execution->isMerged()) {
+                $this->abandonAidantOnLeave($execution);
                 $this->runOutTransition($execution);
             }
         } else {
+            $this->abandonAidantOnLeave($execution);
             $this->runOutTransition($execution);
         }
+    }
+
+    /**
+     * 离开节点时清场未办结协办行（issues/253，规范 04「动态协办」）：waitCompletion=false
+     * （缺省）时主办可随时办结推进，未办结协办行随废弃腿清场、账本记废弃，不留孤儿待办。
+     *
+     * 只在**真要离开本节点**（merged／普通档放行出边）时调用——串行会签/加签续建/征询未收齐
+     * 那些"留在本节点"的分支不调，否则会把还在办的协办行提前废弃。幂等：已废弃行不再命中，
+     * 会签档 CountersignHandler 先清过一遍也不会重复记账。
+     */
+    private function abandonAidantOnLeave(Execution $execution): void
+    {
+        AidantSupport::abandonPendingOnNode(
+            $execution->getProcessInstance(), $this->getName(), $execution->getOperator());
     }
 
     // ── 便捷字段（从 ext 中读取） ──

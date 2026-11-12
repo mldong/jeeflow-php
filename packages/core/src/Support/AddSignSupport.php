@@ -204,14 +204,17 @@ final class AddSignSupport
         }
     }
 
-    /** 本节点是否还有未完成任务（刚办结那条此刻已是 FINISHED，不计入）。 */
+    /** 本节点是否还有未完成任务（刚办结那条此刻已是 FINISHED，不计入）。
+     *  issues/253：协办行（task_type=1）不算"兄弟待办"——它不驱动流程、不是接力链的一环，
+     *  算进来会让 waitCompletion=false 的主办在加签/征询节点上被协办行挡住推进（规范 04
+     *  「缺省 false 主办可随时推进」）。协办行的等待由 {@see AidantSupport::gateWait()} 单独裁决。 */
     public static function hasDoingOnNode(?ProcessInstance $instance, string $nodeName): bool
     {
         if ($instance === null || $nodeName === '') {
             return false;
         }
         foreach ($instance->getTasks() as $t) {
-            if ($nodeName === $t->getTaskName() && $t->isDoing()) {
+            if ($nodeName === $t->getTaskName() && $t->isDoing() && !AidantSupport::isAidantRow($t)) {
                 return true;
             }
         }

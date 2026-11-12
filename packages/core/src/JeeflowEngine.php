@@ -8,14 +8,17 @@ use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Handler\CreateTaskHandler;
 use Jeeflow\Core\Support\AddSignSupport;
+use Jeeflow\Core\Support\AidantSupport;
 use Jeeflow\Core\Support\RecallSupport;
 use Jeeflow\Core\Support\ReapplySupport;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\FlowConst;
+use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\Enum\ProcessEventTypeEnum;
 use Jeeflow\Core\Enum\ProcessInstanceState;
 use Jeeflow\Core\Enum\SubmitType;
+use Jeeflow\Core\Enum\TaskType;
 use Jeeflow\Core\Event\ProcessEvent;
 use Jeeflow\Core\Event\ProcessPublisher;
 use Jeeflow\Core\Event\PendingInstanceEnd;
@@ -175,6 +178,10 @@ class JeeflowEngine implements JeeflowEngineInterface
         return $this->inTx(function () use ($taskId, $operator, $args) {
             $args = ReapplySupport::stripReserved($args);
             $pre = $this->repository->findTaskById($taskId);
+            // issues/253 推进闸：协办行（task_type=1）办结不产生执行对象、不跑输出变迁
+            if ($pre !== null && $pre->isDoing() && AidantSupport::isAidantRow($pre)) {
+                return $this->completeAidantWithoutDrive($taskId, $operator, $args);
+            }
             if ($pre !== null && $pre->isDoing() && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
                 return $this->executeReapply($pre, $operator, $args);
             }
@@ -202,6 +209,11 @@ class JeeflowEngine implements JeeflowEngineInterface
     {
         return $this->inTx(function () use ($taskId, $operator, $args, $nodeName) {
             $pre = $this->repository->findTaskById($taskId);
+            // issues/253 推进闸：两路同闸（照 snaker，别只堵 executeTask 一路）——协办行跳转/退回
+            // 同样不驱动流程，且必须排在血缘/目标守卫之前，免得协办行被守卫的文案误拦。
+            if ($pre !== null && $pre->isDoing() && AidantSupport::isAidantRow($pre)) {
+                return $this->completeAidantWithoutDrive($taskId, $operator, $args);
+            }
             if ($pre !== null && $pre->isDoing()
                 && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
                 throw new JeeflowException("带重提直返标记的申请待办不允许跳转，只接受重新提交(submitType=5)");
@@ -222,6 +234,9 @@ class JeeflowEngine implements JeeflowEngineInterface
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
+            // issues/253：跳转/退回离开本节点 ⇒ 未办结协办行随废弃腿清场（账本记废弃）
+            AidantSupport::abandonPendingOnNode($exec->getProcessInstance(),
+                (string) $exec->getProcessTask()?->getTaskName(), $operator);
             if ($nodeName === null || $nodeName === '') {
                 // issues/121 P2：驳回走血缘版——上一步来源＝当前行的 task_parent_id，
                 // 由仓储把那条历史行取出来交给聚合根复活（取不到传 null，聚合根报 20010007）。
@@ -250,6 +265,10 @@ class JeeflowEngine implements JeeflowEngineInterface
     {
         return $this->inTx(function () use ($taskId, $operator, $args) {
             $pre = $this->repository->findTaskById($taskId);
+            // issues/253 推进闸：协办行拒绝同样不驱动流程（任何 submitType 都只办结自己那一行）
+            if ($pre !== null && $pre->isDoing() && AidantSupport::isAidantRow($pre)) {
+                return $this->completeAidantWithoutDrive($taskId, $operator, $args);
+            }
             if ($pre !== null && $pre->isDoing()
                 && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
                 throw new JeeflowException("带重提直返标记的申请待办不允许拒绝，只接受重新提交(submitType=5)");
@@ -257,6 +276,9 @@ class JeeflowEngine implements JeeflowEngineInterface
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
+            // issues/253：离开节点先清场未办结协办行（废弃＋账本记废弃），再走后加签/征询的既有废弃腿
+            AidantSupport::abandonPendingOnNode($exec->getProcessInstance(),
+                (string) $exec->getProcessTask()?->getTaskName(), $operator);
             // 拒绝结束：本节点未完成的加签任务一并废弃，不留孤儿待办（spec 04 · 后加签）
             AddSignSupport::abandonDoingOnNode($model, $exec->getProcessInstance(),
                 (string) $exec->getProcessTask()?->getTaskName(), $operator);
@@ -277,6 +299,10 @@ class JeeflowEngine implements JeeflowEngineInterface
             $args = ReapplySupport::stripReserved($args);
             // 校验放在任何状态变更之前：来源节点配了 RETURN_TO_SOURCE 时，先读模型判准入
             $pre = $this->repository->findTaskById($taskId);
+            // issues/253 推进闸：协办行退回发起人同样不驱动流程
+            if ($pre !== null && $pre->isDoing() && AidantSupport::isAidantRow($pre)) {
+                return $this->completeAidantWithoutDrive($taskId, $operator, $args);
+            }
             if ($pre !== null && $pre->isDoing()
                 && ReapplySupport::reapplyOf($pre->getVariables()) !== null) {
                 throw new JeeflowException("带重提直返标记的申请待办不允许再次退回，只接受重新提交(submitType=5)");
@@ -298,6 +324,9 @@ class JeeflowEngine implements JeeflowEngineInterface
             $exec = $this->prepareExecution($taskId, $operator, $args);
             if ($exec === null) return [];
             $model = $exec->getProcessModel();
+            // issues/253：退回发起人离开本节点 ⇒ 未办结协办行随废弃腿清场（账本记废弃）
+            AidantSupport::abandonPendingOnNode($exec->getProcessInstance(),
+                (string) $exec->getProcessTask()?->getTaskName(), $operator);
             // 退回发起人：本节点未完成的加签任务一并废弃，不留孤儿待办（spec 04 · 后加签）
             AddSignSupport::abandonDoingOnNode($model, $exec->getProcessInstance(),
                 (string) $exec->getProcessTask()?->getTaskName(), $operator);
@@ -563,6 +592,145 @@ class JeeflowEngine implements JeeflowEngineInterface
         });
     }
 
+    /**
+     * 动态协办（issues/253，规范 04 · 动态协办）：主办把"这活"交给别人干——按人派生
+     * task_type=1 协办子行，**主办行原样保留 DOING**，节点推进仍由主办行办结触发。
+     *
+     * 判据全部排在任何状态变更之前（报错即零写入——与后加签/征询/撤回同一规矩）：
+     * 任务存在 → 禁递归（协办行不能再派生）→ 主办行 DOING → 名册鉴权（auto/admin 例外）→
+     * 逐人去重（该人已有本主办行下未办结协办行）。落库顺序：协办行 saveNewTask（委托并入 →
+     * saveTask 分配 id → fire 码 3）→ 主办行盖 wait 开关＋账本 updateTask。
+     *
+     * 建单形状照征询成员行腿（{@see ProcessInstance::createTask()}：同节点同名、parent＝主办行、
+     * expire_time 按节点表达式同尺重算），另落 task_type=1／performType=NORMAL——节点上配的
+     * performType 可能是会签，协办行一律普通参与（规范 04 派生规则 1）。委托并入走
+     * {@see self::saveNewTask()} 既有腿（与撤回定档同一把尺），不新增事件码。
+     *
+     * ⚠️ 名册鉴权按**任务行 actorIds**（本栈无 findTaskActors SPI，与 recall/transfer 同源；
+     * 内存仓 addTaskActor 原地回写行名册，加签进来的第二参与人同样在名册内）。
+     *
+     * @param string[] $actorIds 协办人（每人一行）
+     * @return ProcessTask[] 本次派生的协办行（DOING）
+     */
+    public function aidantTask(string $taskId, array $actorIds, ?string $reason,
+                               bool $waitCompletion, string $operator): array
+    {
+        return $this->inTx(function () use ($taskId, $actorIds, $reason, $waitCompletion, $operator): array {
+            $host = $this->repository->findTaskById($taskId);
+            if (!$host instanceof ProcessTask) {
+                throw new JeeflowException(AidantSupport::MSG_TASK_NOT_FOUND);
+            }
+            // 禁递归：协办行携带派生参数 ⇒ 报错（规范 04 派生规则 4）
+            if (AidantSupport::isAidantRow($host)) {
+                throw new JeeflowException(AidantSupport::MSG_NO_RECURSION);
+            }
+            if (!$host->isDoing()) {
+                throw new JeeflowException(AidantSupport::MSG_NOT_DOING);
+            }
+            $actors = CcActorUtil::normalizeActors($actorIds);
+            if ($actors === []) {
+                throw new JeeflowException(AidantSupport::MSG_NO_ACTORS);
+            }
+            $privileged = strcasecmp($operator, FlowConst::AUTO_ID) === 0
+                || strcasecmp($operator, FlowConst::ADMIN_ID) === 0;
+            if (!$privileged && !in_array($operator, $host->getActorIds(), true)) {
+                throw new JeeflowException(AidantSupport::MSG_NO_PERMISSION);
+            }
+            $instance = $this->repository->findInstanceById((string) $host->getProcessInstanceId());
+            if (!$instance instanceof ProcessInstance) {
+                throw new JeeflowException('流程实例不存在');
+            }
+            // issues/249 同一课：账本必须盖在聚合内的同一对象上——findTaskById 在 PDO 仓是独立副本，
+            // 把 host 重指到聚合内那份，免得后续级联拿没账本的旧副本抹掉它（与 recall 同源）。
+            foreach ($instance->getTasks() as $t) {
+                if ($t->getTaskId() === $taskId) {
+                    $host = $t;
+                    break;
+                }
+            }
+            $define = $this->repository->findDefineById((string) $instance->getDefineId());
+            if ($define === null) {
+                throw new JeeflowException('流程定义不存在');
+            }
+            $model = ModelParser::parse((string) $define['content']);
+            $node = $model->getNode($host->getTaskName());
+            if (!$node instanceof TaskModel) {
+                throw new JeeflowException(AidantSupport::MSG_NOT_DOING);
+            }
+            // 去重：该人已有本主办行下**未办结**协办行 ⇒ 报错（规范 04 派生规则 5）
+            $existing = AidantSupport::aidantRows($instance->getTasks(), $host);
+            foreach ($actors as $actor) {
+                foreach ($existing as $t) {
+                    if ($t->isDoing() && in_array($actor, $t->getActorIds(), true)) {
+                        throw new JeeflowException(AidantSupport::MSG_DUPLICATE);
+                    }
+                }
+            }
+            // ── 判据全过，以下才允许写 ──
+            $round = AidantSupport::lastRound($host) + 1;
+            $isFirstTaskNode = FlowUtil::isFirstTaskName($model, $node->getName());
+            /** @var ProcessTask[] $created */
+            $created = [];
+            foreach ($actors as $actor) {
+                $child = $instance->createTask(
+                    $node->getName(),
+                    $node->getDisplayName(),
+                    TaskType::ASSIST,
+                    PerformType::NORMAL,
+                    $node->getForm() !== '' ? $node->getForm() : null,
+                    [$actor],
+                    $operator,
+                    $host->getTaskId(),
+                    $isFirstTaskNode,
+                    // 到期时间同尺（走聚合根那条腿，不另造写点）
+                    $node->getExpireTime()
+                );
+                if ($reason !== null && $reason !== '') {
+                    $child->getVariables()->set(FlowConst::AIDANT_REASON, $reason);
+                }
+                $created[] = $child;
+            }
+            // 等待闸开关＋账本落主办行（主办不办结，variables 合并序保证账本活到办结后）
+            $host->getVariables()->set(FlowConst::AIDANT_WAIT, $waitCompletion);
+            AidantSupport::appendAidantHistory($host, $operator, $actors, $round, $reason);
+            // ⚠️ 严禁覆写任务 actor_id/operator 列（转办那条 ⚠️ 同尺）：进行中任务该列恒无值是家族不变量，
+            // 派生协办不改主办行的办理人归属，审计由 update_user＋账本 operator 承载。
+            $host->setUpdateUser($operator);
+            $host->setUpdateTime(date('Y-m-d H:i:s'));
+            // 建单收口：saveNewTask（委托并入＋saveTask 分配 id＋fire 码 3），与每一次普通建单同一条腿
+            $exec = $this->buildExecution($model, $instance, FlowData::create(), $operator);
+            foreach ($created as $child) {
+                $this->saveNewTask($exec, $child);
+            }
+            // 分支归属戳排在落库之后：attachScopes 用当条 taskId 填 _branchCtx.root（照征询成员行腿）
+            ReapplySupport::attachScopes($model, $instance, $created, $node->getName(), (string) $host->getTaskId());
+            foreach ($created as $child) {
+                $this->repository->updateTask($child);
+            }
+            $this->repository->updateTask($host);
+            return $created;
+        });
+    }
+
+    /**
+     * 协办行办结的**推进闸**（issues/253，规范 04「推进闸与等待闸」；参照 snaker
+     * SnakerEngineImpl.execute 的「协办任务完成不产生执行对象」）：只完成任务行
+     * （prepareExecution 内含 completeTask／updateTask／fire 码 5），**不跑 node->execute、
+     * 不跑输出变迁**，返回空的新任务表。executeProcessTask 与 executeAndJumpTask 两路同闸
+     * （拒绝/退发起人两入口一并覆盖——协办行任何 submitType 都不得驱动流程）。
+     *
+     * @return ProcessTask[]
+     */
+    private function completeAidantWithoutDrive(string $taskId, string $operator, ?FlowData $args): array
+    {
+        $exec = $this->prepareExecution($taskId, $operator, $args);
+        if ($exec === null) {
+            return [];
+        }
+        $this->persistTasks($exec);
+        return $exec->getProcessTaskList();
+    }
+
     private function prepareExecution(string $taskId, string $operator, ?FlowData $args): ?Execution
     {
         $task = $this->repository->findTaskById($taskId);
@@ -589,6 +757,11 @@ class JeeflowEngine implements JeeflowEngineInterface
         // 四条判据（与 tf_nextNodeOperator 互斥／未开 allowAddSign 却传键／加给自己／超上限）
         // 的判据体只有 AddSignSupport 一份，本类只有一个调用点。
         AddSignSupport::validateSubmission($model, $task, $args, $operator);
+
+        // issues/253 等待闸：waitCompletion=true 的主办行办结前判"不存在 DOING 协办行"，
+        // 未齐 ⇒ 逐字文案报错、零写入。同样必须排在 completeTask 之前（内存仓储无回滚）。
+        // 协办行自身不受本闸约束（它办结本来就不驱动流程）；缺省 false 原样放行。
+        AidantSupport::gateWait($instance->getTasks(), $task);
 
         // 拦截器名可解析性前置校验（issues/244-①）：**同样必须排在 completeTask 之前**——
         // 与上面后加签四判据同一条规矩（内存仓储无回滚，报错即零写入）。

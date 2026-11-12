@@ -78,7 +78,10 @@ final class CollectSupport
             return $out;
         }
         foreach ($tasks as $t) {
-            if ($t->getParentTaskId() === $hostId && $t->getTaskName() === $host->getTaskName()) {
+            if ($t->getParentTaskId() === $hostId && $t->getTaskName() === $host->getTaskName()
+                // issues/253：协办行（task_type=1）也满足 parent＋同节点同名，但它属另一族
+                // ——征询收齐闸只数征询成员行（task_type=0），两闸各数各的（规范 04「与征询并存」）。
+                && !AidantSupport::isAidantRow($t)) {
                 $out[] = $t;
             }
         }
@@ -89,6 +92,7 @@ final class CollectSupport
      * 成员行判定：parent 指向**同节点同名**行（规范 04 · 动态会签；成员行禁带拉人参数的判据）。
      *
      * 无父档（null / '' / '0'）⇒ 不是成员行（本栈 id 是串，'0' 即 java 的 `== 0L` 那一档）。
+     * issues/253：协办行（task_type=1）不是征询成员行——两族靠 task_type 分辨。
      *
      * @param ProcessTask[] $tasks
      */
@@ -96,6 +100,9 @@ final class CollectSupport
     {
         $parentId = $row->getParentTaskId();
         if ($parentId === null || $parentId === '' || $parentId === '0') {
+            return false;
+        }
+        if (AidantSupport::isAidantRow($row)) {
             return false;
         }
         foreach ($tasks as $t) {

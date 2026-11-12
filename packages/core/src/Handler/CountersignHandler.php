@@ -12,6 +12,7 @@ use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\Model\TaskModel;
+use Jeeflow\Core\Support\AidantSupport;
 
 /**
  * 会签任务处理器
@@ -32,9 +33,13 @@ class CountersignHandler implements HandlerInterface
         $instance = $execution->getProcessInstance();
 
         // 获取所有属于该节点的任务
+        // issues/253：会签合并判据**显式排除协办行（task_type=1）**——snaker 按同节点同名行全算
+        // 会把协办行误当表决票挡住合并（规范 04「不计入会签合并计数」）。协办行不驱动流程、
+        // 无表决语义，票齐即推进；它的清场由 abandonRemainingCountersignTasks 里的协办腿负责。
         $allTasks = array_values(array_filter(
             $instance->getTasks(),
             fn(ProcessTask $t) => $t->getTaskName() === $this->taskModel->getName()
+                && !AidantSupport::isAidantRow($t)
         ));
 
         $finishedCount = count(array_filter(
@@ -121,9 +126,12 @@ class CountersignHandler implements HandlerInterface
     }
 
     /** 废弃本节点剩余 DOING 会签任务（merged 时调用）。
-     *  刚完成的任务此刻已置 FINISHED，isDoing 过滤不会误伤 */
+     *  刚完成的任务此刻已置 FINISHED，isDoing 过滤不会误伤。
+     *  issues/253：协办行先走自己的清场腿（废弃＋往主办行账本记废弃），再清剩余会签行——
+     *  顺序不能反，先被下面循环置 99 的协办行就记不上账了。 */
     private function abandonRemainingCountersignTasks($instance, string $operator): void
     {
+        AidantSupport::abandonPendingOnNode($instance, $this->taskModel->getName(), $operator);
         foreach ($instance->getTasks() as $task) {
             if ($task->getTaskName() === $this->taskModel->getName() && $task->isDoing()) {
                 $task->abandon($operator);

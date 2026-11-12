@@ -55,6 +55,15 @@ final class FlowConst
     // 已办撤回节点开关快照（issues/251）：办理时由引擎从 TaskModel 盖到本行变量，值＝办理时刻的
     // allowRecall 定义值；tf_ 前缀不进实例变量（不传播）。查询出口搬运成行顶层 allowRecall 供前端预判
     public const ALLOW_RECALL = 'tf_allowRecall';
+    // 动态协办（issues/253）跨栈契约键（spec 04「动态协办」＋ spec 06 §2.7；camelCase 勿改 snake_case）：
+    // AIDANT_HISTORY 是追加式账本（每次派生 append {round,fromActor,toActors,reason,time,operator}，
+    // 落**主办行**变量；离开节点清场未办结协办行时追加一条带 abandoned=true 的条目，照征询撤回的 revoked）。
+    public const AIDANT_HISTORY = 'tf_aidantHistory';
+    // 派生原因（选填）盖每条协办行（单行出证自足）；**不占 APPROVAL_COMMENT**（协办不是审批意见）。
+    public const AIDANT_REASON = 'tf_aidantReason';
+    // 等待闸开关：派生时把 waitCompletion 盖在主办行变量上，缺省 false＝主办不等协办办结即可推进。
+    // tf_ 前缀使实例合并自动剥键（不传播，与 ALLOW_RECALL 同通道）；投影 ext.aidant.wait 同源。
+    public const AIDANT_WAIT = 'tf_aidantWait';
 
     public const USER_USER_ID = 'u_userId';
     public const USER_REAL_NAME = 'u_realName';
