@@ -7,6 +7,8 @@ namespace Jeeflow\Core\Parser;
 use Jeeflow\Core\Domain\FlowData;
 use Jeeflow\Core\Enum\CountersignType;
 use Jeeflow\Core\Enum\PerformType;
+use Jeeflow\Core\Enum\TaskType;
+use Jeeflow\Core\JeeflowException;
 use Jeeflow\Core\Model\LogicFlow\LfNode;
 use Jeeflow\Core\Model\NodeModel;
 use Jeeflow\Core\Model\TaskModel;
@@ -23,7 +25,18 @@ class TaskNodeParser extends AbstractNodeParser
         $model->setForm((string) ($p[self::FORM_KEY] ?? ''));
         $model->setAssignee((string) ($p[self::ASSIGNEE_KEY] ?? ''));
         $model->setAssignmentHandler((string) ($p[self::ASSIGNMENT_HANDLE_KEY] ?? ''));
-        $model->setTaskType(isset($p[self::TASK_TYPE_KEY]) ? (int) $p[self::TASK_TYPE_KEY] : null);
+        // 节点级协办禁配（规范 02 §4.4，issues/252）：本栈 taskType 走 (int) 直折——没有
+        // codeOf 别名表，"协办"/"SECONDARY"/"ASSIST"/"Aidant" 这些串形在本栈一律折 0（主办），
+        // 能折成协办(1) 的只有数字档（1 / "1" / 1.9 / true / "1abc" 这类前导数字串）。
+        // 凡折到协办这一档一律**解析期报错**，不做运行时降级：snaker 原义下协办节点办结不驱动
+        // 且跳转吃同一道闸，配了就是"流程悬挂"陷阱；协办档今后只由运行期 processTask/aidant
+        // 派生（issues/253，本轮不做）。其余不可识别值维持既有静默回落主办，不扩成 fail-fast
+        // （issues/245 口径）。RECORD(2) 与 custom 记录行不受影响（本刀只在任务节点解析器里）。
+        $taskType = isset($p[self::TASK_TYPE_KEY]) ? (int) $p[self::TASK_TYPE_KEY] : null;
+        if ($taskType === TaskType::ASSIST) {
+            throw new JeeflowException("节点[{$model->getName()}]不允许配置协办任务类型（taskType=1）");
+        }
+        $model->setTaskType($taskType);
         $model->setPerformType(isset($p[self::PERFORM_TYPE_KEY]) ? PerformType::from($p[self::PERFORM_TYPE_KEY]) : null);
         $model->setReminderTime((string) ($p[self::REMINDER_TIME_KEY] ?? ''));
         $model->setReminderRepeat((string) ($p[self::REMINDER_REPEAT_KEY] ?? ''));
