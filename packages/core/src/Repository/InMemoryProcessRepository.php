@@ -22,8 +22,13 @@ use Jeeflow\Core\Util\FormDataUtil;
  *
  * 对齐 Java MemoryProcessRepository。所有数据保存在内存数组中。
  */
-class InMemoryProcessRepository implements ProcessRepositoryInterface
+class InMemoryProcessRepository implements ProcessRepositoryInterface, \Jeeflow\Core\IInstanceLockRepository
 {
+    /** 非数据库仓储的等价单进程互斥由引擎实例锁承担（spec 04），此处 no-op。 */
+    public function lockInstance(string $instanceId): void
+    {
+    }
+
     /** @var array<string, array> 流程定义 */
     private array $defines = [];
 

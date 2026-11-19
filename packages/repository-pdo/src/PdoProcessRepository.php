@@ -23,8 +23,20 @@ use Jeeflow\Core\Util\FormDataUtil;
  *
  * 对齐 Java JdbcProcessRepository。核心五表读写。
  */
-class PdoProcessRepository implements ProcessRepositoryInterface
+class PdoProcessRepository implements ProcessRepositoryInterface, \Jeeflow\Core\IInstanceLockRepository
 {
+    /** 实例级事务排他（spec 04 · 并发保护）：实例行 SELECT … FOR UPDATE，
+     * 锁随最外层事务提交/回滚释放；行不存在不新造失败面。 */
+    public function lockInstance(string $instanceId): void
+    {
+        // SQLite 单写者：不支持 FOR UPDATE，等价单进程互斥已由引擎实例锁承担 ⇒ 直接跳过
+        if ($this->pdo->getAttribute(\PDO::ATTR_DRIVER_NAME) === 'sqlite') {
+            return;
+        }
+        $stmt = $this->pdo->prepare('SELECT id FROM wf_process_instance WHERE id = ? FOR UPDATE');
+        $stmt->execute([$instanceId]);
+    }
+
     private \PDO $pdo;
     private IdGeneratorInterface $idGenerator;
 

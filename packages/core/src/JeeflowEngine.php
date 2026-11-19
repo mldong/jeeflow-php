@@ -560,6 +560,7 @@ class JeeflowEngine implements JeeflowEngineInterface
             // 复活行自己的待办另走码 3（规范 04 · 已办撤回；java 14674d7 补的这一腿——
             // 首版只 saveTask 漏 notifyTaskStart，go/python 均按 spec 走码 3，参考实现就此对齐）
             $this->notifyTaskStart($resurrected);
+            $this->scheduleTimeActionsFor($model, $instance, $resurrected);
             // 账本排在 saveTask 之后：recalledTaskId 要指向复活行的 taskId；随后必须补一次
             // updateTask，PDO 仓存的是快照，不补这一刀账本就丢。
             RecallSupport::appendRecallHistory($target, $operator, $resurrected->getTaskId());
@@ -700,7 +701,8 @@ class JeeflowEngine implements JeeflowEngineInterface
             // 建单收口：saveNewTask（委托并入＋saveTask 分配 id＋fire 码 3），与每一次普通建单同一条腿
             $exec = $this->buildExecution($model, $instance, FlowData::create(), $operator);
             foreach ($created as $child) {
-                $this->saveNewTask($exec, $child);
+                // 协办行按规范不继承时限动作（spec 02 §4.5）
+                $this->saveNewTask($exec, $child, false);
             }
             // 分支归属戳排在落库之后：attachScopes 用当条 taskId 填 _branchCtx.root（照征询成员行腿）
             ReapplySupport::attachScopes($model, $instance, $created, $node->getName(), (string) $host->getTaskId());
@@ -733,6 +735,11 @@ class JeeflowEngine implements JeeflowEngineInterface
 
     private function prepareExecution(string $taskId, string $operator, ?FlowData $args): ?Execution
     {
+        // 实例级事务排他（spec 04 · 并发保护）：先锁再读，堵"读后锁前"的二次推进窗口
+        $pre = $this->repository->findTaskById($taskId);
+        if ($pre !== null) {
+            $this->lockInstance($pre->getProcessInstanceId());
+        }
         $task = $this->repository->findTaskById($taskId);
         if ($task === null || !$task->isDoing()) {
             throw new JeeflowException('未找到进行中的任务: ' . $taskId);
@@ -795,6 +802,15 @@ class JeeflowEngine implements JeeflowEngineInterface
             }
         }
         $this->repository->updateTask($task);
+
+        // 时限动作联动（spec 04 · 写路径）：任务离开 DOING ⇒ 取消该任务 pending 提醒/自动行；
+        // 完成（TASK_COMPLETE 事实）且有 callback 配置 ⇒ 同事务插 CALLBACK 行。
+        $this->cancelTaskTimeActions($taskId);
+        $submitForCb = $args?->getInt(FlowConst::SUBMIT_TYPE);
+        $rejectedForCb = $submitForCb !== null && in_array($submitForCb, self::REJECT_SUBMIT_TYPES, true);
+        if (!$rejectedForCb) {
+            $this->insertCallbackAction($currentNode, $task);
+        }
 
         // 任务被办掉 / 被退回（spec §11.3 码 5 TASK_COMPLETE / 码 6 TASK_REJECT，issues/132 新增）：
         // 紧跟上面这次 updateTask（任务行 state 落库）之后 fire——§11.2 原则 3 的「落库之后」即此。
@@ -909,6 +925,8 @@ class JeeflowEngine implements JeeflowEngineInterface
                 // 父实例（或更上层）被这一支流转连带办结：它的行不在本次 updateInstance 范围内，补写
                 $this->repository->updateInstance($instance);
             }
+            // 实例终态 ⇒ 取消该实例 pending 提醒/自动行（CALLBACK 表示既成事实，不取消）
+            $this->cancelInstanceTimeActions((string) $end->getInstanceId());
             ProcessPublisher::notifyInstanceEnd($end->getInstanceId(), $end->getState());
         }
     }
@@ -922,12 +940,109 @@ class JeeflowEngine implements JeeflowEngineInterface
      * （Java 首版正是这个病根，见 06 §4.5 条款 2 的 ⚠️）。
      * 开关 `$surrogateAutoApply`（默认开启）；未配置扩展仓储时静默跳过，不打断建单。
      */
-    private function saveNewTask(Execution $exec, ProcessTask $task): void
+    private function saveNewTask(Execution $exec, ProcessTask $task, bool $allowTimeActions = true): void
     {
         $this->applySurrogate($exec, $task);
         $this->repository->saveTask($task);
         // PROCESS_TASK_START 在落库（分配 taskId）后 fire，见 start 内注释与 spec §11.2 原则 3
         $this->notifyTaskStart($task);
+        $this->scheduleTimeActionsFor($exec->getProcessModel(), $exec->getProcessInstance(), $task, $allowTimeActions);
+    }
+
+    // ─── 任务时限动作（spec 04 · 零 schema）────────────────────────────────
+
+    private function timeActionSink(): ?ITimeActionSink
+    {
+        $sink = ServiceContext::find(ITimeActionSink::class);
+        return $sink instanceof ITimeActionSink ? $sink : null;
+    }
+
+    private function lockInstance(?string $instanceId): void
+    {
+        if ($instanceId === null || $instanceId === '') {
+            return;
+        }
+        if ($this->repository instanceof IInstanceLockRepository) {
+            $this->repository->lockInstance($instanceId);
+        }
+    }
+
+    /**
+     * 建单侧动作行（与任务落库同事务）：autoExecute=Y 且有有效到期时间 ⇒ AUTO_COMPLETE；
+     * 配了有效 reminderTime ⇒ 首条 REMIND。协办/征询成员行由调用方传 allow=false。
+     */
+    private function scheduleTimeActionsFor(ProcessModel $model, ProcessInstance $instance,
+                                            ProcessTask $task, bool $allow = true): void
+    {
+        $sink = $this->timeActionSink();
+        if ($sink === null || !$allow || $task->getTaskId() === null || !$task->isDoing()) {
+            return;
+        }
+        if ($task->getTaskType() === TaskType::ASSIST) {
+            return;
+        }
+        $node = $model->getNode($task->getTaskName());
+        if (!$node instanceof TaskModel) {
+            return;
+        }
+        if (TimeLimitSupport::autoExecuteEnabled($node)) {
+            $expire = $task->getExpireTime();
+            if ($expire === null || $expire === '') {
+                error_log('[jeeflow] 时限配置诊断 task=' . $task->getTaskId()
+                    . ' node=' . $node->getName() . ' autoExecute=Y 但无有效到期时间');
+            } else {
+                $sink->insertTimeAction(new TimeAction(
+                    TimeAction::TYPE_AUTO_COMPLETE, TimeLimitSupport::epochMillis($expire),
+                    (string) $task->getProcessInstanceId(), (string) $task->getTaskId(),
+                    (string) $node->getName(), 0, 'wf:auto:' . $task->getTaskId() . ':0'));
+            }
+        }
+        $raw = $node->getReminderTime();
+        if ($raw !== '') {
+            $due = TimeLimitSupport::firstReminder($raw, $instance->getVariables(),
+                (string) $task->getCreateTime());
+            if ($due === null) {
+                error_log('[jeeflow] 时限配置诊断 task=' . $task->getTaskId()
+                    . ' node=' . $node->getName() . ' reminderTime=' . $raw . ' 解析不出');
+            } else {
+                $sink->insertTimeAction(new TimeAction(
+                    TimeAction::TYPE_REMIND, TimeLimitSupport::epochMillis($due),
+                    (string) $task->getProcessInstanceId(), (string) $task->getTaskId(),
+                    (string) $node->getName(), 1, 'wf:remind:' . $task->getTaskId() . ':1'));
+            }
+        }
+    }
+
+    /** 任务完成（state 落 20）同事务插入 CALLBACK 行（dueAt=now）。 */
+    private function insertCallbackAction(?\Jeeflow\Core\Model\NodeModel $node, ProcessTask $task): void
+    {
+        $sink = $this->timeActionSink();
+        if ($sink === null || !$node instanceof TaskModel || $task->getTaskId() === null) {
+            return;
+        }
+        if (TimeLimitSupport::callbackName($node) === '') {
+            return;
+        }
+        $sink->insertTimeAction(new TimeAction(
+            TimeAction::TYPE_CALLBACK, (int) (time() * 1000),
+            (string) $task->getProcessInstanceId(), (string) $task->getTaskId(),
+            (string) $node->getName(), 0, 'wf:callback:' . $task->getTaskId() . ':0'));
+    }
+
+    private function cancelTaskTimeActions(?string $taskId): void
+    {
+        $sink = $this->timeActionSink();
+        if ($sink !== null && $taskId !== null && $taskId !== '') {
+            $sink->cancelTaskTimeActions($taskId);
+        }
+    }
+
+    private function cancelInstanceTimeActions(?string $instanceId): void
+    {
+        $sink = $this->timeActionSink();
+        if ($sink !== null && $instanceId !== null && $instanceId !== '') {
+            $sink->cancelInstanceTimeActions($instanceId);
+        }
     }
 
     /**
