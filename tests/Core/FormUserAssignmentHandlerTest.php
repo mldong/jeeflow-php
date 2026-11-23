@@ -205,6 +205,36 @@ final class FormUserAssignmentHandlerTest extends TestCase
             '新类同一入参应命中 # 右半的 f_ 变体');
     }
 
+    public function testFormFieldAssigneeNumberSuffixTier(): void
+    {
+        // issues/255：老类第三档＝`_NN` 去后缀后查**裸名 base**——八语言里 Go 判据写死、
+        // Rust／MoonBit 没有这一档，补齐后各语言用同一条判据钉形状。
+        $legacy = new FormFieldAssigneeHandler();
+        $assign = static function (string $nodeId, array $pairs) use ($legacy): ?string {
+            $args = FlowData::create();
+            foreach ($pairs as $k => $v) {
+                $args->set($k, $v);
+            }
+            $execution = new \Jeeflow\Core\Execution();
+            $execution->setArgs($args);
+            $taskModel = new \Jeeflow\Core\Model\TaskModel();
+            $taskModel->setName($nodeId);
+            $execution->setNodeModel($taskModel);
+            return $legacy->assign($execution);
+        };
+
+        $this->assertSame('userA,userB', $assign('task_01', ['task' => 'userA,userB']));
+        // 惰性量词的最早可切点：a_b_01 的 base 是 a_b，不是 a
+        $this->assertSame('u_c', $assign('a_b_01', ['a' => 'u_x', 'a_b' => 'u_c']));
+        // 优先级：f_<id> → 裸名 → base 裸名
+        $this->assertSame('u_1', $assign('task_01', ['f_task_01' => 'u_1', 'task_01' => 'u_2', 'task' => 'u_3']));
+        $this->assertSame('u_2', $assign('task_01', ['task_01' => 'u_2', 'task' => 'u_3']));
+        // 反向：尾巴非纯数字、base 为空、base 只有 f_ 形 ⇒ 三档全落空
+        $this->assertNull($assign('task_01x', ['task' => 'u_3']), '尾锚非数字不该切 base');
+        $this->assertNull($assign('_01', ['' => 'u_3']), 'base 为空不该命中');
+        $this->assertNull($assign('task_02', ['f_task' => 'u_3']), '第三档只查裸名，f_<base> 是新类扩面');
+    }
+
     // ═══ 夹具 ═════════════════════════════════════════════════════════════════
 
     private function hrFlow(): string
