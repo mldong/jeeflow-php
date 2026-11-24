@@ -40,6 +40,12 @@ class Execution
      * @var ProcessTask[]
      */
     private array $historyTaskList = [];
+    /** @var array<string, ProcessTask> 已由嵌套引擎调用自行落库并 fire 的任务，禁止父 execution 再保存/再播码 3 */
+    private array $persistedTasks = [];
+    /** @var ProcessTask[] 已由嵌套引擎调用自行落库的历史任务，禁止父 execution 再保存 */
+    private array $persistedHistoryTasks = [];
+    /** @var Execution[] 父级联产生的 execution：其任务须由引擎保存，父实例须补写后再播终态 */
+    private array $continuations = [];
     private bool $merged = false;
     private ?JeeflowEngineInterface $engine = null;
     private string $operator = '';
@@ -78,6 +84,26 @@ class Execution
     public function addTask(ProcessTask $task): void
     {
         $this->processTaskList[] = $task;
+    }
+
+    /** 返回本次新任务、嵌套已落库任务与父级 continuation 任务，按 taskId 去重。 */
+    public function getResultTasks(): array
+    {
+        $result = [];
+        foreach ($this->processTaskList as $task) {
+            if (!$this->isPersistedTask($task)) {
+                $result[(string) $task->getTaskId()] = $task;
+            }
+        }
+        foreach ($this->persistedTasks as $task) {
+            $result[(string) $task->getTaskId()] = $task;
+        }
+        foreach ($this->continuations as $continuation) {
+            foreach ($continuation->getResultTasks() as $task) {
+                $result[(string) $task->getTaskId()] = $task;
+            }
+        }
+        return array_values($result);
     }
 
     /** @param ProcessTask[] $tasks */
@@ -130,6 +156,57 @@ class Execution
                 $this->pendingEnds[] = $pe;
             }
         }
+    }
+
+    /**
+     * 标记嵌套引擎调用已自行落库的任务（issues/257 裁决 D）。
+     *
+     * 子流程 start/execute 各自已经 saveTask 并 fire 码 3；把同一对象再挂进父
+     * processTaskList 会让父 persistTasks 重复 INSERT 同 id、重复发待办事件。
+     * 这里只记 taskId 集合，由 persistTasks/saveNewTask 在建单漏斗处去重；
+     * 调用方仍可正常保留返回任务列表，不改变 executeProcessTask 的出口。
+     */
+    public function addPersistedTasks(array $tasks): void
+    {
+        foreach ($tasks as $task) {
+            if ($task instanceof ProcessTask && $task->getTaskId() !== null) {
+                $this->persistedTasks[(string) $task->getTaskId()] = $task;
+            }
+        }
+    }
+
+    public function isPersistedTask(ProcessTask $task): bool
+    {
+        return $task->getTaskId() !== null
+            && isset($this->persistedTasks[(string) $task->getTaskId()]);
+    }
+
+    /** 标记嵌套调用已自行落库的记录类历史行，父 persistHistoryTasks 不再重复保存。 */
+    public function addPersistedHistoryTasks(array $tasks): void
+    {
+        foreach ($tasks as $task) {
+            if ($task instanceof ProcessTask && $task->getTaskId() !== null) {
+                $this->persistedHistoryTasks[(string) $task->getTaskId()] = true;
+            }
+        }
+    }
+
+    public function isPersistedHistoryTask(ProcessTask $task): bool
+    {
+        return $task->getTaskId() !== null
+            && isset($this->persistedHistoryTasks[(string) $task->getTaskId()]);
+    }
+
+    /** 登记父级联 execution；引擎 persistTasks 会统一保存其任务并补写父实例。 */
+    public function addContinuation(Execution $continuation): void
+    {
+        $this->continuations[] = $continuation;
+    }
+
+    /** @return Execution[] */
+    public function getContinuations(): array
+    {
+        return $this->continuations;
     }
 
     /** @return PendingInstanceEnd[] */

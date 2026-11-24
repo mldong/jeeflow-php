@@ -138,8 +138,25 @@ class PdoProcessRepository implements ProcessRepositoryInterface, \Jeeflow\Core\
 
     public function findLatestDefineByName(string $name): ?array
     {
-        $stmt = $this->pdo->prepare('SELECT * FROM wf_process_define WHERE name = ? ORDER BY version DESC LIMIT 1');
-        $stmt->execute([$name]);
+        return $this->findDefineByNameAndVersion($name, null);
+    }
+
+    public function findDefineByNameAndVersion(string $name, ?int $version): ?array
+    {
+        if (trim($name) === '') {
+            return null;
+        }
+        $sql = 'SELECT * FROM wf_process_define WHERE name = ?';
+        $params = [$name];
+        if ($version !== null) {
+            $sql .= ' AND version = ?';
+            $params[] = $version;
+        }
+        // issues/257 裁决 A：显式版本精确匹配；缺省按 version DESC、id DESC。
+        // 不额外追加 state 条件，与顶层启动入口保持同一过滤面。
+        $sql .= ' ORDER BY version DESC, id DESC LIMIT 1';
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($params);
         $row = $stmt->fetch(\PDO::FETCH_ASSOC);
         return $row === false ? null : $this->defineRow($row);
     }

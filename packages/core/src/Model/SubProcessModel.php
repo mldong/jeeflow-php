@@ -11,6 +11,7 @@ use Jeeflow\Core\Execution;
  */
 class SubProcessModel extends NodeModel
 {
+    private string $processName = '';
     private string $form = '';
     private ?int $version = null;
 
@@ -19,6 +20,8 @@ class SubProcessModel extends NodeModel
         $this->runOutTransition($execution);
     }
 
+    public function getProcessName(): string { return $this->processName; }
+    public function setProcessName(string $v): void { $this->processName = $v; }
     public function getForm(): string { return $this->form; }
     public function setForm(string $v): void { $this->form = $v; }
     public function getVersion(): ?int { return $this->version; }

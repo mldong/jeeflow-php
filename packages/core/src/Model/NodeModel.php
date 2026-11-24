@@ -6,6 +6,7 @@ namespace Jeeflow\Core\Model;
 
 use Jeeflow\Core\Execution;
 use Jeeflow\Core\Interceptor\FlowInterceptorRegistry;
+use Jeeflow\Core\Enum\PerformType;
 use Jeeflow\Core\JeeflowException;
 
 /**
@@ -140,10 +141,16 @@ abstract class NodeModel extends BaseModel
      */
     public static function canRejected(NodeModel $current, NodeModel $parent): bool
     {
+        // issues/257 裁决 B：会签父节点不可退；回溯遇到子流程边界直接跳过，
+        // 不允许穿过子流程回到更上游的父任务。
+        if ($parent instanceof TaskModel && $parent->getPerformType() !== PerformType::NORMAL) {
+            return false;
+        }
         foreach ($current->getInputs() as $tm) {
             $source = $tm->getSource();
             if ($source === $parent) return true;
-            if ($source instanceof ForkModel || $source instanceof JoinModel || $source instanceof StartModel) {
+            if ($source instanceof ForkModel || $source instanceof JoinModel
+                || $source instanceof SubProcessModel || $source instanceof StartModel) {
                 continue;
             }
             if (self::canRejected($source, $parent)) return true;

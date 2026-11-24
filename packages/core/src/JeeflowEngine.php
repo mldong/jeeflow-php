@@ -11,6 +11,7 @@ use Jeeflow\Core\Support\AddSignSupport;
 use Jeeflow\Core\Support\AidantSupport;
 use Jeeflow\Core\Support\RecallSupport;
 use Jeeflow\Core\Support\ReapplySupport;
+use Jeeflow\Core\Support\StartAndExecuteSupport;
 use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Domain\ProcessTask;
 use Jeeflow\Core\Enum\FlowConst;
@@ -26,6 +27,7 @@ use Jeeflow\Core\Interceptor\SurrogateInterceptor;
 use Jeeflow\Core\Model\EndModel;
 use Jeeflow\Core\Model\ProcessModel;
 use Jeeflow\Core\Model\StartModel;
+use Jeeflow\Core\Model\SubProcessModel;
 use Jeeflow\Core\Model\TaskModel;
 use Jeeflow\Core\Model\TransitionModel;
 use Jeeflow\Core\Parser\ModelParser;
@@ -158,16 +160,8 @@ class JeeflowEngine implements JeeflowEngineInterface
             //    PROCESS_TASK_START 事件须在 saveTask 落库（分配 taskId）之后 fire——对齐
             //    spec §11.2 原则 3 / §11.3 码 3「任务落库后逐任务 fire，监听器可按 taskId 反查」与 Java
             //    JeeflowEngineImpl start 内循环（CreateTaskHandler 阶段 taskId 尚未生成，不 fire）。
-            foreach ($exec->getProcessTaskList() as $task) {
-                $this->saveNewTask($exec, $task);
-            }
-            // 记录类（snaker:custom）历史行：**只落库、不发码 3、不过委托**，见 persistHistoryTasks
-            $this->persistHistoryTasks($exec);
-            $this->repository->updateInstance($instance);
-            // 实例终态事件（码 2）：发起即办结的短流（start→end、decision 直达结束）与
-            // 子流程父实例都从这一支落库后播——顺序判据同 persistTasks 的收口。
-            $this->flushInstanceEndEvents($exec);
-            return $instance;
+            $this->persistTasks($exec);
+            return $exec->getProcessInstance();
         });
     }
 
@@ -201,7 +195,7 @@ class JeeflowEngine implements JeeflowEngineInterface
             $ccActors = $args?->get(FlowConst::CC_ACTORS);
             $this->handleCcActors($exec->getProcessInstance()->getInstanceId(), $operator, $ccActors);
             $this->persistTasks($exec);
-            return $exec->getProcessTaskList();
+            return $this->resultWithContinuations($exec);
         });
     }
 
@@ -257,7 +251,7 @@ class JeeflowEngine implements JeeflowEngineInterface
                 $tm->execute($exec);
             }
             $this->persistTasks($exec);
-            return $exec->getProcessTaskList();
+            return $this->resultWithContinuations($exec);
         });
     }
 
@@ -289,7 +283,7 @@ class JeeflowEngine implements JeeflowEngineInterface
                 $tm->execute($exec);
             }
             $this->persistTasks($exec);
-            return $exec->getProcessTaskList();
+            return $this->resultWithContinuations($exec);
         });
     }
 
@@ -361,7 +355,7 @@ class JeeflowEngine implements JeeflowEngineInterface
                     $nt->getVariables()->set(ReapplySupport::VAR_REAPPLY_CTX, $rc);
                 }
                 $this->persistTasks($exec);
-                return $exec->getProcessTaskList();
+                return $this->resultWithContinuations($exec);
             }
             $start = $model->getStart();
             if ($start !== null) {
@@ -375,7 +369,7 @@ class JeeflowEngine implements JeeflowEngineInterface
                 }
             }
             $this->persistTasks($exec);
-            return $exec->getProcessTaskList();
+            return $this->resultWithContinuations($exec);
         });
     }
 
@@ -421,10 +415,16 @@ class JeeflowEngine implements JeeflowEngineInterface
             $nt->getVariables()->set(ReapplySupport::VAR_BRANCH_CTX, $branch);
         }
         $this->persistTasks($exec);
-        return $exec->getProcessTaskList();
+        return $this->resultWithContinuations($exec);
     }
 
     // ═══ 内部方法 ═══
+
+    /** @return ProcessTask[] */
+    private function resultWithContinuations(Execution $exec): array
+    {
+        return $exec->getResultTasks();
+    }
 
     /**
      * 当前行的血缘前驱那条历史行（issues/121 P2 的取行腿）：parent 为空 / '' / '0' ⇒ null
@@ -779,6 +779,10 @@ class JeeflowEngine implements JeeflowEngineInterface
         $currentNode = $model->getNode($task->getTaskName());
         if ($currentNode !== null) {
             $currentNode->assertInterceptorsResolvable($model);
+            // issues/257：当前任务的直接出边若指向子流程，必须在 completeTask 之前
+            // 只读校验目标定义。真库有外层事务，内存仓没有；晚抛会留下父任务已办结、
+            // 子实例没创建的失联状态，故这里保证报错时内存也零写入。
+            StartAndExecuteSupport::validateSubProcessTarget($model, $currentNode, $this->repository);
         }
 
         // issues/251：办理时把本节点的 allowRecall 开关快照进行变量（tf_allowRecall）——
@@ -848,14 +852,25 @@ class JeeflowEngine implements JeeflowEngineInterface
 
     private function persistTasks(Execution $exec): void
     {
+        $this->persistTasksTree($exec);
+        $this->flushInstanceEndEvents($exec);
+    }
+
+    private function persistTasksTree(Execution $exec): void
+    {
         // 共用 executeProcessTask / executeAndJumpTask / executeAndJumpToEnd /
         // executeAndJumpToFirstTaskNode 全部办理路径：saveTask 落库（分配 taskId）
         // 之后逐任务 fire PROCESS_TASK_START（对齐 Java JeeflowEngineImpl.persistTasks）。
         foreach ($exec->getProcessTaskList() as $task) {
-            $this->saveNewTask($exec, $task);
+            if (!$exec->isPersistedTask($task)) {
+                $this->saveNewTask($exec, $task);
+            }
         }
         // 分支根任务建单时 taskId 尚未生成（由仓储 saveTask 分配）⇒ 落库后回填 _branchCtx.root
         foreach ($exec->getProcessTaskList() as $task) {
+            if ($exec->isPersistedTask($task)) {
+                continue;
+            }
             $scopes = ReapplySupport::scopesOf($task->getVariables());
             $changed = false;
             if ($task->getTaskId() !== null) {
@@ -875,8 +890,9 @@ class JeeflowEngine implements JeeflowEngineInterface
             $this->repository->updateTask($exec->getProcessTask());
         }
         $this->repository->updateInstance($exec->getProcessInstance());
-        // 实例终态事件（码 2）：紧跟上面那次 updateInstance —— 行的 state 已落库才允许播
-        $this->flushInstanceEndEvents($exec);
+        foreach ($exec->getContinuations() as $continuation) {
+            $this->persistTasksTree($continuation);
+        }
     }
 
     /**
@@ -912,7 +928,8 @@ class JeeflowEngine implements JeeflowEngineInterface
      */
     private function flushInstanceEndEvents(Execution $exec): void
     {
-        $pending = $exec->drainPendingEnds();
+        $pending = [];
+        $this->collectPendingEnds($exec, $pending);
         if ($pending === []) {
             return;
         }
@@ -931,6 +948,17 @@ class JeeflowEngine implements JeeflowEngineInterface
         }
     }
 
+    /** @param PendingInstanceEnd[] $pending */
+    private function collectPendingEnds(Execution $exec, array &$pending): void
+    {
+        foreach ($exec->drainPendingEnds() as $end) {
+            $pending[] = $end;
+        }
+        foreach ($exec->getContinuations() as $continuation) {
+            $this->collectPendingEnds($continuation, $pending);
+        }
+    }
+
     /**
      * 新任务落库**唯一收口**（发起 / 办理推进 / 串行会签每一步推进 / 跳转 四条路径都走这里）。
      *
@@ -942,6 +970,11 @@ class JeeflowEngine implements JeeflowEngineInterface
      */
     private function saveNewTask(Execution $exec, ProcessTask $task, bool $allowTimeActions = true): void
     {
+        // issues/257：嵌套子流程调用已自行 saveTask + fire 码 3；父 execution
+        // 即使为保持返回值把同一行带回来，也不能再INSERT/再 fire 一次。
+        if ($exec->isPersistedTask($task)) {
+            return;
+        }
         $this->applySurrogate($exec, $task);
         $this->repository->saveTask($task);
         // PROCESS_TASK_START 在落库（分配 taskId）后 fire，见 start 内注释与 spec §11.2 原则 3
@@ -1067,7 +1100,9 @@ class JeeflowEngine implements JeeflowEngineInterface
     private function persistHistoryTasks(Execution $exec): void
     {
         foreach ($exec->getHistoryTaskList() as $task) {
-            $this->repository->saveTask($task);
+            if (!$exec->isPersistedHistoryTask($task)) {
+                $this->repository->saveTask($task);
+            }
         }
     }
 

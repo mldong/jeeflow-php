@@ -9,6 +9,7 @@ use Jeeflow\Core\Domain\ProcessInstance;
 use Jeeflow\Core\Enum\FlowConst;
 use Jeeflow\Core\Enum\ProcessEventTypeEnum;
 use Jeeflow\Core\Enum\ProcessInstanceState;
+use Jeeflow\Core\Enum\ProcessTaskState;
 use Jeeflow\Core\Enum\SubmitType;
 use Jeeflow\Core\Event\ProcessEvent;
 use Jeeflow\Core\Event\ProcessEventListener;
@@ -289,6 +290,9 @@ JSON;
 
         $parent = $this->engine->startProcessInstanceById('103', 'user1', FlowData::create());
         $parentId = (string) $parent->getInstanceId();
+        $parentApproval = $this->repo->findTaskById($this->doingTaskId($parentId, 'approval'));
+        $parentApproval->setTaskState(ProcessTaskState::FINISHED);
+        $this->repo->updateTask($parentApproval);
         $child = $this->engine->startProcessInstanceById('104', 'user1', FlowData::create(), $parentId, 'subprocess');
         $childId = (string) $child->getInstanceId();
         $childTaskId = $this->doingTaskId($childId, 'childTask');

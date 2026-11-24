@@ -36,6 +36,7 @@ use Jeeflow\Core\Support\AddSignSupport;
 use Jeeflow\Core\Support\AidantSupport;
 use Jeeflow\Core\Support\CollectSupport;
 use Jeeflow\Core\Support\ReapplySupport;
+use Jeeflow\Core\Support\StartAndExecuteSupport;
 use Jeeflow\Core\Util\CcActorUtil;
 use Jeeflow\Core\Util\FlowUtil;
 use Jeeflow\Core\Util\FormDataUtil;
@@ -348,20 +349,9 @@ class JeeflowFacade
 
         $inst = $this->engine->startProcessInstanceById($defineId, $operator, $flowArgs);
 
-        // 自动完成申请节点（assignee="applicant" → 发起人）
-        $doingTasks = $this->repository->findDoingTasks($inst->getInstanceId());
-        foreach ($doingTasks as $task) {
-            $this->repository->addTaskActor($task->getTaskId(), [$operator]);
-            $flowArgs->set(FlowConst::SUBMIT_TYPE, SubmitType::APPLY);
-            // f_nextNodeOperator → tf_nextNodeOperator
-            $startNextOp = $flowArgs->get(FlowConst::PROCESS_START_NEXT_NODE_OPERATOR);
-            if ($startNextOp !== null && $startNextOp !== '') {
-                $flowArgs->set(FlowConst::NEXT_NODE_OPERATOR, $startNextOp);
-            }
-            // issues/176：spec 04:60-62——apply 节点由 flow.auto 代执行（operator 列=flow.auto，
-            // 不进发起人已办）；u_* 由发起腿留下、引擎对 flow.auto 跳过注入（对齐 boot2 :317）
-            $this->engine->executeProcessTask($task->getTaskId(), FlowConst::AUTO_ID, $flowArgs);
-        }
+        // 自动完成申请节点（assignee="applicant" → 发起人）；无 apply 时按 issues/167
+        // 首任务自办。与子流程复用同一 Support，保证逐任务 addTaskActor → flow.auto/APPLY。
+        StartAndExecuteSupport::applyInitialTasks($this->engine, $inst->getInstanceId(), $operator, $flowArgs);
 
         return $this->ok([FlowConst::PROCESS_INSTANCE_ID_KEY => $inst->getInstanceId()]);
     }

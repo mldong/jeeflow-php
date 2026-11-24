@@ -41,6 +41,11 @@ final class ModelParser
         self::registerParser('fork', new ForkNodeParser());
         self::registerParser('join', new JoinNodeParser());
         self::registerParser('subprocess', new SubProcessNodeParser());
+        // issues/257 裁决 A：设计器存量输出 snaker:subProcess，SnakerFlow 上游还有
+        // wfSubProcess；三档必须映射到同一解析器。此处仍不做泛化大小写归一，
+        // 未建档的类型继续走下方可诊断跳过支。
+        self::registerParser('subProcess', new SubProcessNodeParser());
+        self::registerParser('wfSubProcess', new SubProcessNodeParser());
         // issues/142 A 批 · spec 02 §6.1/§6.2：补记录类（custom）这一档。
         // 只补这一档——**不做大小写归一、不加别名**（issues/141 G4 义务 1/3 走 C 方案，
         // 先立法后补实现，另轮处理），查表方式与既有七档逐字一致（剥 snaker: 前缀后精确匹配）。

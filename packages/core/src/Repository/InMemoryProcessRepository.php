@@ -100,15 +100,49 @@ class InMemoryProcessRepository implements ProcessRepositoryInterface, \Jeeflow\
 
     public function findLatestDefineByName(string $name): ?array
     {
+        return $this->findDefineByNameAndVersion($name, null);
+    }
+
+    public function findDefineByNameAndVersion(string $name, ?int $version): ?array
+    {
+        if (trim($name) === '') {
+            return null;
+        }
         $found = null;
         foreach ($this->defines as $d) {
-            if (($d['name'] ?? '') === $name) {
-                if ($found === null || ($d['version'] ?? 0) > ($found['version'] ?? 0)) {
-                    $found = $d;
-                }
+            if (($d['name'] ?? '') !== $name) {
+                continue;
+            }
+            if ($version !== null && (int) ($d['version'] ?? 0) !== $version) {
+                continue;
+            }
+            // issues/257：version 与 id 都参与最新定义裁决。id 先按十进制数值比较，
+            // 数值相同（如 '1'/'01'）再按原字面值打破平局，保证内存仓与 SQL 的
+            // version DESC,id DESC 同答案，不依赖遍历顺序或浮点精度。
+            $versionCmp = (int) ($d['version'] ?? 0) <=> (int) ($found['version'] ?? 0);
+            $idCmp = $this->compareDefineIds((string) ($d['id'] ?? ''), (string) ($found['id'] ?? ''));
+            if ($versionCmp > 0 || ($versionCmp === 0 && $idCmp > 0)) {
+                $found = $d;
             }
         }
         return $found;
+    }
+
+    /** 十进制 id 数值优先；同值再按字面值，与 SQL id DESC 的稳定裁决同形。 */
+    private function compareDefineIds(string $a, string $b): int
+    {
+        $numericA = ltrim($a, '0');
+        $numericB = ltrim($b, '0');
+        $numericA = $numericA === '' ? '0' : $numericA;
+        $numericB = $numericB === '' ? '0' : $numericB;
+        if (strlen($numericA) !== strlen($numericB)) {
+            return strlen($numericA) <=> strlen($numericB);
+        }
+        $numericCmp = strcmp($numericA, $numericB);
+        if ($numericCmp !== 0) {
+            return $numericCmp;
+        }
+        return strcmp($b, $a);
     }
 
     public function pageDefines(PageQuery $query): PageResult
