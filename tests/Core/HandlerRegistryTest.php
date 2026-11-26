@@ -17,7 +17,7 @@ class HandlerRegistryTest extends TestCase
     {
         $registry = new HandlerRegistry();
         $handlers = $registry->listHandlers('AssignmentHandler');
-        $this->assertCount(9, $handlers);
+        $this->assertCount(11, $handlers);
     }
 
     public function testFirstHandlerIsOperator(): void
@@ -51,13 +51,21 @@ class HandlerRegistryTest extends TestCase
             'com.mldong.jeeflow.interceptor.impl.FormUserDeptMainLeaderAssignmentHandler',
             $classNames
         );
+        $this->assertContains(
+            'com.mldong.jeeflow.interceptor.impl.FormDeptLeaderAssignmentHandler',
+            $classNames
+        );
+        $this->assertContains(
+            'com.mldong.jeeflow.interceptor.impl.FormDeptMainLeaderAssignmentHandler',
+            $classNames
+        );
     }
 
     public function testFormUserMetasOrderAndDisplayNames(): void
     {
         $registry = new HandlerRegistry();
         $handlers = $registry->listHandlers('AssignmentHandler');
-        $tail = array_slice($handlers, -2);
+        $tail = array_slice($handlers, 7, 2);
         $this->assertSame('com.mldong.jeeflow.interceptor.impl.FormUserDeptLeaderAssignmentHandler', $tail[0]->className);
         $this->assertSame('表单指定用户所属部门经理', $tail[0]->displayName);
         $this->assertSame(70, $tail[0]->order);
@@ -66,12 +74,27 @@ class HandlerRegistryTest extends TestCase
         $this->assertSame(80, $tail[1]->order);
     }
 
+    public function testFormDeptMetasOrderAndDisplayNames(): void
+    {
+        $registry = new HandlerRegistry();
+        $handlers = $registry->listHandlers('AssignmentHandler');
+        $tail = array_slice($handlers, -2);
+        $this->assertSame('com.mldong.jeeflow.interceptor.impl.FormDeptLeaderAssignmentHandler', $tail[0]->className);
+        $this->assertSame('表单指定部门负责人', $tail[0]->displayName);
+        $this->assertSame(90, $tail[0]->order);
+        $this->assertStringNotContainsString('$', $tail[0]->className);
+        $this->assertSame('com.mldong.jeeflow.interceptor.impl.FormDeptMainLeaderAssignmentHandler', $tail[1]->className);
+        $this->assertSame('表单指定部门分管领导', $tail[1]->displayName);
+        $this->assertSame(100, $tail[1]->order);
+        $this->assertStringNotContainsString('$', $tail[1]->className);
+    }
+
     public function testListHandlersNoFilter(): void
     {
         $registry = new HandlerRegistry();
         $all = $registry->listHandlers();
-        // 9 内置 AssignmentHandler + 1 内置 ActionPermissionProvider 默认件（issues/29／hub issues/248）
-        $this->assertCount(10, $all);
+        // 11 内置 AssignmentHandler + 1 内置 ActionPermissionProvider 默认件（issues/29／hub issues/248）
+        $this->assertCount(12, $all);
     }
 
     public function testBuiltInActionPermissionMeta(): void
@@ -97,14 +120,14 @@ class HandlerRegistryTest extends TestCase
         $registry->register($custom);
 
         $handlers = $registry->listHandlers('AssignmentHandler');
-        $this->assertCount(10, $handlers); // 9 内置 + 1 自定义
+        $this->assertCount(12, $handlers); // 11 内置 + 1 自定义
     }
 
     public function testListHandlerTypes(): void
     {
         $registry = new HandlerRegistry();
         $this->assertSame(['AssignmentHandler', 'ActionPermissionProvider'], $registry->listHandlerTypes(),
-            '内置 9 条 AssignmentHandler + 1 条 ActionPermissionProvider（issues/248）⇒ 两类型（首次注册序）');
+            '内置 11 条 AssignmentHandler + 1 条 ActionPermissionProvider（issues/248）⇒ 两类型（首次注册序）');
 
         $registry->register(new HandlerMeta('CandidateHandler', 'com.example.CandidateProvider', '候选人提供者', 1));
         $this->assertSame(
@@ -132,7 +155,7 @@ class HandlerRegistryTest extends TestCase
         $registry->register(new HandlerMeta('AssignmentHandler', 'com.custom.EarlyBird', '插队处理器', 5));
         $handlers = $registry->listHandlers('AssignmentHandler');
         $this->assertSame(
-            [-9999, 5, 10, 20, 30, 40, 50, 60, 70, 80],
+            [-9999, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
             array_map(fn(HandlerMeta $m) => $m->order, $handlers),
             '注册序 ≠ order 序时仍按 order 升序返回（spec 08 场景 22）'
         );
